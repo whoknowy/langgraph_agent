@@ -9,7 +9,13 @@ import json
 import requests
 import time
 import uuid
-from typing import Dict, List, Any, Optional, TypedDict, Annotated
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Any, Optional
+try:
+    from typing import TypedDict, Annotated
+except ImportError:
+    from typing_extensions import TypedDict, Annotated
 from dotenv import load_dotenv
 from operator import add
 
@@ -57,8 +63,10 @@ class AgentState(TypedDict):
     filter_response: Optional[str]
     filter_action: Optional[str]
     
-    # 意图识别结果
+    # 意图识别结果（支持多意图）
     intent: Optional[str]
+    intents: Optional[List[str]]
+    is_multi_intent: Optional[bool]
     is_rule_matched: Optional[bool]
     confidence: Optional[float]
     target_agent: Optional[str]
@@ -119,13 +127,12 @@ def sensitive_word_filter_node(state: AgentState) -> AgentState:
 
 
 def intent_router_node(state: AgentState) -> AgentState:
-    """意图路由节点 - 包含工具调用"""
+    """意图路由节点 - 支持多意图识别"""
     print(f"[节点] 执行意图识别和路由")
     
     query = state.get("customer_query", "")
     session_id = state.get("session_id", "")
     
-    # 使用现有的 IntentRoutingSkill
     from skills.intent_router import intent_routing_skill
     
     context = {
@@ -140,14 +147,18 @@ def intent_router_node(state: AgentState) -> AgentState:
     if result.success and result.data:
         data = result.data
         new_state["intent"] = data.get("intent", "general_inquiry")
+        new_state["intents"] = data.get("intents", [new_state["intent"]])
+        new_state["is_multi_intent"] = data.get("is_multi_intent", False)
         new_state["is_rule_matched"] = data.get("is_rule_matched", False)
         new_state["confidence"] = data.get("confidence", 0.0)
         new_state["target_agent"] = data.get("agent", "general_agent")
         new_state["tools_needed"] = data.get("tools", [])
         new_state["tool_results"] = data.get("tool_results", {})
-        print(f"  - 识别意图: {data.get('intent')} -> Agent: {data.get('agent')}")
+        print(f"  - 识别意图: {data.get('intents', [data.get('intent')])}")
+        if data.get("is_multi_intent"):
+            print(f"  - 多意图模式: 并行执行")
         if data.get("tool_results"):
-            print(f"  - 工具执行完成: {list(data.get('tool_results').keys())}")
+            print(f"  - 工具执行完成")
     
     return new_state
 
@@ -155,8 +166,12 @@ def intent_router_node(state: AgentState) -> AgentState:
 def get_next_agent_node(state: AgentState) -> str:
     """
     条件路由函数 - 根据意图确定下一个节点
-    返回下一个节点的名称
+    如果是多意图，路由到多意图处理节点
     """
+    if state.get("is_multi_intent", False):
+        print(f"[条件路由] 多意图 -> 下一个节点: multi_intent_handler")
+        return "multi_intent_handler"
+    
     intent = state.get("intent", "general_inquiry")
     
     intent_node_mapping = {
@@ -217,6 +232,133 @@ def general_agent_node(state: AgentState) -> AgentState:
     """综合客服 Agent 节点"""
     print(f"[节点] 执行综合客服 Agent")
     return _execute_agent_node(state, "general_agent")
+
+
+def multi_intent_handler_node(state: AgentState) -> AgentState:
+    """多意图处理节点 - 并行执行多个Agent并按用户顺序整合结果"""
+    print(f"[节点] 多意图并行处理")
+    
+    intents = state.get("intents", [])
+    query = state.get("customer_query", "")
+    session_id = state.get("session_id", "")
+    mood_tag = state.get("mood_tag", "")
+    filter_response = state.get("filter_response", "")
+    
+    # 并行执行所有意图对应的Agent
+    executor = ParallelAgentExecutor()
+    results = asyncio.run(executor.execute_parallel(
+        intents, query, session_id, mood_tag, filter_response
+    ))
+    
+    # 按用户提问顺序整合结果
+    aggregator = MultiIntentResultAggregator()
+    aggregated_response = aggregator.aggregate(results, intents)
+    
+    # 如果有敏感词安抚话术，添加到开头
+    if mood_tag == "dissatisfied" and filter_response:
+        aggregated_response = f"{filter_response}\n\n{aggregated_response}"
+    
+    new_state = state.copy()
+    new_state["agent_response"] = aggregated_response
+    new_state["current_agent"] = "multi_intent_handler"
+    new_state["tool_results"] = results
+    
+    print(f"  - 多意图处理完成，整合了 {len(intents)} 个意图")
+    return new_state
+
+
+class ParallelAgentExecutor:
+    """多Agent并行执行器"""
+    
+    def __init__(self):
+        self.executor = ThreadPoolExecutor(max_workers=5)
+    
+    async def execute_parallel(self, intents: List[str], query: str, session_id: str, 
+                              mood_tag: str = "", filter_response: str = "") -> Dict[str, Any]:
+        """并行执行多个意图对应的Agent"""
+        loop = asyncio.get_event_loop()
+        tasks = []
+        
+        for intent_id in intents:
+            task = loop.run_in_executor(
+                self.executor,
+                self._execute_single_intent,
+                intent_id, query, session_id, mood_tag, filter_response
+            )
+            tasks.append((intent_id, task))
+        
+        results = {}
+        for intent_id, task in tasks:
+            try:
+                result = await task
+                results[intent_id] = result
+            except Exception as e:
+                results[intent_id] = {"success": False, "error": str(e)}
+        
+        return results
+    
+    def _execute_single_intent(self, intent_id: str, query: str, session_id: str, 
+                               mood_tag: str, filter_response: str) -> Dict[str, Any]:
+        """执行单个意图"""
+        from skills.intent_router import IntentRoutingSkill
+        
+        router = IntentRoutingSkill()
+        routing_info = router.intent_mapping.get(intent_id)
+        
+        if not routing_info:
+            return {"success": False, "error": f"Unknown intent: {intent_id}"}
+        
+        enhanced_context = ""
+        if session_id:
+            try:
+                enhanced_context = get_enhanced_context(session_id, query)
+            except Exception as e:
+                pass
+        
+        agents = initialize_agents()
+        agent_name = routing_info["agent"]
+        agent = agents.get(agent_name)
+        
+        if not agent:
+            return {"success": False, "error": f"Agent not found: {agent_name}"}
+        
+        result = agent.process({
+            "customer_query": query,
+            "session_id": session_id,
+            "mood_tag": mood_tag,
+            "filter_response": filter_response,
+            "enhanced_context": enhanced_context,
+            "tool_results": {}
+        })
+        
+        return {"success": True, "data": result}
+
+
+class MultiIntentResultAggregator:
+    """按用户提问顺序整合多意图结果"""
+    
+    def aggregate(self, intent_results: Dict[str, Any], intents: List[str]) -> str:
+        """按用户提问顺序整合结果"""
+        responses = []
+        
+        for intent_id in intents:
+            result = intent_results.get(intent_id)
+            if result and result.get("success"):
+                data = result.get("data", {})
+                response = data.get("response", "")
+                if response:
+                    responses.append(response)
+        
+        if not responses:
+            return "抱歉，我暂时无法处理您的请求。"
+        
+        if len(responses) == 1:
+            return responses[0]
+        elif len(responses) == 2:
+            return f"关于您的问题：\n\n1. {responses[0]}\n\n2. {responses[1]}"
+        else:
+            numbered = [f"{i+1}. {r}" for i, r in enumerate(responses)]
+            return "根据您的需求，我整理了以下信息：\n\n" + "\n\n".join(numbered)
 
 
 def _execute_agent_node(state: AgentState, agent_name: str) -> AgentState:
@@ -324,7 +466,7 @@ def final_response_node(state: AgentState) -> AgentState:
 
 def build_workflow():
     """
-    构建 LangGraph 工作流图
+    构建 LangGraph 工作流图（支持多意图）
     
     图结构:
     START 
@@ -333,7 +475,8 @@ def build_workflow():
       ↓
     intent_router
       ↓
-    [条件路由] → product_agent
+    [条件路由] → multi_intent_handler (多意图)
+             ↘ product_agent (单意图)
              ↘ billing_agent
              ↘ complaint_agent
              ↘ general_agent
@@ -351,6 +494,7 @@ def build_workflow():
     # 添加节点
     graph.add_node("sensitive_word_filter", sensitive_word_filter_node)
     graph.add_node("intent_router", intent_router_node)
+    graph.add_node("multi_intent_handler", multi_intent_handler_node)
     graph.add_node("product_agent", product_agent_node)
     graph.add_node("billing_agent", billing_agent_node)
     graph.add_node("complaint_agent", complaint_agent_node)
@@ -363,11 +507,12 @@ def build_workflow():
     # 添加边
     graph.add_edge("sensitive_word_filter", "intent_router")
     
-    # 添加条件边 - 根据意图路由到不同的 Agent
+    # 添加条件边 - 根据意图路由到不同的节点
     graph.add_conditional_edges(
         "intent_router",
         get_next_agent_node,
         {
+            "multi_intent_handler": "multi_intent_handler",
             "product_agent_node": "product_agent",
             "billing_agent_node": "billing_agent",
             "complaint_agent_node": "complaint_agent",
@@ -375,7 +520,10 @@ def build_workflow():
         }
     )
     
-    # 所有 Agent 节点连接到最终响应节点
+    # 多意图处理节点连接到最终响应
+    graph.add_edge("multi_intent_handler", "final_response")
+    
+    # 所有单意图 Agent 节点连接到最终响应节点
     graph.add_edge("product_agent", "final_response")
     graph.add_edge("billing_agent", "final_response")
     graph.add_edge("complaint_agent", "final_response")
@@ -623,9 +771,9 @@ if __name__ == "__main__":
     print("架构: LangGraph StateGraph")
     print("=" * 60)
     print("\n系统特性:")
-    print("  - 节点: sensitive_word_filter, intent_router, product_agent, billing_agent, complaint_agent, general_agent, final_response")
+    print("  - 节点: sensitive_word_filter, intent_router, multi_intent_handler, product_agent, billing_agent, complaint_agent, general_agent, final_response")
     print("  - 边: 条件路由 + 直接边")
-    print("  - 支持: 敏感词过滤, 两阶段意图识别, MCP工具, 增强记忆")
+    print("  - 支持: 敏感词过滤, 多意图识别, 多Agent并行执行, MCP工具, 增强记忆")
     print("\n支持的功能:")
     print("  - 机票预订咨询")
     print("  - 价格构成分析")
@@ -634,6 +782,7 @@ if __name__ == "__main__":
     print("  - 价格波动预测")
     print("  - 账单问题处理")
     print("  - 投诉建议处理")
+    print("  - 多意图并行处理（按用户提问顺序整合结果）")
     print("=" * 60)
     print("\n请输入您的问题，或输入 'exit' 退出系统")
     print("输入 'status' 查看工作台状态")
@@ -683,6 +832,8 @@ if __name__ == "__main__":
         print(f"  是否终止: {'是' if result.get('terminated') else '否'}")
         print(f"  当前Agent: {result.get('current_agent', 'N/A')}")
         print(f"  意图类型: {result.get('intent', 'N/A')}")
+        if result.get('intents') and len(result.get('intents')) > 1:
+            print(f"  多意图: {result.get('intents')}")
         print(f"  情绪标签: {result.get('mood_tag', '正常')}")
         print(f"  过滤动作: {result.get('filter_action', 'N/A')}")
         if result.get('ticket_id'):

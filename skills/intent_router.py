@@ -1,7 +1,6 @@
 """
 意图路由Skill
-基于用户意图进行智能路由
-支持：规则匹配 + Embedding匹配 + 工具内嵌调用
+支持多意图识别（按用户提问顺序）
 """
 
 from typing import Dict, List, Any, Tuple
@@ -13,106 +12,61 @@ class IntentRoutingSkill(Skill):
     """
     意图路由Skill
     识别用户意图并路由到相应的处理Agent或工具
-    核心逻辑：
-    - 规则命中 → 直接调工具 → 返回结果
-    - 规则未命中 → Embedding匹配 → 判断是否需要工具 → 返回结果
+    支持多意图识别，按用户提问顺序返回
     """
 
     def __init__(self):
         super().__init__(
             name="intent_router",
-            description="意图路由器：根据用户输入识别意图类型，路由到相应的处理Agent",
+            description="意图路由器：识别多意图并按用户提问顺序返回",
             skill_type=SkillType.WORKFLOW,
             keywords=["意图", "路由", "识别", "分发"],
             priority=90
         )
 
-        # 意图到Agent/工具的映射
-        # need_tool: 是否需要调用工具
         self.intent_mapping = {
-            "product_info": {
-                "agent": "product_agent",
-                "tools": ["flight_search"],
-                "description": "机票预订咨询",
-                "need_tool": True
-            },
-            "price_composition": {
-                "agent": "product_agent",
-                "tools": ["price_composition"],
-                "description": "机票价格构成",
-                "need_tool": True
-            },
-            "destination_weather": {
-                "agent": "product_agent",
-                "tools": ["weather_query"],
-                "description": "目的地天气查询",
-                "need_tool": True
-            },
-            "delay_prediction": {
-                "agent": "product_agent",
-                "tools": ["delay_prediction"],
-                "description": "航班延误预测",
-                "need_tool": True
-            },
-            "price_trend": {
-                "agent": "product_agent",
-                "tools": ["price_trend"],
-                "description": "价格波动预测",
-                "need_tool": True
-            },
-            "billing": {
-                "agent": "billing_agent",
-                "tools": [],
-                "description": "账单问题",
-                "need_tool": False
-            },
-            "complaint": {
-                "agent": "complaint_agent",
-                "tools": [],
-                "description": "投诉建议",
-                "need_tool": False
-            },
-            "general_inquiry": {
-                "agent": "general_agent",
-                "tools": [],
-                "description": "一般咨询",
-                "need_tool": False
-            }
+            "product_info": {"agent": "product_agent", "tools": ["flight_search"], "description": "机票预订咨询", "need_tool": True},
+            "price_composition": {"agent": "product_agent", "tools": ["price_composition"], "description": "机票价格构成", "need_tool": True},
+            "destination_weather": {"agent": "product_agent", "tools": ["weather_query"], "description": "目的地天气查询", "need_tool": True},
+            "delay_prediction": {"agent": "product_agent", "tools": ["delay_prediction"], "description": "航班延误预测", "need_tool": True},
+            "price_trend": {"agent": "product_agent", "tools": ["price_trend"], "description": "价格波动预测", "need_tool": True},
+            "billing": {"agent": "billing_agent", "tools": [], "description": "账单问题", "need_tool": False},
+            "complaint": {"agent": "complaint_agent", "tools": [], "description": "投诉建议", "need_tool": False},
+            "general_inquiry": {"agent": "general_agent", "tools": [], "description": "一般咨询", "need_tool": False}
         }
 
     def can_handle(self, context: Dict[str, Any]) -> bool:
-        """检查是否能处理该请求"""
         return "query" in context
 
     def execute(self, context: Dict[str, Any]) -> SkillResult:
-        """
-        执行意图识别和路由
-
-        核心逻辑：
-        1. 规则匹配 → 命中则直接调工具
-        2. Embedding匹配 → 根据意图判断是否需要调工具
-        """
         try:
             query = context.get("query", "")
 
             if not query:
                 return SkillResult.error_result("Query is empty")
 
-            # 执行两阶段意图识别，返回(意图ID, 是否规则命中, 置信度)
-            intent_id, is_rule_matched, confidence = self._classify_intent(query)
+            # 执行多意图识别，返回(意图ID列表, 是否规则命中, 置信度)
+            intent_ids, is_rule_matched, confidence = self._classify_intent(query)
+            
+            # 判断是否多意图
+            is_multi_intent = len(intent_ids) > 1
 
-            # 获取路由信息
-            routing_info = self.intent_mapping.get(intent_id, self.intent_mapping["general_inquiry"])
+            # 获取第一个意图的路由信息作为主路由
+            main_intent = intent_ids[0]
+            routing_info = self.intent_mapping.get(main_intent, self.intent_mapping["general_inquiry"])
 
-            # 根据规则命中和意图类型决定是否调用工具
+            # 多意图时并行执行工具，单意图时按原有逻辑执行
             tool_results = {}
-            if routing_info.get("need_tool", False):
-                session_id = context.get("session_id")
-                tool_results = self._execute_tools(query, intent_id, routing_info, session_id)
+            if is_multi_intent:
+                tool_results = self._execute_tools_parallel(query, intent_ids, context.get("session_id"))
+            elif routing_info.get("need_tool", False):
+                tool_results = self._execute_tools(query, main_intent, routing_info, context.get("session_id"))
 
             return SkillResult.success_result(
                 data={
-                    "intent": intent_id,
+                    "intent": main_intent,
+                    "intents": intent_ids,
+                    "is_multi_intent": is_multi_intent,
                     "agent": routing_info["agent"],
                     "tools": routing_info.get("tools", []),
                     "tool_results": tool_results,
@@ -120,12 +74,7 @@ class IntentRoutingSkill(Skill):
                     "is_rule_matched": is_rule_matched,
                     "confidence": confidence
                 },
-                metadata={
-                    "intent": intent_id,
-                    "routing": routing_info,
-                    "is_rule_matched": is_rule_matched,
-                    "confidence": confidence
-                },
+                metadata={"intent": main_intent, "intents": intent_ids, "is_multi_intent": is_multi_intent},
                 next_action="route_to",
                 route_to=routing_info["agent"]
             )
@@ -133,16 +82,16 @@ class IntentRoutingSkill(Skill):
         except Exception as e:
             return SkillResult.error_result(f"Intent routing error: {str(e)}")
 
-    def _classify_intent(self, query: str) -> Tuple[str, bool, float]:
+    def _classify_intent(self, query: str) -> Tuple[List[str], bool, float]:
         """
-        两阶段意图识别
-
+        多意图识别 - 按用户提问顺序返回
+        
         Returns:
-            (意图ID, 是否规则命中, 置信度)
+            (意图ID列表, 是否规则命中, 最高置信度)
         """
         query_lower = query.lower()
+        matched_intents = []
 
-        # 阶段1: 规则匹配 - 如果命中，直接返回
         rule_intents = [
             ("price_composition", ["价格构成", "票价组成", "费用明细"]),
             ("destination_weather", ["天气", "气候", "温度", "降水"]),
@@ -154,18 +103,72 @@ class IntentRoutingSkill(Skill):
         ]
 
         for intent_id, keywords in rule_intents:
-            if any(keyword in query_lower for keyword in keywords):
-                return (intent_id, True, 0.95)
+            for keyword in keywords:
+                pos = query_lower.find(keyword)
+                if pos != -1:
+                    matched_intents.append((intent_id, 0.95, pos))
+                    break
 
-        # 阶段2: Embedding相似度匹配 - 规则未命中时
+        matched_intents.sort(key=lambda x: x[2])
+        
+        seen = set()
+        unique_intents = []
+        for item in matched_intents:
+            if item[0] not in seen:
+                seen.add(item[0])
+                unique_intents.append(item)
+
+        if unique_intents:
+            intent_ids = [item[0] for item in unique_intents]
+            return (intent_ids, True, 0.95)
+
         from skills.embedding_intent_classifier import embedding_intent_classifier
-
         result = embedding_intent_classifier.classify(query)
 
         if result["confidence"] > 0.5:
-            return (result["intent"], False, result["confidence"])
+            return ([result["intent"]], False, result["confidence"])
 
-        return ("general_inquiry", False, 0.3)
+        return (["general_inquiry"], False, 0.3)
+
+    def _execute_tools_parallel(self, query: str, intents: List[str], session_id: str = None) -> Dict[str, Any]:
+        """
+        并行执行多个意图对应的工具
+        """
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        
+        tool_results = {}
+        
+        all_tool_tasks = []
+        for intent_id in intents:
+            routing_info = self.intent_mapping.get(intent_id)
+            if routing_info and routing_info.get("need_tool", False):
+                for tool_name in routing_info.get("tools", []):
+                    params = self._parse_tool_params(query, intent_id).get(tool_name, {})
+                    all_tool_tasks.append((intent_id, tool_name, params))
+        
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            def run_tool(intent_id, tool_name, params):
+                try:
+                    result = mcp_tool_registry.execute_tool(tool_name, **params)
+                    return (intent_id, tool_name, {"success": True, "data": result})
+                except Exception as e:
+                    return (intent_id, tool_name, {"success": False, "error": str(e)})
+            
+            futures = [loop.run_in_executor(executor, run_tool, intent_id, tool_name, params) 
+                      for intent_id, tool_name, params in all_tool_tasks]
+            
+            results = loop.run_until_complete(asyncio.gather(*futures))
+            
+            for intent_id, tool_name, result in results:
+                if intent_id not in tool_results:
+                    tool_results[intent_id] = {}
+                tool_results[intent_id][tool_name] = result
+        
+        return tool_results
 
     def _execute_tools(self, query: str, intent: str, routing_info: Dict, session_id: str = None) -> Dict[str, Any]:
         """
