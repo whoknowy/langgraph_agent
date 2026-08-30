@@ -174,8 +174,13 @@ class LongTermMemory:
         hash_value = hashlib.md5(text.encode()).hexdigest()
         # 生成固定维度的向量
         embedding = []
+        # 如果目标维度大于 MD5 长度，循环复用哈希片段，避免空字符串转换报错
         for i in range(self.dimension):
-            embedding.append(float(int(hash_value[i*2:i*2+2], 16)) / 255.0)
+            start = (i * 2) % len(hash_value)
+            chunk = hash_value[start:start + 2]
+            if len(chunk) < 2:
+                chunk = (hash_value + hash_value)[start:start + 2]
+            embedding.append(float(int(chunk, 16)) / 255.0)
         return embedding
 
     def search(self, query: str, top_k: int = 3, threshold: float = 0.5, alpha: float = 0.5) -> List[Dict]:

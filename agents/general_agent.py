@@ -90,10 +90,19 @@ class GeneralAgent(BaseAgent):
         else:
             messages.append(HumanMessage(content=customer_query))
 
-        # 调用LLM
+        # 调用LLM（流式：逐 token 触发 LangChain 回调，LangGraph 原生流可实时转发）
         try:
-            response = self.llm.invoke(messages)
-            response_content = response.content
+            response_content = ""
+            streamed_ok = True
+            try:
+                for _chunk in self.llm.stream(messages):
+                    response_content += (_chunk.content or "")
+            except Exception as _stream_err:
+                print(f"综合客服流式调用失败，降级为整体调用: {_stream_err}")
+                streamed_ok = False
+            if not streamed_ok:
+                response = self.llm.invoke(messages)
+                response_content = response.content
         except Exception as e:
             print(f"综合客服调用LLM时出错: {e}")
             response_content = "抱歉，处理您的咨询时遇到系统错误，请稍后重试。"

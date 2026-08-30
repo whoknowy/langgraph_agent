@@ -74,6 +74,7 @@ class AgentState(TypedDict):
     
     # 工具执行结果
     tool_results: Optional[Dict[str, Any]]
+    tools_used: Optional[List[str]]
     
     # Agent 处理结果
     agent_response: Optional[str]
@@ -84,6 +85,16 @@ class AgentState(TypedDict):
     
     # 增强记忆
     enhanced_context: Optional[str]
+
+
+def _copy_state(state: AgentState) -> AgentState:
+    """复制节点输入状态，但不携带 messages 通道。
+
+    messages 是带 add reducer 的累加通道：input 中已包含用户消息，各节点只应
+    返回本轮增量（由 final_response_node 追加 assistant 轮）；若每个节点都把
+    整段历史原样返回，reducer 会随每个节点反复累加，造成滚雪球式重复。
+    """
+    return {k: v for k, v in state.items() if k != "messages"}
 
 
 # ========== 节点定义 ==========
@@ -105,7 +116,7 @@ def sensitive_word_filter_node(state: AgentState) -> AgentState:
     
     result = sensitive_word_filter_skill.execute(context)
     
-    new_state = state.copy()
+    new_state = _copy_state(state)
     new_state["session_id"] = session_id
     
     if result.success and result.data:
@@ -142,7 +153,7 @@ def intent_router_node(state: AgentState) -> AgentState:
     
     result = intent_routing_skill.execute(context)
     
-    new_state = state.copy()
+    new_state = _copy_state(state)
     
     if result.success and result.data:
         data = result.data
@@ -211,11 +222,10 @@ def complaint_agent_node(state: AgentState) -> AgentState:
     session_id = new_state.get("session_id")
     if session_id:
         try:
-            from memory import default_session_manager
-            from memory.enhanced_memory import long_term_memory
+            from memory.enhanced_memory import add_long_term_memory
             query = new_state.get("customer_query", "")
             response = new_state.get("agent_response", "")
-            long_term_memory.add_memory(
+            add_long_term_memory(
                 session_id=session_id,
                 memory_type="complaint",
                 content=f"用户: {query}\n回复: {response}",
@@ -258,7 +268,7 @@ def multi_intent_handler_node(state: AgentState) -> AgentState:
     if mood_tag == "dissatisfied" and filter_response:
         aggregated_response = f"{filter_response}\n\n{aggregated_response}"
     
-    new_state = state.copy()
+    new_state = _copy_state(state)
     new_state["agent_response"] = aggregated_response
     new_state["current_agent"] = "multi_intent_handler"
     new_state["tool_results"] = results
@@ -328,7 +338,8 @@ class ParallelAgentExecutor:
             "mood_tag": mood_tag,
             "filter_response": filter_response,
             "enhanced_context": enhanced_context,
-            "tool_results": {}
+            "tool_results": {},
+            "tools_used": []
         })
         
         return {"success": True, "data": result}
@@ -386,7 +397,8 @@ def _execute_agent_node(state: AgentState, agent_name: str) -> AgentState:
         "filter_action": filter_action,
         "filter_response": filter_response,
         "enhanced_context": enhanced_context,
-        "tool_results": tool_results
+        "tool_results": tool_results,
+        "tools_used": state.get("tools_used", [])
     }
     
     # 调用 Agent
@@ -394,7 +406,7 @@ def _execute_agent_node(state: AgentState, agent_name: str) -> AgentState:
     target_agent = agents.get(agent_name)
     
     if not target_agent:
-        new_state = state.copy()
+        new_state = _copy_state(state)
         new_state["agent_response"] = "抱歉，暂无法处理您的请求。"
         new_state["current_agent"] = "system"
         return new_state
@@ -409,7 +421,7 @@ def _execute_agent_node(state: AgentState, agent_name: str) -> AgentState:
     if mood_tag == "dissatisfied" and filter_response:
         response = f"{filter_response}\n\n{response}"
     
-    new_state = state.copy()
+    new_state = _copy_state(state)
     new_state["agent_response"] = response
     new_state["current_agent"] = current_agent
     
@@ -443,20 +455,20 @@ def final_response_node(state: AgentState) -> AgentState:
     if mood_tag in ["medium_risk", "high_risk"]:
         final_response += f"\n\n⚠️ 注意：此会话已被标记为{mood_tag}"
     
-    # 添加到消息历史
-    messages = state.get("messages", [])
-    messages.append({
-        "role": "user",
-        "content": state.get("customer_query", "")
-    })
-    messages.append({
-        "role": "assistant",
-        "content": final_response
-    })
-    
+    # 只返回本轮增量：input 中的用户消息已由 add reducer 累加进通道，
+    # 这里仅在缺失时补一条用户轮，避免整段历史被重复累加
+    messages_update = []
+    existing = state.get("messages") or []
+    if not any(
+        m.get("role") == "user" and m.get("content") == state.get("customer_query", "")
+        for m in existing
+    ):
+        messages_update.append({"role": "user", "content": state.get("customer_query", "")})
+    messages_update.append({"role": "assistant", "content": final_response})
+
     new_state = state.copy()
     new_state["response"] = final_response
-    new_state["messages"] = messages
+    new_state["messages"] = messages_update
     
     print(f"  - 最终响应生成完成")
     return new_state
@@ -579,7 +591,8 @@ class SkillPipelineExecutor:
         initial_state: AgentState = {
             "customer_query": query,
             "session_id": session_id,
-            "messages": []
+            "messages": [],
+            "tools_used": []
         }
         
         try:

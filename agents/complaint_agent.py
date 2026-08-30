@@ -50,54 +50,75 @@ class ComplaintAgent(BaseAgent):
         # 从会话管理器获取对话历史上下文
         conversation_context = self._get_conversation_context(session_id)
 
-        # 从投诉数据库中匹配相关信息
-        matched_info = self._match_complaint_info(customer_query)
+        # 优先：模型自主工具调用（ReAct）——按会员/投诉单查询真实投诉记录
+        try:
+            react_payload = ""
+            if conversation_context:
+                react_payload += f"对话历史上下文：\n{conversation_context}\n\n"
+            react_payload += f"客户需求：{customer_query}"
+            response_content = self._react_answer(react_payload)
+        except Exception as e:
+            print(f"投诉专家 ReAct 预处理失败: {e}")
+            response_content = ""
 
-        # 构建系统提示并增强对话上下文说明
-        base_system_prompt = f"""你是{self.name}，专门负责{self.role}。
-        你的专业领域包括：{', '.join(self.expertise)}
+        if not response_content:
+            # 降级：常规流式调用
+            matched_info = self._match_complaint_info(customer_query)
 
-        请以专业、耐心的态度处理客户投诉：
-        1. 认真倾听客户的问题和不满
-        2. 表达理解和歉意
-        3. 提供具体的解决方案和时间承诺
-        4. 如果问题复杂，说明后续处理流程
+            # 构建系统提示并增强对话上下文说明
+            base_system_prompt = f"""你是{self.name}，专门负责{self.role}。
+你的专业领域包括：{', '.join(self.expertise)}
 
-        回答要真诚、专业，体现对客户的重视。如果投诉超出你的处理权限，请说明并承诺转交给相关部门处理。"""
+请以专业、耐心的态度处理客户投诉：
+1. 认真倾听客户的问题和不满
+2. 表达理解和歉意
+3. 提供具体的解决方案和时间承诺
+4. 如果问题复杂，说明后续处理流程
 
-        system_prompt = self._enhance_system_prompt_with_context(base_system_prompt)
+回答要真诚、专业，体现对客户的重视。如果投诉超出你的处理权限，请说明并承诺转交给相关部门处理。"""
 
-        # 构建消息列表
-        messages = []
+            system_prompt = self._enhance_system_prompt_with_context(base_system_prompt)
 
-        # 添加对话历史上下文（如果有的话）
-        if conversation_context:
-            context_message = f"""对话历史上下文：
+            # 构建消息列表
+            messages = []
+
+            # 添加对话历史上下文（如果有的话）
+            if conversation_context:
+                context_message = f"""对话历史上下文：
 {conversation_context}
 
 请基于以上对话历史和当前查询，提供连贯的处理方案。"""
-            messages.append(SystemMessage(content=context_message))
+                messages.append(SystemMessage(content=context_message))
 
-        # 添加系统提示
-        messages.append(SystemMessage(content=system_prompt))
+            # 添加系统提示
+            messages.append(SystemMessage(content=system_prompt))
 
-        # 如果有匹配的投诉信息，添加到上下文中
-        if matched_info:
-            complaint_context = f"""投诉处理政策：
+            # 如果有匹配的投诉信息，添加到上下文中
+            if matched_info:
+                complaint_context = f"""投诉处理政策：
 {matched_info}
 
 当前查询：{customer_query}"""
-            messages.append(HumanMessage(content=complaint_context))
-        else:
-            messages.append(HumanMessage(content=customer_query))
+                messages.append(HumanMessage(content=complaint_context))
+            else:
+                messages.append(HumanMessage(content=customer_query))
 
-        # 调用LLM
-        try:
-            response = self.llm.invoke(messages)
-            response_content = response.content
-        except Exception as e:
-            print(f"投诉专家调用LLM时出错: {e}")
-            response_content = "抱歉，处理您的投诉时遇到系统错误，请稍后重试。"
+            # 调用LLM（流式：逐 token 触发 LangChain 回调，LangGraph 原生流可实时转发）
+            try:
+                response_content = ""
+                streamed_ok = True
+                try:
+                    for _chunk in self.llm.stream(messages):
+                        response_content += (_chunk.content or "")
+                except Exception as _stream_err:
+                    print(f"投诉专家流式调用失败，降级为整体调用: {_stream_err}")
+                    streamed_ok = False
+                if not streamed_ok:
+                    response = self.llm.invoke(messages)
+                    response_content = response.content
+            except Exception as e:
+                print(f"投诉专家调用LLM时出错: {e}")
+                response_content = "抱歉，处理您的投诉时遇到系统错误，请稍后重试。"
 
         # 添加AI回复到会话历史
         self._add_message_to_session(session_id, response_content, is_user=False)
@@ -152,3 +173,7 @@ class ComplaintAgent(BaseAgent):
                     matched_info.append(info_text)
 
         return "\n".join(matched_info) if matched_info else ""
+
+    def _react_tools(self):
+        from services.tools import query_complaint, get_order_bill
+        return [query_complaint, get_order_bill]

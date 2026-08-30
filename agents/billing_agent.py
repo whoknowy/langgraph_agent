@@ -49,54 +49,75 @@ class BillingAgent(BaseAgent):
         # 从会话管理器获取对话历史上下文
         conversation_context = self._get_conversation_context(session_id)
 
-        # 从账单数据库中匹配相关信息
-        matched_info = self._match_billing_info(customer_query)
+        # 优先：模型自主工具调用（ReAct）——按会员号/订单号从订单库查真实账单
+        try:
+            react_payload = ""
+            if conversation_context:
+                react_payload += f"对话历史上下文：\n{conversation_context}\n\n"
+            react_payload += f"客户需求：{customer_query}"
+            response_content = self._react_answer(react_payload)
+        except Exception as e:
+            print(f"账单专家 ReAct 预处理失败: {e}")
+            response_content = ""
 
-        # 构建系统提示并增强对话上下文说明
-        base_system_prompt = f"""你是{self.name}，专门负责{self.role}。
-        你的专业领域包括：{', '.join(self.expertise)}
+        if not response_content:
+            # 降级：常规流式调用（无工具，政策类问答仍可应对）
+            matched_info = self._match_billing_info(customer_query)
 
-        请根据客户的账单问题提供专业的解答：
-        1. 仔细分析客户的具体问题
-        2. 提供明确的处理流程和时间预期
-        3. 说明需要提供的相关材料
-        4. 如果问题复杂，建议联系专门的财务人员
+            # 构建系统提示并增强对话上下文说明
+            base_system_prompt = f"""你是{self.name}，专门负责{self.role}。
+你的专业领域包括：{', '.join(self.expertise)}
 
-        回答要准确、专业，涉及金额和时间的信息要具体明确。如果问题超出你的权限范围，请说明并建议转接给相关部门。"""
+请根据客户的账单问题提供专业的解答：
+1. 仔细分析客户的具体问题
+2. 提供明确的处理流程和时间预期
+3. 说明需要提供的相关材料
+4. 如果问题复杂，建议联系专门的财务人员
 
-        system_prompt = self._enhance_system_prompt_with_context(base_system_prompt)
+回答要准确、专业，涉及金额和时间的信息要具体明确。如果问题超出你的权限范围，请说明并建议转接给相关部门。"""
 
-        # 构建消息列表
-        messages = []
+            system_prompt = self._enhance_system_prompt_with_context(base_system_prompt)
 
-        # 添加对话历史上下文（如果有的话）
-        if conversation_context:
-            context_message = f"""对话历史上下文：
+            # 构建消息列表
+            messages = []
+
+            # 添加对话历史上下文（如果有的话）
+            if conversation_context:
+                context_message = f"""对话历史上下文：
 {conversation_context}
 
 请基于以上对话历史和当前查询，提供连贯的解答。"""
-            messages.append(SystemMessage(content=context_message))
+                messages.append(SystemMessage(content=context_message))
 
-        # 添加系统提示
-        messages.append(SystemMessage(content=system_prompt))
+            # 添加系统提示
+            messages.append(SystemMessage(content=system_prompt))
 
-        # 如果有匹配的账单信息，添加到上下文中
-        if matched_info:
-            billing_context = f"""账单政策信息：
+            # 如果有匹配的账单信息，添加到上下文中
+            if matched_info:
+                billing_context = f"""账单政策信息：
 {matched_info}
 
 当前查询：{customer_query}"""
-            messages.append(HumanMessage(content=billing_context))
-        else:
-            messages.append(HumanMessage(content=customer_query))
+                messages.append(HumanMessage(content=billing_context))
+            else:
+                messages.append(HumanMessage(content=customer_query))
 
-        # 调用LLM
-        try:
-            response = self.llm.invoke(messages)
-            response_content = response.content
-        except Exception as e:
-            print(f"账单专家调用LLM时出错: {e}")
-            response_content = "抱歉，处理您的账单问题时遇到系统错误，请稍后重试。"
+            # 调用LLM（流式：逐 token 触发 LangChain 回调，LangGraph 原生流可实时转发）
+            try:
+                response_content = ""
+                streamed_ok = True
+                try:
+                    for _chunk in self.llm.stream(messages):
+                        response_content += (_chunk.content or "")
+                except Exception as _stream_err:
+                    print(f"账单专家流式调用失败，降级为整体调用: {_stream_err}")
+                    streamed_ok = False
+                if not streamed_ok:
+                    response = self.llm.invoke(messages)
+                    response_content = response.content
+            except Exception as e:
+                print(f"账单专家调用LLM时出错: {e}")
+                response_content = "抱歉，处理您的账单问题时遇到系统错误，请稍后重试。"
 
         # 添加AI回复到会话历史
         self._add_message_to_session(session_id, response_content, is_user=False)
@@ -107,6 +128,10 @@ class BillingAgent(BaseAgent):
         state["tools_used"].append(f"{self.name}_processing")
 
         return state
+
+    def _react_tools(self):
+        from services.tools import get_order_bill
+        return [get_order_bill]
 
     def _match_billing_info(self, query: str) -> str:
         """匹配查询中的账单信息"""
@@ -126,7 +151,8 @@ class BillingAgent(BaseAgent):
         if not matched_info:
             for category, policies in self.billing_database.items():
                 if any(keyword in query_lower for keyword in ["退款", "发票", "支付", "账单", "价格"]):
-                    if category not in [info.split('【')[1].split('】')[0] for info in matched_info]:
+                    matched_categories = {info.split('【')[1].split('】')[0] for info in matched_info if '【' in info and '】' in info}
+                    if category not in matched_categories:
                         info_text = f"""相关服务：{category}\n"""
                         # 只显示前2项政策
                         for i, (policy, description) in enumerate(policies.items()):

@@ -15,16 +15,19 @@ from datetime import datetime, timedelta
 from .enhanced_memory import EnhancedMemoryManager, get_memory_manager, add_message as add_memory_message, get_context as get_enhanced_context, clear_memory as clear_enhanced_memory
 
 # LangChain Memory 相关导入
-from langchain.memory import BaseMemory, ConversationBufferMemory
-from langchain.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_classic.memory import ConversationBufferMemory
 
-# 存储后端导入
-from langchain.chat_message_histories import (
+# 存储后端导入（采用兼容办法，不可用的 MongoDB 导入不会阻塞默认内存后端）
+from langchain_community.chat_message_histories import (
     RedisChatMessageHistory,
-    MongoDBChatMessageHistory,
     PostgresChatMessageHistory,
     FileChatMessageHistory
 )
+try:
+    from langchain_community.chat_message_histories import MongoDBChatMessageHistory
+except ImportError:
+    MongoDBChatMessageHistory = None
 
 class LangChainSessionManager:
     """

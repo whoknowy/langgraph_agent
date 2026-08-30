@@ -5,8 +5,22 @@
 
 from typing import Dict, List, Any, Tuple
 from skills.skill_base import Skill, SkillType, SkillResult
-from tools.mcp_tools import mcp_tool_registry
+# 工具执行已切换到服务层（本地 SQLite + 真实天气），作为规则兜底数据源
+from services import tools as service_tools
 from memory import get_enhanced_context
+
+
+def _execute_service_tool(tool_name: str, params: Dict) -> Any:
+    """执行服务层工具（services.tools 的 @tool 实例），返回解析后的 dict。"""
+    import json
+    tool = service_tools.tools_by_name().get(tool_name)
+    if not tool:
+        return {"error": f"Tool not found: {tool_name}"}
+    raw = tool.invoke(params or {})
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {"raw": raw}
 
 class IntentRoutingSkill(Skill):
     """
@@ -25,13 +39,13 @@ class IntentRoutingSkill(Skill):
         )
 
         self.intent_mapping = {
-            "product_info": {"agent": "product_agent", "tools": ["flight_search"], "description": "机票预订咨询", "need_tool": True},
-            "price_composition": {"agent": "product_agent", "tools": ["price_composition"], "description": "机票价格构成", "need_tool": True},
-            "destination_weather": {"agent": "product_agent", "tools": ["weather_query"], "description": "目的地天气查询", "need_tool": True},
-            "delay_prediction": {"agent": "product_agent", "tools": ["delay_prediction"], "description": "航班延误预测", "need_tool": True},
-            "price_trend": {"agent": "product_agent", "tools": ["price_trend"], "description": "价格波动预测", "need_tool": True},
-            "billing": {"agent": "billing_agent", "tools": [], "description": "账单问题", "need_tool": False},
-            "complaint": {"agent": "complaint_agent", "tools": [], "description": "投诉建议", "need_tool": False},
+            "product_info": {"agent": "product_agent", "tools": ["search_flights"], "description": "机票预订咨询", "need_tool": True},
+            "price_composition": {"agent": "product_agent", "tools": ["get_flight_price_detail"], "description": "机票价格构成", "need_tool": True},
+            "destination_weather": {"agent": "product_agent", "tools": ["get_weather"], "description": "目的地天气查询", "need_tool": True},
+            "delay_prediction": {"agent": "product_agent", "tools": ["get_delay_prediction"], "description": "航班延误预测", "need_tool": True},
+            "price_trend": {"agent": "product_agent", "tools": ["get_price_trend"], "description": "价格波动预测", "need_tool": True},
+            "billing": {"agent": "billing_agent", "tools": ["get_order_bill"], "description": "账单问题", "need_tool": True},
+            "complaint": {"agent": "complaint_agent", "tools": ["query_complaint"], "description": "投诉建议", "need_tool": True},
             "general_inquiry": {"agent": "general_agent", "tools": [], "description": "一般咨询", "need_tool": False}
         }
 
@@ -153,7 +167,7 @@ class IntentRoutingSkill(Skill):
             
             def run_tool(intent_id, tool_name, params):
                 try:
-                    result = mcp_tool_registry.execute_tool(tool_name, **params)
+                    result = _execute_service_tool(tool_name, params)
                     return (intent_id, tool_name, {"success": True, "data": result})
                 except Exception as e:
                     return (intent_id, tool_name, {"success": False, "error": str(e)})
@@ -195,7 +209,7 @@ class IntentRoutingSkill(Skill):
         # 执行工具
         for tool_name in tools:
             try:
-                result = mcp_tool_registry.execute_tool(tool_name, **tool_params.get(tool_name, {}))
+                result = _execute_service_tool(tool_name, tool_params.get(tool_name, {}))
                 tool_results[tool_name] = result
             except Exception as e:
                 tool_results[tool_name] = {
@@ -211,15 +225,19 @@ class IntentRoutingSkill(Skill):
         tool_params = {}
 
         if intent == "product_info":
-            tool_params["flight_search"] = self._parse_flight_params(query)
+            tool_params["search_flights"] = self._parse_flight_params(query)
         elif intent == "destination_weather":
-            tool_params["weather_query"] = self._parse_weather_params(query)
+            tool_params["get_weather"] = self._parse_weather_params(query)
         elif intent == "delay_prediction":
-            tool_params["delay_prediction"] = self._parse_delay_params(query)
+            tool_params["get_delay_prediction"] = self._parse_delay_params(query)
         elif intent == "price_trend":
-            tool_params["price_trend"] = self._parse_price_trend_params(query)
+            tool_params["get_price_trend"] = self._parse_price_trend_params(query)
         elif intent == "price_composition":
-            tool_params["price_composition"] = {}
+            tool_params["get_flight_price_detail"] = self._parse_price_detail_params(query)
+        elif intent == "billing":
+            tool_params["get_order_bill"] = self._parse_order_params(query)
+        elif intent == "complaint":
+            tool_params["query_complaint"] = self._parse_complaint_params(query)
 
         return tool_params
 
@@ -273,12 +291,49 @@ class IntentRoutingSkill(Skill):
         return params
 
     def _parse_price_trend_params(self, query: str) -> Dict[str, str]:
-        """解析价格趋势参数"""
+        """解析价格趋势参数（出发/目的城市）"""
         params = {}
-        if "-" in query:
-            parts = query.split("-")
-            if len(parts) >= 2:
-                params["route"] = f"{parts[0].split()[-1]}-{parts[1].split()[0]}"
+        cities = ["北京", "上海", "广州", "深圳", "成都", "杭州", "西安", "厦门", "南京", "武汉"]
+        found = [c for c in cities if c in query]
+        if len(found) >= 2:
+            params["from_city"] = found[0]
+            params["to_city"] = found[1]
+        return params
+
+    def _parse_price_detail_params(self, query: str) -> Dict[str, str]:
+        """解析价格构成参数（航班号 + 日期）"""
+        import re
+        params = {}
+        m = re.search(r"\b([A-Z]{1,2}\d{3,4})\b", query.upper())
+        if m:
+            params["flight_no"] = m.group(1)
+        dates = re.findall(r"\d{4}[-/]\d{2}[-/]\d{2}", query)
+        if dates:
+            params["date"] = dates[0].replace("/", "-")
+        return params
+
+    def _parse_order_params(self, query: str) -> Dict[str, str]:
+        """解析账单参数（会员号 Mxxxx / 订单号 Oxxxxxxx）"""
+        import re
+        params = {}
+        mem = re.search(r"\b(M\d{3,5})\b", query.upper())
+        if mem:
+            params["member_id"] = mem.group(1)
+        order = re.search(r"\b(O\d{5,8})\b", query.upper())
+        if order:
+            params["order_no"] = order.group(1)
+        return params
+
+    def _parse_complaint_params(self, query: str) -> Dict[str, str]:
+        """解析投诉参数（投诉单号 Txxxx / 会员号 Mxxxx）"""
+        import re
+        params = {}
+        ticket = re.search(r"\b(T\d{3,5})\b", query.upper())
+        if ticket:
+            params["ticket_no"] = ticket.group(1)
+        mem = re.search(r"\b(M\d{3,5})\b", query.upper())
+        if mem:
+            params["member_id"] = mem.group(1)
         return params
 
 
@@ -352,7 +407,8 @@ class AgentDispatchSkill(Skill):
                 "mood_tag": mood_tag,
                 "filter_action": filter_result.get("action", ""),
                 "filter_response": filter_result.get("response", ""),
-                "enhanced_context": enhanced_context
+                "enhanced_context": enhanced_context,
+                "tools_used": []
             }
 
             # 添加工具执行结果

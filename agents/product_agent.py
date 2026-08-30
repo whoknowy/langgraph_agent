@@ -109,6 +109,16 @@ class ProductAgent(BaseAgent):
             }
         }
 
+    def _react_tools(self):
+        from services.tools import (
+            search_flights,
+            get_price_trend,
+            get_delay_prediction,
+            get_weather,
+            get_flight_price_detail,
+        )
+        return [search_flights, get_price_trend, get_delay_prediction, get_weather, get_flight_price_detail]
+
     def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """处理机票相关查询"""
         customer_query = state["customer_query"]
@@ -168,13 +178,34 @@ class ProductAgent(BaseAgent):
         else:
             messages.append(HumanMessage(content=customer_query))
 
-        # 调用LLM
+        # 优先：模型自主工具调用（ReAct）——航班/价格/趋势/延误/天气全部走工具查真数据
         try:
-            response = self.llm.invoke(messages)
-            response_content = response.content
+            react_payload = ""
+            if conversation_context:
+                react_payload += f"对话历史上下文：\n{conversation_context}\n\n"
+            react_payload += f"客户需求：{customer_query}"
+            response_content = self._react_answer(react_payload)
         except Exception as e:
-            print(f"机票专家调用LLM时出错: {e}")
-            response_content = "抱歉，处理您的机票查询时遇到技术问题，请稍后重试。"
+            print(f"机票专家 ReAct 预处理失败: {e}")
+            response_content = ""
+
+        if not response_content:
+            # 降级：常规流式调用（无工具，仅凭提示词与本地匹配信息作答）
+            try:
+                response_content = ""
+                streamed_ok = True
+                try:
+                    for _chunk in self.llm.stream(messages):
+                        response_content += (_chunk.content or "")
+                except Exception as _stream_err:
+                    print(f"机票专家流式调用失败，降级为整体调用: {_stream_err}")
+                    streamed_ok = False
+                if not streamed_ok:
+                    response = self.llm.invoke(messages)
+                    response_content = response.content
+            except Exception as e:
+                print(f"机票专家调用LLM时出错: {e}")
+                response_content = "抱歉，处理您的机票查询时遇到技术问题，请稍后重试。"
 
         # 添加AI回复到会话历史
         self._add_message_to_session(session_id, response_content, is_user=False)
