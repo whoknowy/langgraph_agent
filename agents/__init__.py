@@ -7,6 +7,7 @@ from .product_agent import ProductAgent
 from .billing_agent import BillingAgent
 from .complaint_agent import ComplaintAgent
 from .general_agent import GeneralAgent
+from .trip_planner_agent import TripPlannerAgent
 
 # 输入守卫依赖（敏感词词库与 AC 自动机）
 from .sensitive_words import SensitivityKnowledgeBase, SensitivityLevel, sensitivity_knowledge_base
@@ -45,6 +46,7 @@ def initialize_agents() -> dict:
             "billing_agent": BillingAgent(),
             "complaint_agent": ComplaintAgent(),
             "general_agent": GeneralAgent(),
+            "trip_planner_agent": TripPlannerAgent(),
         }
         for agent in agents.values():
             agent.set_llm(llm)
@@ -59,6 +61,7 @@ __all__ = [
     "BillingAgent",
     "ComplaintAgent",
     "GeneralAgent",
+    "TripPlannerAgent",
     "initialize_agents",
     "create_llm",
 

@@ -9,7 +9,7 @@
       ↓ 放行
     intent_classifier（单次 LLM 分类，4 选 1）
       ↓ 条件路由
-    product_agent / billing_agent / complaint_agent / general_agent
+    product_agent / billing_agent / complaint_agent / general_agent / trip_planner_agent
       ↓
     final_response → END
 
@@ -116,6 +116,7 @@ def intent_classifier_node(state: AgentState) -> AgentState:
         "billing": "billing_agent",
         "complaint": "complaint_agent",
         "general": "general_agent",
+        "trip_planner": "trip_planner_agent",
     }
     target = agent_map.get(result["agent"], "general_agent")
 
@@ -177,7 +178,12 @@ def general_agent_node(state: AgentState) -> AgentState:
     return _execute_agent_node(state, "general_agent")
 
 
-AGENT_NODES = ("product_agent", "billing_agent", "complaint_agent", "general_agent")
+def trip_planner_agent_node(state: AgentState) -> AgentState:
+    print("[节点] 旅行规划师")
+    return _execute_agent_node(state, "trip_planner_agent")
+
+
+AGENT_NODES = ("product_agent", "billing_agent", "complaint_agent", "general_agent", "trip_planner_agent")
 
 
 def final_response_node(state: AgentState) -> AgentState:
@@ -229,6 +235,7 @@ def build_workflow():
     graph.add_node("billing_agent", billing_agent_node)
     graph.add_node("complaint_agent", complaint_agent_node)
     graph.add_node("general_agent", general_agent_node)
+    graph.add_node("trip_planner_agent", trip_planner_agent_node)
     graph.add_node("final_response", final_response_node)
 
     graph.set_entry_point("sensitive_guard")

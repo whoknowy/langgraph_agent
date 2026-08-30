@@ -213,6 +213,14 @@ no_leak = "O00" not in t3  # M1001 的真实订单号未泄露
 results.append(check("15.越权防护: 查他人订单被拒绝且无数据泄露", refusal and no_leak,
                      f"| 工具={[x for x in tools3]} | 回答头: {t3[:70]}"))
 
+# ---- 16. 行程规划（旅行规划师） ----
+t, tools, _ = stream_chat("帮我规划一个3天2晚的成都行程，我从北京出发")
+tnames = {x["name"] for x in tools}
+results.append(check("16.行程规划: 旅行规划师+真实航班天气+结构化输出",
+                     ("get_weather" in tnames and "search_flights" in tnames)
+                     and ("行程" in t) and ("|" in t or "表格" in t),
+                     f"| 工具={sorted(tnames)} | 含表格={'|' in t}"))
+
 print()
 print(f"=== 通过 {sum(results)}/{len(results)} ===")
 sys.exit(0 if all(results) else 1)

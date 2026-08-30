@@ -1215,6 +1215,38 @@
             flex: none;
         }
 
+        /* ===== Markdown 表格（智能体航班/价格列表）===== */
+        .message-content .message-body table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 8px 0 12px;
+            font-size: 12.5px;
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+            display: block;
+            overflow-x: auto;
+        }
+        .message-content .message-body th,
+        .message-content .message-body td {
+            padding: 7px 10px;
+            border-bottom: 1px solid var(--border);
+            border-right: 1px solid var(--border);
+            text-align: left;
+            white-space: nowrap;
+        }
+        .message-content .message-body th:last-child,
+        .message-content .message-body td:last-child { border-right: none; }
+        .message-content .message-body th {
+            background: #f0f4ff;
+            color: #1e40af;
+            font-weight: 600;
+        }
+        .message-content .message-body tbody tr:nth-child(even) { background: #fafbff; }
+        .message-content .message-body tbody tr:hover { background: #eef2ff; }
+        .message-content .message-body table caption { caption-side: top; text-align: left; font-weight: 600; padding: 4px 0; }
+
         @keyframes toolSpin {
             to { transform: rotate(360deg); }
         }
