@@ -499,8 +499,13 @@ def book_flight(member_id: str, flight_no: str, flight_date: str, cabin: str, pa
             "message": f"订单 {order_no} 已创建（待支付），金额 {quote['total_amount']} 元"}
 
 
-def _transition_order(order_no: str, member_id: str, from_status: str, to_status: str) -> dict:
-    """订单状态流转（校验归属与前置状态）。"""
+def _transition_order(order_no: str, member_id: str, from_status, to_status: str) -> dict:
+    """订单状态流转（校验归属与前置状态）。
+
+    from_status 可传 str 或 tuple；进入「退票中」时自动把来源状态记入 prev_status，
+    供管理端驳回后恢复（改签单驳回应回到「已改签」而不是「已出票」）。
+    """
+    from_list = (from_status,) if isinstance(from_status, str) else tuple(from_status)
     conn = _conn()
     r = conn.execute("SELECT member_id, status FROM orders WHERE order_no = ?",
                      ((order_no or "").strip().upper(),)).fetchone()
@@ -510,11 +515,15 @@ def _transition_order(order_no: str, member_id: str, from_status: str, to_status
     if member_id and r["member_id"] != member_id:
         conn.close()
         return {"error": "订单不属于当前登录会员"}
-    if r["status"] != from_status:
+    if r["status"] not in from_list:
         conn.close()
-        return {"error": f"订单状态为「{r['status']}」，无法执行该操作（需为「{from_status}」）"}
+        return {"error": f"订单状态为「{r['status']}」，无法执行该操作（需为「{'/'.join(from_list)}」）"}
     order_no = order_no.strip().upper()
-    conn.execute("UPDATE orders SET status = ? WHERE order_no = ?", (to_status, order_no))
+    if to_status == "退票中":
+        conn.execute("UPDATE orders SET status = ?, prev_status = ? WHERE order_no = ?",
+                     (to_status, r["status"], order_no))
+    else:
+        conn.execute("UPDATE orders SET status = ? WHERE order_no = ?", (to_status, order_no))
     conn.commit()
     conn.close()
     return {"success": True, "order_no": order_no.strip().upper(), "status": to_status,
@@ -527,8 +536,8 @@ def pay_order(order_no: str, member_id: str = None) -> dict:
 
 
 def refund_order(order_no: str, member_id: str = None) -> dict:
-    """特殊退票（非自愿：延误/取消等）：已出票 → 退票中，进入管理端审批队列。"""
-    return _transition_order(order_no, member_id, "已出票", "退票中")
+    """特殊退票（非自愿：延误/取消等）：已出票/已改签 → 退票中，进入管理端审批队列。"""
+    return _transition_order(order_no, member_id, ("已出票", "已改签"), "退票中")
 
 
 # ------------------------------------------------ 自愿退票（规则费率，即时退款）
@@ -570,8 +579,8 @@ def refund_quote(order_no: str, member_id: str = None) -> dict:
         return {"error": f"订单不存在：{order_no}"}
     if member_id and security.normalize(member_id) != security.normalize(r["member_id"]):
         return {"error": "无权限：只能退登录会员本人的订单"}
-    if r["status"] != "已出票":
-        return {"error": f"订单状态为「{r['status']}」，只有「已出票」的订单可以退票"}
+    if r["status"] not in ("已出票", "已改签"):
+        return {"error": f"订单状态为「{r['status']}」，只有「已出票/已改签」的订单可以退票"}
     if depart is None:
         return {"error": "订单缺少航班起飞时间，无法计算退款"}
 

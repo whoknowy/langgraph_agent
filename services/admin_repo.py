@@ -110,18 +110,24 @@ def approve_refund(order_no: str, refund_amount: int = None, admin_note: str = "
 
 
 def reject_refund(order_no: str, admin_note: str = "") -> dict:
-    """驳回退票：退票中 → 已出票（附驳回理由）。"""
-    from services import flight_repo
-    result = flight_repo._transition_order(order_no, None, "退票中", "已出票")
-    if result.get("error"):
-        return result
+    """驳回退票：退票中 → 恢复进入审批前的状态（改签单回到「已改签」，其余回「已出票」）。"""
+    order_no_n = security_normalize(order_no)
     conn = _conn()
-    conn.execute("UPDATE orders SET admin_note = ? WHERE order_no = ?",
-                 ("驳回退票：" + (admin_note or "").strip(), security_normalize(order_no)))
+    r = conn.execute("SELECT status, prev_status FROM orders WHERE order_no = ?",
+                     (order_no_n,)).fetchone()
+    if not r:
+        conn.close()
+        return {"error": f"订单不存在：{order_no}"}
+    if r["status"] != "退票中":
+        conn.close()
+        return {"error": f"订单状态为「{r['status']}」，只有「退票中」的订单可以驳回"}
+    restore = r["prev_status"] or "已出票"
+    conn.execute("UPDATE orders SET status = ?, admin_note = ? WHERE order_no = ?",
+                 (restore, "驳回退票：" + (admin_note or "").strip(), order_no_n))
     conn.commit()
     conn.close()
-    return {"success": True, "order_no": security_normalize(order_no), "status": "已出票",
-            "message": f"订单 {security_normalize(order_no)} 退票申请已驳回"}
+    return {"success": True, "order_no": order_no_n, "status": restore,
+            "message": f"订单 {order_no_n} 退票申请已驳回，恢复为「{restore}」"}
 
 
 def security_normalize(v):

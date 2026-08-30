@@ -212,6 +212,21 @@ d, code = req(member_op, "POST", "/api/change", {"order_no": fly_order, "new_fli
                                                  "new_date": new_date, "new_cabin": "经济"})
 results.append(check("15c.已使用订单改签被状态机拒绝", code == 400))
 
+# ---- 改签后的票可退（自愿即时退 + 特殊驳回恢复已改签） ----
+d, code = req(member_op, "POST", "/api/refund", {"order_no": chg_order, "refund_type": "special"})
+results.append(check("16a.改签单特殊退票进入审批(退票中)", code is None and d.get("status") == "退票中"))
+d, code = req(admin_op, "POST", "/admin/api/refunds/reject", {"order_no": chg_order, "admin_note": "证据不足"})
+results.append(check("16b.驳回后恢复「已改签」而非已出票", code is None and d.get("status") == "已改签",
+                     f"| 恢复为={d.get('status')}"))
+quote_c, code = req(member_op, "GET", "/api/refund_quote?order_no=" + chg_order)
+results.append(check("16c.改签单自愿退票可报价", code is None and quote_c.get("predict_amount", 0) > 0,
+                     f"| 票面={quote_c.get('amount')} 手续费={quote_c.get('fee')} 档位={quote_c.get('fee_tier')}"))
+predict = quote_c.get("predict_amount")
+d, code = req(member_op, "POST", "/api/refund", {"order_no": chg_order, "refund_type": "voluntary"})
+results.append(check("16d.改签单自愿退票即时退款", code is None and d.get("status") == "已退款"
+                     and d.get("refund_amount") == predict,
+                     f"| 到账={d.get('refund_amount')} 预计={predict}"))
+
 # ---- 越权：会员会话访问管理接口 ----
 d, code = req(member_op, "GET", "/admin/api/stats")
 results.append(check("13.会员会话访问管理接口应401", code == 401))

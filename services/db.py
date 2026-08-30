@@ -139,6 +139,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "orders", "refund_reason", "refund_reason TEXT")
     _ensure_column(conn, "orders", "admin_note", "admin_note TEXT")
     _ensure_column(conn, "orders", "passengers", "passengers INTEGER DEFAULT 1")
+    _ensure_column(conn, "orders", "prev_status", "prev_status TEXT")
     _ensure_column(conn, "complaints", "reply", "reply TEXT")
     # 种子订单未记录人数（金额即单人票价），统一按1人回填
     conn.execute("UPDATE orders SET passengers = 1 WHERE passengers IS NULL")
