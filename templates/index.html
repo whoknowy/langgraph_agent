@@ -1245,6 +1245,7 @@
         .member-logout:hover { color: #ef4444; border-color: #ef4444; }
 
         .login-overlay { position: fixed; inset: 0; z-index: 900; display: flex; align-items: center; justify-content: center; }
+        .login-overlay[hidden] { display: none; }
         .login-backdrop { position: absolute; inset: 0; background: rgba(15, 23, 42, .45); backdrop-filter: blur(3px); }
         .login-panel {
             position: relative; width: 360px; max-width: calc(100vw - 40px); background: #fff;
@@ -1300,6 +1301,7 @@
 
         /* ============ 我的数据面板 ============ */
         .my-data-modal { position: fixed; inset: 0; z-index: 600; display: flex; align-items: center; justify-content: center; }
+        .my-data-modal[hidden] { display: none; }
         .my-data-panel {
             position: relative; width: 720px; max-width: calc(100vw - 40px); max-height: 82vh; overflow: auto;
             background: #fff; border-radius: var(--radius-lg); padding: 20px 22px; box-shadow: 0 20px 60px rgba(0,0,0,.25);
@@ -2394,6 +2396,8 @@
                     + '</div>';
                 chatContainer.appendChild(card);
                 fillBookingCard(card, action);
+                card.querySelector('[data-act="ok"]').onclick = function () { confirmBooking(card, action); };
+                card.querySelector('[data-act="cancel"]').onclick = function () { cancelConfirmCard(card, '已取消本次订票。'); };
             } else if (action.type === 'refund') {
                 card.innerHTML =
                     '<div class="confirm-card-title">↩️ 退票确认</div>'

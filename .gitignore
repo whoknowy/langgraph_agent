@@ -396,3 +396,4 @@ data/
 *.log
 .langgraph_api/
 _tmp_*.json
+gui-test-screenshots/
