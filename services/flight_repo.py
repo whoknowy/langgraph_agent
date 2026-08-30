@@ -8,7 +8,7 @@
 import sqlite3
 from datetime import date, timedelta
 
-from services import db
+from services import db, security
 from services.db_seed import HORIZON_DAYS
 
 
@@ -255,10 +255,26 @@ def get_flight_price_detail(flight_no: str, date_str: str) -> dict:
 # ---------------------------------------------------------------- 订单/账单
 
 def get_order_bill(member_id: str = None, order_no: str = None) -> dict:
-    """按会员/订单号查账单（orders × flights × airlines）。"""
+    """按会员/订单号查账单（orders × flights × airlines）。
+
+    硬校验：member_id 或订单归属必须与登录身份一致（防 LLM 越权传参）。
+    """
     if not member_id and not order_no:
         return {"error": "需要提供会员号或订单号"}
+    denied = security.enforce_owner(member_id, action="查询")
+    if denied:
+        return denied
     conn = _conn()
+    if order_no and not security.normalize(member_id):
+        row = conn.execute("SELECT member_id FROM orders WHERE order_no = ?",
+                           (security.normalize(order_no),)).fetchone()
+        conn.close()
+        if not row:
+            return {"error": f"订单不存在：{order_no}"}
+        denied = security.enforce_owner(row["member_id"], action="查询")
+        if denied:
+            return denied
+        conn = _conn()
     sql = (
         "SELECT o.order_no, o.member_id, o.flight_no, o.flight_date, o.cabin, o.amount, "
         "o.status, o.created_at, a.name_cn AS airline, "
@@ -299,7 +315,21 @@ def get_order_bill(member_id: str = None, order_no: str = None) -> dict:
 # ---------------------------------------------------------------- 投诉
 
 def query_complaints(member_id: str = None, ticket_no: str = None) -> dict:
+    """查询投诉记录。硬校验：只能查登录会员本人的投诉。"""
+    denied = security.enforce_owner(member_id, action="查询")
+    if denied:
+        return denied
     conn = _conn()
+    if ticket_no and not security.normalize(member_id):
+        row = conn.execute("SELECT member_id FROM complaints WHERE ticket_no = ?",
+                           (security.normalize(ticket_no),)).fetchone()
+        conn.close()
+        if not row:
+            return {"error": "未找到相关投诉记录"}
+        denied = security.enforce_owner(row["member_id"], action="查询")
+        if denied:
+            return denied
+        conn = _conn()
     sql = "SELECT * FROM complaints WHERE 1=1"
     params = []
     if member_id:
@@ -322,7 +352,19 @@ def create_complaint(member_id: str = None, order_no: str = None, content: str =
     """
     if not content or not str(content).strip():
         return {"error": "投诉内容不能为空"}
-    if not member_id and not order_no:
+
+    # 硬校验：投诉只能登记在登录会员名下；未指明时默认取登录身份
+    login_id = security.get_current_member()
+    if not login_id:
+        return {"error": "未登录：请先登录会员账号后再登记投诉"}
+    if member_id:
+        denied = security.enforce_owner(member_id, action="登记")
+        if denied:
+            return denied
+    else:
+        member_id = login_id
+
+    if not order_no and not member_id:
         return {"error": "需要提供会员号（M开头）或订单号（O开头）之一才能登记投诉"}
 
     conn = _conn()
@@ -336,8 +378,9 @@ def create_complaint(member_id: str = None, order_no: str = None, content: str =
         if not row:
             conn.close()
             return {"error": f"订单号 {order_no} 不存在"}
-        if not member_id:
-            member_id = row["member_id"]
+        if security.normalize(row["member_id"]) != security.normalize(member_id):
+            conn.close()
+            return {"error": f"无权限：订单 {order_no} 不属于登录会员（{security.get_current_member()}）"}
 
     max_row = conn.execute(
         "SELECT MAX(CAST(SUBSTR(ticket_no, 2) AS INTEGER)) AS m FROM complaints WHERE ticket_no LIKE 'T%'"
@@ -430,6 +473,9 @@ def book_flight(member_id: str, flight_no: str, flight_date: str, cabin: str, pa
     """创建订单（状态"待支付"）。member_id 必须为已登录会员。"""
     if not member_id:
         return {"error": "需要登录会员身份才能订票"}
+    denied = security.enforce_owner(member_id, action="订票")
+    if denied:
+        return denied
     quote = booking_quote(flight_no, flight_date, cabin, passengers)
     if quote.get("error"):
         return quote

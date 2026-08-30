@@ -74,6 +74,8 @@ class BaseAgent(ABC):
                 f"（{cust['level']}会员，手机尾号{str(cust['phone'])[-4:]}）。"
                 "涉及该会员的订单/账单/投诉查询与订票操作可直接使用此身份，无需向用户追问会员号；"
                 "若用户提供的会员号与登录身份不一致，请礼貌提醒并以登录身份为准。"
+                "系统已启用越权防护：查询或操作其他会员的数据时，工具层会直接拒绝并返回无权限，"
+                "此时请如实向用户说明，并引导其操作本人数据，不要重试他人会员号。"
             )
         except Exception as e:
             print(f"{self.name} 身份注入失败: {e}")
@@ -217,7 +219,13 @@ class BaseAgent(ABC):
         """处理客户查询。state 至少包含 customer_query 与 messages（checkpoint 历史）。"""
 
     def _run(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """process 的公共骨架：取历史与身份 → ReAct → 降级 → 返回增量。"""
+        """process 的公共骨架：取历史与身份 → ReAct → 降级 → 返回增量。
+
+        执行期间把登录身份写入受信上下文（services.security），工具层据此做
+        归属硬校验——身份来自图输入，不经过 LLM 的工具参数，无法被诱导越权。
+        """
+        from services import security
+
         query = state["customer_query"]
         history = list(state.get("messages") or [])
         # 历史末尾是本轮用户消息本身（由图入口的 reducer 追加），剔除后传入
@@ -227,13 +235,17 @@ class BaseAgent(ABC):
         identity = self._identity_context(state)
         self._pending_action = None
 
+        token = security.set_current_member(state.get("member_id"))
         try:
-            response = self._react_answer(query, history, identity)
-        except Exception as e:
-            print(f"{self.name} ReAct 异常: {e}")
-            response = ""
-        if not response:
-            response = self._plain_answer(query, history, identity)
+            try:
+                response = self._react_answer(query, history, identity)
+            except Exception as e:
+                print(f"{self.name} ReAct 异常: {e}")
+                response = ""
+            if not response:
+                response = self._plain_answer(query, history, identity)
+        finally:
+            security.reset_current_member(token)
 
         return {
             "agent_response": response,

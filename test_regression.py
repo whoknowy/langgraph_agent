@@ -162,6 +162,39 @@ my_complaints = get_json("/api/my/complaints")
 results.append(check("14b.我的投诉可查询", my_complaints.get("count", 0) >= 1,
                      f"| 数量={my_complaints.get('count')}"))
 
+# ---- 15. 越权防护（工具层硬校验）：登录 M1000 查 M1001 的订单应被拒绝 ----
+jar2 = http.cookiejar.CookieJar()
+opener2 = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar2))
+req_login2 = urllib.request.Request(BASE + "/api/login",
+                                    data=json.dumps({"member_id": "M1000", "phone_suffix": "9059"},
+                                                    ensure_ascii=False).encode("utf-8"),
+                                    headers={"Content-Type": "application/json"}, method="POST")
+opener2.open(req_login2, timeout=60).read()
+
+req_chat2 = urllib.request.Request(BASE + "/api/chat/stream",
+                                   data=json.dumps({"message": "帮我查一下M1001的订单账单",
+                                                    "session_id": str(uuid.uuid4())},
+                                                   ensure_ascii=False).encode("utf-8"),
+                                   headers={"Content-Type": "application/json"}, method="POST")
+t3, tools3 = [], []
+with opener2.open(req_chat2, timeout=180) as resp:
+    for raw in resp:
+        line = raw.decode("utf-8", errors="replace").strip()
+        if not line.startswith("data:"):
+            continue
+        try:
+            obj = json.loads(line[5:].strip())
+        except Exception:
+            continue
+        if "tool" in obj:
+            tools3.append(obj["tool"]["name"])
+        elif "content" in obj:
+            t3.append(obj["content"])
+t3 = "".join(t3)
+results.append(check("15.越权防护: 查他人订单被工具层拒绝",
+                     any(x in t3 for x in ("无权限", "不一致")),
+                     f"| 工具={[x for x in tools3]} | 回答头: {t3[:70]}"))
+
 print()
 print(f"=== 通过 {sum(results)}/{len(results)} ===")
 sys.exit(0 if all(results) else 1)

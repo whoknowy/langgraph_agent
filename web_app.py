@@ -36,6 +36,26 @@ app.secret_key = os.getenv("FLASK_SECRET_KEY", "your-secret-key-here")
 app.config['SESSION_TYPE'] = 'filesystem'
 
 
+# --- 工具层硬安全：请求期间把登录身份绑定到受信上下文（供仓库层校验归属） ---
+
+@app.before_request
+def _bind_member_security_context():
+    from flask import g
+    from services import security
+    member = session.get('member')
+    if member:
+        g._member_security_token = security.set_current_member(member.get('member_id'))
+
+
+@app.teardown_request
+def _unbind_member_security_context(exc):
+    from flask import g
+    from services import security
+    token = g.pop('_member_security_token', None)
+    if token is not None:
+        security.reset_current_member(token)
+
+
 # --- Flask session 内的本地对话占位（主页模板可能使用）---
 
 def _current_member() -> Dict[str, Any]:
