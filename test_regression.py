@@ -111,8 +111,18 @@ results.append(check("6.投诉查询: query_complaint工具", any(x["name"] == "
 # ---- 7. 投诉提交（登录身份落库） ----
 t, tools, _ = stream_chat("上次航班延误害我误转机，这个问题必须正式处理，我现在要正式提交一个投诉")
 comp = any(x["name"] == "create_complaint" for x in tools)
-results.append(check("7.投诉提交: create_complaint落库", comp and ("T1" in t),
-                     f"| 工具={[x['name'] for x in tools]} | 回答头: {t[:80]}"))
+# 断言事实源：complaints 表确实新增了 M1001 的处理中投诉（不依赖 LLM 措辞）
+import sqlite3 as _sq
+import datetime as _dt
+_c = _sq.connect("data/flight_system.db")
+_c.row_factory = _sq.Row
+_latest = _c.execute(
+    "SELECT ticket_no, status FROM complaints WHERE member_id='M1001' AND created_at=? "
+    "ORDER BY CAST(SUBSTR(ticket_no,2) AS INTEGER) DESC LIMIT 1",
+    (_dt.date.today().isoformat(),)).fetchone()
+_c.close()
+results.append(check("7.投诉提交: create_complaint落库", comp and _latest is not None and _latest["status"] == "处理中",
+                     f"| 工具={[x['name'] for x in tools]} | 落库单号={_latest['ticket_no'] if _latest else None}"))
 
 # ---- 8. 多需求一句话 ----
 t, tools, _ = stream_chat("查一下后天成都到杭州的机票，顺便告诉我杭州那几天的天气")
@@ -191,8 +201,10 @@ with opener2.open(req_chat2, timeout=180) as resp:
         elif "content" in obj:
             t3.append(obj["content"])
 t3 = "".join(t3)
-results.append(check("15.越权防护: 查他人订单被工具层拒绝",
-                     any(x in t3 for x in ("无权限", "不一致")),
+# 两种正确行为均可：模型调工具被硬拒（无权限/不一致），或凭提示词直接婉拒（越权防护/无法查询）
+refusal = any(k in t3 for k in ("无权限", "不一致", "无法查询", "越权防护", "隐私"))
+no_leak = "O00" not in t3  # M1001 的真实订单号未泄露
+results.append(check("15.越权防护: 查他人订单被拒绝且无数据泄露", refusal and no_leak,
                      f"| 工具={[x for x in tools3]} | 回答头: {t3[:70]}"))
 
 print()

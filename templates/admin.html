@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>运营管理平台 - 多智能体客服系统</title>
+    <style>
+        :root {
+            --bg: #f4f6fa;
+            --panel: #ffffff;
+            --sidebar-bg: #1e293b;
+            --sidebar-text: #cbd5e1;
+            --sidebar-active: #3b82f6;
+            --text: #1f2937;
+            --text-muted: #6b7280;
+            --border: #e5e7eb;
+            --primary: #2563eb;
+            --green: #16a34a;
+            --red: #dc2626;
+            --amber: #d97706;
+            --radius: 10px;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); }
+
+        /* ===== 登录遮罩 ===== */
+        .admin-login { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #1e293b, #334155); }
+        .admin-login[hidden] { display: none; }
+        .login-card { width: 340px; background: #fff; border-radius: 14px; padding: 30px 28px 22px; box-shadow: 0 20px 60px rgba(0,0,0,.35); }
+        .login-card h1 { font-size: 20px; margin-bottom: 4px; }
+        .login-card p.sub { font-size: 12.5px; color: var(--text-muted); margin-bottom: 18px; }
+        .login-card input { width: 100%; padding: 10px 12px; margin-bottom: 10px; border: 1px solid var(--border); border-radius: 9px; font-size: 14px; outline: none; background: #fafafa; }
+        .login-card input:focus { border-color: var(--primary); background: #fff; }
+        .login-card button { width: 100%; padding: 10px; border: none; border-radius: 9px; background: var(--primary); color: #fff; font-size: 15px; font-weight: 600; cursor: pointer; }
+        .login-card .err { min-height: 16px; margin-top: 8px; font-size: 12px; color: var(--red); }
+        .login-card .hint { margin-top: 10px; font-size: 12px; color: var(--text-muted); border-top: 1px dashed var(--border); padding-top: 10px; }
+        .login-card .hint code { background: #f1f5f9; padding: 1px 6px; border-radius: 5px; }
+
+        /* ===== 布局 ===== */
+        .layout { display: flex; min-height: 100vh; }
+        .sidebar { width: 190px; flex: none; background: var(--sidebar-bg); color: var(--sidebar-text); padding: 16px 10px; display: flex; flex-direction: column; gap: 4px; }
+        .brand { padding: 6px 10px 14px; font-size: 15px; font-weight: 700; color: #fff; }
+        .brand small { display: block; font-size: 11px; font-weight: 400; color: #94a3b8; margin-top: 2px; }
+        .nav-item { padding: 10px 12px; border-radius: 8px; cursor: pointer; font-size: 13.5px; border: none; background: none; color: var(--sidebar-text); text-align: left; font-family: inherit; }
+        .nav-item:hover { background: rgba(255,255,255,.06); }
+        .nav-item.active { background: var(--sidebar-active); color: #fff; font-weight: 600; }
+        .nav-badge { float: right; background: var(--red); color: #fff; border-radius: 9px; font-size: 11px; padding: 0 6px; }
+        .sidebar-foot { margin-top: auto; padding: 10px; font-size: 12px; color: #94a3b8; }
+        .sidebar-foot button { margin-top: 6px; width: 100%; padding: 7px; border: 1px solid #475569; background: none; color: var(--sidebar-text); border-radius: 7px; cursor: pointer; font-size: 12.5px; }
+        .sidebar-foot button:hover { border-color: #94a3b8; }
+
+        .main { flex: 1; padding: 20px 24px; min-width: 0; }
+        .page { display: none; }
+        .page.active { display: block; }
+        .page h2 { font-size: 18px; margin-bottom: 14px; }
+
+        /* ===== 组件 ===== */
+        .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
+        .stat-card { background: var(--panel); border-radius: var(--radius); padding: 18px; cursor: pointer; border: 1px solid var(--border); transition: box-shadow .15s; }
+        .stat-card:hover { box-shadow: 0 4px 14px rgba(0,0,0,.08); }
+        .stat-card .num { font-size: 30px; font-weight: 700; }
+        .stat-card .lbl { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
+        .stat-card.warn .num { color: var(--red); }
+
+        .panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; margin-top: 14px; }
+        .panel h3 { font-size: 14.5px; margin-bottom: 10px; }
+        .toolbar { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; align-items: center; }
+        .toolbar input, .toolbar select { padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; outline: none; background: #fff; }
+        .toolbar input:focus, .toolbar select:focus { border-color: var(--primary); }
+        .btn { padding: 7px 14px; border: 1px solid var(--border); border-radius: 8px; background: #fff; color: var(--text); font-size: 13px; cursor: pointer; font-family: inherit; }
+        .btn:hover { background: #f3f4f6; }
+        .btn-primary { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
+        .btn-primary:hover { background: #1d4ed8; }
+        .btn-green { background: var(--green); border-color: var(--green); color: #fff; font-weight: 600; }
+        .btn-green:hover { background: #15803d; }
+        .btn-red { background: #fff; border-color: var(--red); color: var(--red); font-weight: 600; }
+        .btn-red:hover { background: #fef2f2; }
+        .btn-sm { padding: 4px 10px; font-size: 12px; border-radius: 7px; }
+
+        table.grid { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+        table.grid th, table.grid td { padding: 8px 9px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+        table.grid th { background: #f8fafc; color: var(--text-muted); font-weight: 500; position: sticky; top: 0; }
+        table.grid td.wrap { white-space: normal; min-width: 160px; max-width: 320px; }
+        .st { font-weight: 600; }
+        .st-pending { color: var(--amber); }
+        .st-ok { color: var(--green); }
+        .st-bad { color: var(--red); }
+        .empty { color: var(--text-muted); font-size: 13px; padding: 14px 4px; }
+
+        /* 弹窗 */
+        .modal { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; }
+        .modal[hidden] { display: none; }
+        .modal .backdrop { position: absolute; inset: 0; background: rgba(15,23,42,.45); }
+        .modal .box { position: relative; width: 420px; max-width: calc(100vw - 40px); background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 20px 50px rgba(0,0,0,.3); }
+        .modal .box h3 { margin-bottom: 12px; font-size: 16px; }
+        .modal .box label { display: block; font-size: 12.5px; color: var(--text-muted); margin: 10px 0 4px; }
+        .modal .box input, .modal .box textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; font-family: inherit; outline: none; }
+        .modal .box textarea { min-height: 70px; resize: vertical; }
+        .modal .box .row { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+        .modal .err { color: var(--red); font-size: 12px; min-height: 15px; margin-top: 8px; }
+
+        /* 新增航班表单 */
+        .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px 12px; }
+        .form-grid label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+        .form-grid input, .form-grid select { width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; outline: none; }
+        .toast { position: fixed; top: 18px; right: 18px; z-index: 300; background: #1e293b; color: #fff; padding: 10px 16px; border-radius: 9px; font-size: 13px; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
+        .toast[hidden] { display: none; }
+    </style>
+</head>
+<body>
+    <!-- 登录 -->
+    <div id="adminLogin" class="admin-login">
+        <div class="login-card">
+            <h1>🛫 运营管理平台</h1>
+            <p class="sub">多智能体航空客服系统 · 管理端</p>
+            <input id="adminUser" placeholder="管理员用户名" autocomplete="off">
+            <input id="adminPass" type="password" placeholder="密码">
+            <button onclick="doLogin()">登 录</button>
+            <div class="err" id="loginErr"></div>
+            <div class="hint">演示账号：<code>admin</code> / <code>admin123</code></div>
+        </div>
+    </div>
+
+    <!-- 主布局 -->
+    <div class="layout">
+        <div class="sidebar">
+            <div class="brand">运营管理平台<small>多智能体航空客服系统</small></div>
+            <button class="nav-item active" data-page="dash" onclick="switchPage('dash')">📊 工作台</button>
+            <button class="nav-item" data-page="refunds" onclick="switchPage('refunds')">💰 退款处理 <span class="nav-badge" id="badgeRefunds" hidden></span></button>
+            <button class="nav-item" data-page="complaints" onclick="switchPage('complaints')">📝 投诉处理 <span class="nav-badge" id="badgeComplaints" hidden></span></button>
+            <button class="nav-item" data-page="flights" onclick="switchPage('flights')">✈️ 航班管理</button>
+            <button class="nav-item" data-page="orders" onclick="switchPage('orders')">📦 订单查询</button>
+            <button class="nav-item" data-page="base" onclick="switchPage('base')">🏢 机场·航司</button>
+            <button class="nav-item" data-page="members" onclick="switchPage('members')">👥 会员</button>
+            <div class="sidebar-foot">
+                <div id="adminWho"></div>
+                <button onclick="doLogout()">退出登录</button>
+            </div>
+        </div>
+
+        <div class="main">
+            <!-- 工作台 -->
+            <div class="page active" id="page-dash">
+                <h2>工作台</h2>
+                <div class="cards">
+                    <div class="stat-card warn" onclick="switchPage('refunds')"><div class="num" id="stRefunds">-</div><div class="lbl">待处理退款</div></div>
+                    <div class="stat-card warn" onclick="switchPage('complaints')"><div class="num" id="stComplaints">-</div><div class="lbl">待处理投诉</div></div>
+                    <div class="stat-card"><div class="num" id="stFlights">-</div><div class="lbl">在售航班</div></div>
+                    <div class="stat-card"><div class="num" id="stToday">-</div><div class="lbl">今日新增订单</div></div>
+                </div>
+                <div class="panel"><h3>使用提示</h3>
+                    <div class="empty">退款处理：处理「退票中」订单（同意退款 / 驳回）；投诉处理：回复并解决或升级；航班管理：新增航班将自动生成未来 25 天在售票价，客户端立即可查可订。</div>
+                </div>
+            </div>
+
+            <!-- 退款处理 -->
+            <div class="page" id="page-refunds">
+                <h2>退款处理（退票中队列）</h2>
+                <div class="panel"><div id="refundBox"><div class="empty">加载中…</div></div></div>
+            </div>
+
+            <!-- 投诉处理 -->
+            <div class="page" id="page-complaints">
+                <h2>投诉处理</h2>
+                <div class="panel">
+                    <div class="toolbar">
+                        <select id="compStatus" onchange="loadComplaints()">
+                            <option value="">全部状态</option>
+                            <option value="处理中">处理中</option>
+                            <option value="已升级">已升级</option>
+                            <option value="已解决">已解决</option>
+                        </select>
+                        <input id="compQ" placeholder="搜索单号/会员号/姓名" onkeydown="if(event.key==='Enter')loadComplaints()">
+                        <button class="btn" onclick="loadComplaints()">查询</button>
+                    </div>
+                    <div id="complaintBox"><div class="empty">加载中…</div></div>
+                </div>
+            </div>
+
+            <!-- 航班管理 -->
+            <div class="page" id="page-flights">
+                <h2>航班管理</h2>
+                <div class="panel">
+                    <h3>新增航班（自动生成未来25天票价）</h3>
+                    <div class="form-grid">
+                        <div><label>航班号 *</label><input id="fFlightNo" placeholder="CA1999"></div>
+                        <div><label>航司 *</label><select id="fAirline"></select></div>
+                        <div><label>出发机场 *</label><select id="fDep"></select></div>
+                        <div><label>到达机场 *</label><select id="fArr"></select></div>
+                        <div><label>起飞时间 *</label><input id="fDepTime" placeholder="07:30"></div>
+                        <div><label>到达时间 *</label><input id="fArrTime" placeholder="10:05"></div>
+                        <div><label>机型</label><input id="fAircraft" placeholder="A320neo"></div>
+                        <div><label>执飞日(周一~周日)</label><input id="fFreq" value="1234567"></div>
+                        <div><label>经济舱基准价 *</label><input id="fEconPrice" placeholder="850"></div>
+                        <div><label>商务舱倍率</label><input id="fRatio" value="2.2"></div>
+                    </div>
+                    <div style="margin-top:12px; display:flex; gap:10px; align-items:center;">
+                        <button class="btn btn-primary" onclick="createFlight()">上架航班</button>
+                        <span class="empty" id="flightMsg" style="padding:0;"></span>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="toolbar">
+                        <input id="flightQ" placeholder="搜航班号/城市/航司" onkeydown="if(event.key==='Enter')loadFlights()">
+                        <button class="btn" onclick="loadFlights()">查询</button>
+                    </div>
+                    <div id="flightBox"><div class="empty">加载中…</div></div>
+                </div>
+            </div>
+
+            <!-- 订单查询 -->
+            <div class="page" id="page-orders">
+                <h2>订单查询（全会员）</h2>
+                <div class="panel">
+                    <div class="toolbar">
+                        <select id="orderStatus" onchange="loadOrders()">
+                            <option value="">全部状态</option>
+                            <option>待支付</option>
+                            <option>已出票</option>
+                            <option>退票中</option>
+                            <option>已退款</option>
+                            <option>退票中</option>
+                        </select>
+                        <input id="orderQ" placeholder="订单号/会员号/姓名" onkeydown="if(event.key==='Enter')loadOrders()">
+                        <button class="btn" onclick="loadOrders()">查询</button>
+                    </div>
+                    <div id="orderBox"><div class="empty">加载中…</div></div>
+                </div>
+            </div>
+
+            <!-- 机场·航司 -->
+            <div class="page" id="page-base">
+                <h2>机场 · 航司维护</h2>
+                <div class="panel">
+                    <h3>机场</h3>
+                    <div class="toolbar">
+                        <input id="apIata" placeholder="三字码（PEK）" maxlength="3" style="width:130px;">
+                        <input id="apCn" placeholder="城市中文名" style="width:130px;">
+                        <input id="apEn" placeholder="城市英文名" style="width:140px;">
+                        <input id="apLat" placeholder="纬度" style="width:90px;">
+                        <input id="apLon" placeholder="经度" style="width:90px;">
+                        <button class="btn btn-primary" onclick="createAirport()">添加机场</button>
+                    </div>
+                    <div id="airportBox" style="max-height:220px; overflow:auto;"><div class="empty">加载中…</div></div>
+                </div>
+                <div class="panel">
+                    <h3>航司</h3>
+                    <div class="toolbar">
+                        <input id="alCode" placeholder="二字码（CA）" maxlength="2" style="width:130px;">
+                        <input id="alName" placeholder="航司名称" style="width:180px;">
+                        <label style="font-size:13px;"><input type="checkbox" id="alLcc"> 廉价航空</label>
+                        <button class="btn btn-primary" onclick="createAirline()">添加航司</button>
+                    </div>
+                    <div id="airlineBox" style="max-height:220px; overflow:auto;"><div class="empty">加载中…</div></div>
+                </div>
+            </div>
+
+            <!-- 会员 -->
+            <div class="page" id="page-members">
+                <h2>会员（只读）</h2>
+                <div class="panel">
+                    <div class="toolbar">
+                        <input id="memberQ" placeholder="会员号/姓名/手机号" onkeydown="if(event.key==='Enter')loadMembers()">
+                        <button class="btn" onclick="loadMembers()">查询</button>
+                    </div>
+                    <div id="memberBox"><div class="empty">加载中…</div></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 通用弹窗 -->
+    <div id="modal" class="modal" hidden>
+        <div class="backdrop" onclick="closeModal()"></div>
+        <div class="box">
+            <h3 id="modalTitle"></h3>
+            <div id="modalBody"></div>
+            <div class="err" id="modalErr"></div>
+            <div class="row">
+                <button class="btn" onclick="closeModal()">取消</button>
+                <button class="btn btn-primary" id="modalOk">确定</button>
+            </div>
+        </div>
+    </div>
+    <div id="toast" class="toast" hidden></div>
+
+    <script>
+        let admin = null;
+        const $ = (id) => document.getElementById(id);
+
+        function toast(msg) {
+            const t = $('toast');
+            t.textContent = msg;
+            t.hidden = false;
+            setTimeout(() => { t.hidden = true; }, 2600);
+        }
+
+        async function api(path, opts) {
+            const r = await fetch(path, opts);
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+            return d;
+        }
+        const post = (path, obj) => api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(obj) });
+
+        // ============ 登录 ============
+        async function initAuth() {
+            try {
+                const r = await fetch('/admin/api/me');
+                if (r.ok) { const d = await r.json(); if (d.admin) { enter(d.admin); return; } }
+            } catch (e) { }
+            $('adminLogin').hidden = false;
+        }
+
+        function enter(a) {
+            admin = a;
+            $('adminLogin').hidden = true;
+            $('adminWho').textContent = '👤 ' + a.name + '（' + a.username + '）';
+            refreshStats();
+            loadRefunds();
+        }
+
+        async function doLogin() {
+            $('loginErr').textContent = '';
+            try {
+                const d = await post('/admin/api/login', { username: $('adminUser').value.trim(), password: $('adminPass').value });
+                $('adminPass').value = '';
+                enter(d.admin);
+            } catch (e) { $('loginErr').textContent = e.message; }
+        }
+
+        async function doLogout() {
+            try { await post('/admin/api/logout', {}); } catch (e) { }
+            location.reload();
+        }
+
+        // ============ 页面切换 ============
+        function switchPage(name) {
+            document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.page === name));
+            document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + name));
+            if (name === 'dash') refreshStats();
+            if (name === 'refunds') loadRefunds();
+            if (name === 'complaints') loadComplaints();
+            if (name === 'flights') { loadFlights(); ensureBaseLists(); }
+            if (name === 'orders') loadOrders();
+            if (name === 'base') { ensureBaseLists(); renderAirports(); renderAirlines(); }
+            if (name === 'members') loadMembers();
+        }
+
+        async function refreshStats() {
+            try {
+                const d = await api('/admin/api/stats');
+                $('stRefunds').textContent = d.pending_refunds;
+                $('stComplaints').textContent = d.pending_complaints;
+                $('stFlights').textContent = d.flights_on_sale;
+                $('stToday').textContent = d.today_orders;
+                setBadge('badgeRefunds', d.pending_refunds);
+                setBadge('badgeComplaints', d.pending_complaints);
+            } catch (e) { }
+        }
+        function setBadge(id, n) {
+            const b = $(id);
+            if (n > 0) { b.textContent = n; b.hidden = false; } else { b.hidden = true; }
+        }
+
+        // ============ 退款处理 ============
+        async function loadRefunds() {
+            const box = $('refundBox');
+            try {
+                const d = await api('/admin/api/refunds');
+                if (!d.refunds.length) { box.innerHTML = '<div class="empty">✅ 暂无待处理退款</div>'; return; }
+                let html = '<table class="grid"><thead><tr><th>订单号</th><th>会员</th><th>航班</th><th>航线</th><th>日期</th><th>舱位</th><th>金额</th><th>退票原因</th><th>操作</th></tr></thead><tbody>';
+                d.refunds.forEach(o => {
+                    html += '<tr><td><b>' + esc(o.order_no) + '</b></td><td>' + esc(o.member_name + ' ' + o.member_id) + '</td>'
+                        + '<td>' + esc(o.airline + o.flight_no) + '</td><td>' + esc(o.dep_city + '-' + o.arr_city) + '</td>'
+                        + '<td>' + esc(o.flight_date) + '</td><td>' + esc(o.cabin) + '</td><td>¥' + o.amount + '</td>'
+                        + '<td class="wrap">' + esc(o.refund_reason || '（未填写）') + '</td>'
+                        + '<td><button class="btn btn-green btn-sm" onclick="approveRefund(\'' + o.order_no + '\',' + o.amount + ')">同意退款</button> '
+                        + '<button class="btn btn-red btn-sm" onclick="rejectRefund(\'' + o.order_no + '\')">驳回</button></td></tr>';
+                });
+                box.innerHTML = html + '</tbody></table>';
+            } catch (e) { box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; }
+        }
+
+        function approveRefund(orderNo, amount) {
+            openModal('同意退款 · ' + orderNo, `
+                <label>订单金额</label><div>¥${amount}</div>
+                <label>实际退款金额（默认全额，可改）</label>
+                <input id="mAmount" type="number" value="${amount}" min="0" max="${amount}">
+                <label>备注</label><textarea id="mNote" placeholder="可选"></textarea>`,
+                async () => {
+                    const d = await post('/admin/api/refunds/approve', { order_no: orderNo, refund_amount: Number($('mAmount').value), admin_note: $('mNote').value });
+                    toast(d.message); loadRefunds(); refreshStats();
+                });
+        }
+
+        function rejectRefund(orderNo) {
+            openModal('驳回退票 · ' + orderNo,
+                '<label>驳回理由（将写入订单备注）</label><textarea id="mNote" placeholder="如：特价票不支持退票"></textarea>',
+                async () => {
+                    const d = await post('/admin/api/refunds/reject', { order_no: orderNo, admin_note: $('mNote').value });
+                    toast(d.message); loadRefunds(); refreshStats();
+                });
+        }
+
+        // ============ 投诉处理 ============
+        async function loadComplaints() {
+            const box = $('complaintBox');
+            try {
+                const q = encodeURIComponent($('compQ').value.trim());
+                const st = encodeURIComponent($('compStatus').value);
+                const d = await api('/admin/api/complaints?status=' + st + '&q=' + q);
+                if (!d.complaints.length) { box.innerHTML = '<div class="empty">暂无投诉记录</div>'; return; }
+                let html = '<table class="grid"><thead><tr><th>单号</th><th>会员</th><th>关联订单</th><th>投诉内容</th><th>状态</th><th>回复</th><th>日期</th><th>操作</th></tr></thead><tbody>';
+                d.complaints.forEach(c => {
+                    let ops = '';
+                    if (c.status === '处理中') ops = '<button class="btn btn-green btn-sm" onclick="resolveComplaint(\'' + c.ticket_no + '\')">回复并解决</button> <button class="btn btn-sm" onclick="escalateComplaint(\'' + c.ticket_no + '\')">升级</button>';
+                    else if (c.status === '已升级') ops = '<button class="btn btn-green btn-sm" onclick="resolveComplaint(\'' + c.ticket_no + '\')">回复并解决</button>';
+                    else ops = '<button class="btn btn-sm" onclick="reopenComplaint(\'' + c.ticket_no + '\')">重新打开</button>';
+                    html += '<tr><td><b>' + esc(c.ticket_no) + '</b></td><td>' + esc(c.member_name + ' ' + c.member_id) + '</td>'
+                        + '<td>' + esc(c.order_no || '—') + '</td><td class="wrap">' + esc(c.content) + '</td>'
+                        + '<td class="st ' + stClass(c.status) + '">' + esc(c.status) + '</td>'
+                        + '<td class="wrap">' + esc(c.reply || '—') + '</td><td>' + esc(c.created_at) + '</td>'
+                        + '<td>' + ops + '</td></tr>';
+                });
+                box.innerHTML = html + '</tbody></table>';
+            } catch (e) { box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; }
+        }
+
+        function resolveComplaint(tn) {
+            openModal('回复并解决 · ' + tn,
+                '<label>处理回复（客户在对话中查询投诉时会看到这条回复）</label><textarea id="mNote" placeholder="如：已为您协调补偿200元机票券，将在24小时内到账"></textarea>',
+                async () => {
+                    const d = await post('/admin/api/complaints/resolve', { ticket_no: tn, reply: $('mNote').value });
+                    toast(d.message); loadComplaints(); refreshStats();
+                });
+        }
+
+        function escalateComplaint(tn) {
+            openModal('升级投诉 · ' + tn,
+                '<label>升级备注（可选）</label><textarea id="mNote"></textarea>',
+                async () => {
+                    const d = await post('/admin/api/complaints/escalate', { ticket_no: tn, note: $('mNote').value });
+                    toast('投诉 ' + tn + ' 已升级'); loadComplaints(); refreshStats();
+                });
+        }
+
+        async function reopenComplaint(tn) {
+            try { const d = await post('/admin/api/complaints/reopen', { ticket_no: tn }); toast('已重新打开 ' + tn); loadComplaints(); refreshStats(); }
+            catch (e) { toast(e.message); }
+        }
+
+        // ============ 航班管理 ============
+        let baseListsReady = false;
+        async function ensureBaseLists() {
+            if (baseListsReady) return;
+            try {
+                const [ap, al] = await Promise.all([api('/admin/api/airports'), api('/admin/api/airlines')]);
+                const opt = (v, t) => '<option value="' + esc(v) + '">' + esc(t) + '</option>';
+                $('fAirline').innerHTML = al.airlines.map(a => opt(a.code, a.code + ' ' + a.name_cn)).join('');
+                const apOpt = ap.airports.map(a => opt(a.iata3, a.iata3 + ' ' + a.city_cn)).join('');
+                $('fDep').innerHTML = apOpt; $('fArr').innerHTML = apOpt;
+                if (ap.airports.length > 1) $('fArr').selectedIndex = 1;
+                baseListsReady = true;
+            } catch (e) { }
+        }
+
+        async function loadFlights() {
+            const box = $('flightBox');
+            try {
+                const q = encodeURIComponent($('flightQ').value.trim());
+                const d = await api('/admin/api/flights?q=' + q);
+                if (!d.flights.length) { box.innerHTML = '<div class="empty">无航班</div>'; return; }
+                let html = '<table class="grid"><thead><tr><th>航班号</th><th>航司</th><th>航线</th><th>起-达</th><th>时长</th><th>机型</th><th>执飞日</th><th>经济舱最低价</th></tr></thead><tbody>';
+                d.flights.forEach(f => {
+                    const dur = Math.floor(f.duration_min / 60) + 'h' + String(f.duration_min % 60).padStart(2, '0');
+                    html += '<tr><td><b>' + esc(f.flight_no) + '</b></td><td>' + esc(f.airline) + '</td>'
+                        + '<td>' + esc(f.dep_city + ' - ' + f.arr_city) + '</td><td>' + esc(f.dep_time + '-' + f.arr_time) + '</td>'
+                        + '<td>' + dur + '</td><td>' + esc(f.aircraft || '—') + '</td><td>' + esc(f.freq_days) + '</td>'
+                        + '<td>' + (f.econ_price_from ? '¥' + f.econ_price_from : '—') + '</td></tr>';
+                });
+                box.innerHTML = html + '</tbody></table>';
+            } catch (e) { box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; }
+        }
+
+        async function createFlight() {
+            const msg = $('flightMsg');
+            msg.textContent = '';
+            try {
+                const d = await post('/admin/api/flights', {
+                    flight_no: $('fFlightNo').value, airline_code: $('fAirline').value,
+                    dep_iata: $('fDep').value, arr_iata: $('fArr').value,
+                    dep_time: $('fDepTime').value.trim(), arr_time: $('fArrTime').value.trim(),
+                    aircraft: $('fAircraft').value, freq_days: $('fFreq').value,
+                    econ_price: $('fEconPrice').value, business_ratio: $('fRatio').value
+                });
+                msg.textContent = '✅ ' + d.message;
+                toast(d.message);
+                loadFlights(); refreshStats();
+                $('fFlightNo').value = ''; $('fEconPrice').value = '';
+            } catch (e) { msg.textContent = '❌ ' + e.message; }
+        }
+
+        // ============ 机场 · 航司 ============
+        async function renderAirports() {
+            try {
+                const d = await api('/admin/api/airports');
+                $('airportBox').innerHTML = '<table class="grid"><thead><tr><th>三字码</th><th>城市</th><th>英文</th><th>坐标</th></tr></thead><tbody>'
+                    + d.airports.map(a => '<tr><td><b>' + esc(a.iata3) + '</b></td><td>' + esc(a.city_cn) + '</td><td>' + esc(a.city_en || '') + '</td><td>' + a.lat + ', ' + a.lon + '</td></tr>').join('')
+                    + '</tbody></table>';
+            } catch (e) { }
+        }
+
+        async function createAirport() {
+            try {
+                const d = await post('/admin/api/airports', {
+                    iata3: $('apIata').value, city_cn: $('apCn').value, city_en: $('apEn').value,
+                    lat: $('apLat').value, lon: $('apLon').value
+                });
+                toast(d.message);
+                ['apIata', 'apCn', 'apEn', 'apLat', 'apLon'].forEach(id => $(id).value = '');
+                baseListsReady = false; await ensureBaseLists(); renderAirports();
+            } catch (e) { toast(e.message); }
+        }
+
+        async function renderAirlines() {
+            try {
+                const d = await api('/admin/api/airlines');
+                $('airlineBox').innerHTML = '<table class="grid"><thead><tr><th>代码</th><th>名称</th><th>类型</th></tr></thead><tbody>'
+                    + d.airlines.map(a => '<tr><td><b>' + esc(a.code) + '</b></td><td>' + esc(a.name_cn) + '</td><td>' + (a.is_lcc ? '廉价' : '全服务') + '</td></tr>').join('')
+                    + '</tbody></table>';
+            } catch (e) { }
+        }
+
+        async function createAirline() {
+            try {
+                const d = await post('/admin/api/airlines', { code: $('alCode').value, name_cn: $('alName').value, is_lcc: $('alLcc').checked });
+                toast(d.message);
+                $('alCode').value = ''; $('alName').value = ''; $('alLcc').checked = false;
+                baseListsReady = false; await ensureBaseLists(); renderAirlines();
+            } catch (e) { toast(e.message); }
+        }
+
+        // ============ 订单查询 / 会员 ============
+        async function loadOrders() {
+            const box = $('orderBox');
+            try {
+                const st = encodeURIComponent($('orderStatus').value);
+                const q = encodeURIComponent($('orderQ').value.trim());
+                const d = await api('/admin/api/orders?status=' + st + '&q=' + q);
+                if (!d.orders.length) { box.innerHTML = '<div class="empty">无订单</div>'; return; }
+                let html = '<table class="grid"><thead><tr><th>订单号</th><th>会员</th><th>航班</th><th>航线</th><th>日期</th><th>舱位</th><th>金额</th><th>退款金额</th><th>状态</th><th>备注</th></tr></thead><tbody>';
+                d.orders.forEach(o => {
+                    html += '<tr><td><b>' + esc(o.order_no) + '</b></td><td>' + esc(o.member_name + ' ' + o.member_id) + '</td>'
+                        + '<td>' + esc(o.airline + o.flight_no) + '</td><td>' + esc(o.dep_city + '-' + o.arr_city) + '</td>'
+                        + '<td>' + esc(o.flight_date) + '</td><td>' + esc(o.cabin) + '</td><td>¥' + o.amount + '</td>'
+                        + '<td>' + (o.refund_amount != null ? '¥' + o.refund_amount : '—') + '</td>'
+                        + '<td class="st ' + stClass(o.status) + '">' + esc(o.status) + '</td>'
+                        + '<td class="wrap">' + esc(o.refund_reason || o.admin_note || '—') + '</td></tr>';
+                });
+                box.innerHTML = html + '</tbody></table>';
+            } catch (e) { box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; }
+        }
+
+        async function loadMembers() {
+            const box = $('memberBox');
+            try {
+                const q = encodeURIComponent($('memberQ').value.trim());
+                const d = await api('/admin/api/customers?q=' + q);
+                if (!d.customers.length) { box.innerHTML = '<div class="empty">无会员</div>'; return; }
+                let html = '<table class="grid"><thead><tr><th>会员号</th><th>姓名</th><th>等级</th><th>手机号</th><th>邮箱</th></tr></thead><tbody>';
+                d.customers.forEach(c => {
+                    html += '<tr><td><b>' + esc(c.member_id) + '</b></td><td>' + esc(c.name) + '</td><td>' + esc(c.level) + '</td><td>' + esc(c.phone) + '</td><td>' + esc(c.email || '—') + '</td></tr>';
+                });
+                box.innerHTML = html + '</tbody></table>';
+            } catch (e) { box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; }
+        }
+
+        // ============ 弹窗与工具 ============
+        let modalHandler = null;
+        function openModal(title, bodyHtml, onOk) {
+            $('modalTitle').textContent = title;
+            $('modalBody').innerHTML = bodyHtml;
+            $('modalErr').textContent = '';
+            modalHandler = onOk;
+            $('modal').hidden = false;
+        }
+        function closeModal() { $('modal').hidden = true; modalHandler = null; }
+        $('modalOk').onclick = async function () {
+            if (!modalHandler) return closeModal();
+            try { await modalHandler(); closeModal(); }
+            catch (e) { $('modalErr').textContent = e.message; }
+        };
+
+        function stClass(s) {
+            if (s === '待支付' || s === '处理中' || s === '退票中') return 'st-pending';
+            if (s === '已出票' || s === '已解决') return 'st-ok';
+            if (s === '退票中' || s === '已退款' || s === '已升级') return 'st-bad';
+            return '';
+        }
+        function esc(s) {
+            return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        ['adminUser', 'adminPass'].forEach(id => {
+            $(id).addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+        });
+
+        initAuth();
+    </script>
+</body>
+</html>

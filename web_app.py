@@ -36,24 +36,32 @@ app.secret_key = os.getenv("FLASK_SECRET_KEY", "your-secret-key-here")
 app.config['SESSION_TYPE'] = 'filesystem'
 
 
-# --- 工具层硬安全：请求期间把登录身份绑定到受信上下文（供仓库层校验归属） ---
+# --- 工具层硬安全：请求期间绑定受信上下文（会员=归属校验 / 管理员=豁免跨会员） ---
 
 @app.before_request
-def _bind_member_security_context():
+def _bind_security_context():
     from flask import g
     from services import security
-    member = session.get('member')
-    if member:
-        g._member_security_token = security.set_current_member(member.get('member_id'))
+    if request.path.startswith('/admin'):
+        admin = session.get('admin')
+        if admin:
+            g._admin_security_token = security.set_current_admin(admin.get('username'))
+    else:
+        member = session.get('member')
+        if member:
+            g._member_security_token = security.set_current_member(member.get('member_id'))
 
 
 @app.teardown_request
-def _unbind_member_security_context(exc):
+def _unbind_security_context(exc):
     from flask import g
     from services import security
     token = g.pop('_member_security_token', None)
     if token is not None:
         security.reset_current_member(token)
+    token = g.pop('_admin_security_token', None)
+    if token is not None:
+        security.reset_current_admin(token)
 
 
 # --- Flask session 内的本地对话占位（主页模板可能使用）---
@@ -399,6 +407,251 @@ def my_complaints():
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': f'查询投诉失败: {str(e)}'}), 500
+
+
+# ============================================================
+# 管理员运营平台（/admin）
+# ============================================================
+
+def _current_admin() -> Dict[str, Any]:
+    return session.get('admin') or {}
+
+
+def admin_required():
+    """管理端接口门禁。返回 (admin, denied)。"""
+    admin = _current_admin()
+    if not admin:
+        return None, (jsonify({'error': '未登录管理员账号'}), 401)
+    return admin, None
+
+
+@app.route('/admin')
+def admin_index():
+    """管理平台页面（前端自行检查登录态并显示登录视图）。"""
+    return render_template('admin.html')
+
+
+@app.route('/admin/api/login', methods=['POST'])
+def admin_login():
+    try:
+        data = request.get_json() or {}
+        username = (data.get('username') or '').strip()
+        password = (data.get('password') or '')
+        if not username or not password:
+            return jsonify({'error': '请输入用户名和密码'}), 400
+
+        from werkzeug.security import check_password_hash
+        from services import db
+        conn = db.get_connection()
+        db.init_schema(conn)
+        row = conn.execute("SELECT username, password_hash, name FROM admins WHERE username = ?",
+                           (username,)).fetchone()
+        conn.close()
+        if not row or not check_password_hash(row['password_hash'], password):
+            return jsonify({'error': '用户名或密码错误'}), 401
+
+        session['admin'] = {'username': row['username'], 'name': row['name']}
+        return jsonify({'admin': session['admin']})
+    except Exception as e:
+        return jsonify({'error': f'登录失败: {str(e)}'}), 500
+
+
+@app.route('/admin/api/logout', methods=['POST'])
+def admin_logout():
+    session.pop('admin', None)
+    return jsonify({'message': '已退出'})
+
+
+@app.route('/admin/api/me')
+def admin_me():
+    admin = _current_admin()
+    if not admin:
+        return jsonify({'admin': None}), 401
+    return jsonify({'admin': admin})
+
+
+@app.route('/admin/api/stats')
+def admin_stats():
+    admin, denied = admin_required()
+    if denied:
+        return denied
+    from services import admin_repo
+    return jsonify(admin_repo.get_stats())
+
+
+# ---- 退款处理 ----
+
+@app.route('/admin/api/refunds')
+def admin_refunds():
+    admin, denied = admin_required()
+    if denied:
+        return denied
+    from services import admin_repo
+    return jsonify(admin_repo.list_refund_queue())
+
+
+@app.route('/admin/api/refunds/approve', methods=['POST'])
+def admin_refund_approve():
+    admin, denied = admin_required()
+    if denied:
+        return denied
+    data = request.get_json() or {}
+    from services import admin_repo
+    result = admin_repo.approve_refund(data.get('order_no', ''),
+                                       data.get('refund_amount'), data.get('admin_note', ''))
+    if result.get('error'):
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+@app.route('/admin/api/refunds/reject', methods=['POST'])
+def admin_refund_reject():
+    admin, denied = admin_required()
+    if denied:
+        return denied
+    data = request.get_json() or {}
+    from services import admin_repo
+    result = admin_repo.reject_refund(data.get('order_no', ''), data.get('admin_note', ''))
+    if result.get('error'):
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+# ---- 投诉处理 ----
+
+@app.route('/admin/api/complaints')
+def admin_complaints():
+    admin, denied = admin_required()
+    if denied:
+        return denied
+    from services import admin_repo
+    return jsonify(admin_repo.list_complaints(request.args.get('status') or None,
+                                              request.args.get('q') or None))
+
+
+@app.route('/admin/api/complaints/resolve', methods=['POST'])
+def admin_complaint_resolve():
+    admin, denied = admin_required()
+    if denied:
+        return denied
+    data = request.get_json() or {}
+    from services import admin_repo
+    result = admin_repo.resolve_complaint(data.get('ticket_no', ''), data.get('reply', ''))
+    if result.get('error'):
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+@app.route('/admin/api/complaints/escalate', methods=['POST'])
+def admin_complaint_escalate():
+    admin, denied = admin_required()
+    if denied:
+        return denied
+    data = request.get_json() or {}
+    from services import admin_repo
+    result = admin_repo.escalate_complaint(data.get('ticket_no', ''), data.get('note', ''))
+    if result.get('error'):
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+@app.route('/admin/api/complaints/reopen', methods=['POST'])
+def admin_complaint_reopen():
+    admin, denied = admin_required()
+    if denied:
+        return denied
+    data = request.get_json() or {}
+    from services import admin_repo
+    result = admin_repo.reopen_complaint(data.get('ticket_no', ''))
+    if result.get('error'):
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+# ---- 航班 / 机场 / 航司 ----
+
+@app.route('/admin/api/flights')
+def admin_flights():
+    admin, denied = admin_required()
+    if denied:
+        return denied
+    from services import admin_repo
+    return jsonify(admin_repo.list_flights(request.args.get('q') or None))
+
+
+@app.route('/admin/api/flights', methods=['POST'])
+def admin_flight_create():
+    admin, denied = admin_required()
+    if denied:
+        return denied
+    from services import admin_repo
+    result = admin_repo.create_flight(request.get_json() or {})
+    if result.get('error'):
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+@app.route('/admin/api/airports')
+def admin_airports():
+    admin, denied = admin_required()
+    if denied:
+        return denied
+    from services import admin_repo
+    return jsonify(admin_repo.list_airports())
+
+
+@app.route('/admin/api/airports', methods=['POST'])
+def admin_airport_create():
+    admin, denied = admin_required()
+    if denied:
+        return denied
+    from services import admin_repo
+    result = admin_repo.create_airport(request.get_json() or {})
+    if result.get('error'):
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+@app.route('/admin/api/airlines')
+def admin_airlines():
+    admin, denied = admin_required()
+    if denied:
+        return denied
+    from services import admin_repo
+    return jsonify(admin_repo.list_airlines())
+
+
+@app.route('/admin/api/airlines', methods=['POST'])
+def admin_airline_create():
+    admin, denied = admin_required()
+    if denied:
+        return denied
+    from services import admin_repo
+    result = admin_repo.create_airline(request.get_json() or {})
+    if result.get('error'):
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+# ---- 订单全局查询 / 会员（只读） ----
+
+@app.route('/admin/api/orders')
+def admin_orders():
+    admin, denied = admin_required()
+    if denied:
+        return denied
+    from services import admin_repo
+    return jsonify(admin_repo.list_orders(request.args.get('status') or None,
+                                          request.args.get('q') or None))
+
+
+@app.route('/admin/api/customers')
+def admin_customers():
+    admin, denied = admin_required()
+    if denied:
+        return denied
+    from services import admin_repo
+    return jsonify(admin_repo.list_customers(request.args.get('q') or None))
 
 
 @app.route('/api/health')

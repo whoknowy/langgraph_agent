@@ -300,6 +300,16 @@ def _seed_orders_and_complaints(conn: sqlite3.Connection, rnd: random.Random) ->
     )
 
 
+def _seed_admin(conn: sqlite3.Connection) -> None:
+    """幂等预置演示管理员 admin / admin123。"""
+    from werkzeug.security import generate_password_hash
+    conn.execute(
+        "INSERT OR IGNORE INTO admins (username, password_hash, name) VALUES (?,?,?)",
+        ("admin", generate_password_hash("admin123"), "运营管理员"),
+    )
+    conn.commit()
+
+
 def ensure_seeded(conn: sqlite3.Connection, force: bool = False) -> None:
     """幂等初始化：建表 + 首次全量种子 + 按需补齐未来 30 天价格。"""
     db.init_schema(conn)
@@ -308,6 +318,8 @@ def ensure_seeded(conn: sqlite3.Connection, force: bool = False) -> None:
         for table in ("complaints", "orders", "flight_prices", "delay_stats", "flights",
                       "airlines", "airports", "customers", "city_coords", "meta"):
             conn.execute(f"DELETE FROM {table}")
+
+    _seed_admin(conn)
 
     count = conn.execute("SELECT COUNT(*) AS c FROM flights").fetchone()["c"]
     today = date.today()

@@ -14,6 +14,7 @@ from contextvars import ContextVar
 from typing import Optional
 
 _current_member_id: ContextVar = ContextVar("current_member_id", default=None)
+_current_admin_id: ContextVar = ContextVar("current_admin_id", default=None)
 
 
 def set_current_member(member_id: Optional[str]):
@@ -29,6 +30,19 @@ def get_current_member() -> Optional[str]:
     return _current_member_id.get()
 
 
+def set_current_admin(admin_name: Optional[str]):
+    """绑定当前管理员（管理端跨会员操作的豁免凭据）。"""
+    return _current_admin_id.set((admin_name or "").strip() or None)
+
+
+def reset_current_admin(token) -> None:
+    _current_admin_id.reset(token)
+
+
+def get_current_admin() -> Optional[str]:
+    return _current_admin_id.get()
+
+
 def normalize(member_id: Optional[str]) -> str:
     return (member_id or "").strip().upper()
 
@@ -36,9 +50,13 @@ def normalize(member_id: Optional[str]) -> str:
 def enforce_owner(member_id: Optional[str], action: str = "查询") -> Optional[dict]:
     """校验目标 member_id 与登录身份一致。
 
+    管理员上下文绑定时不做归属限制（运营平台的职责即跨会员处理）。
+
     Returns:
         None 表示通过；否则返回可直接作为工具结果的错误 dict。
     """
+    if get_current_admin():
+        return None
     login_id = get_current_member()
     if not login_id:
         return {"error": "未登录：请先登录会员账号后再" + action}

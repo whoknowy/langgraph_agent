@@ -107,7 +107,20 @@ CREATE TABLE IF NOT EXISTS city_coords (
     lat  REAL NOT NULL,
     lon  REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS admins (
+    username      TEXT PRIMARY KEY,
+    password_hash TEXT NOT NULL,
+    name          TEXT NOT NULL
+);
 """
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    """幂等加列（SQLite ALTER TABLE 不支持 IF NOT EXISTS）。"""
+    cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
 
 
 def get_connection() -> sqlite3.Connection:
@@ -121,4 +134,9 @@ def get_connection() -> sqlite3.Connection:
 def init_schema(conn: sqlite3.Connection) -> None:
     """建表（幂等）。"""
     conn.executescript(SCHEMA)
+    # 轻量迁移：管理端新增字段（幂等）
+    _ensure_column(conn, "orders", "refund_amount", "refund_amount INTEGER")
+    _ensure_column(conn, "orders", "refund_reason", "refund_reason TEXT")
+    _ensure_column(conn, "orders", "admin_note", "admin_note TEXT")
+    _ensure_column(conn, "complaints", "reply", "reply TEXT")
     conn.commit()
