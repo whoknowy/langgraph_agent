@@ -2415,6 +2415,20 @@
                 card.querySelector('[data-act="ok"]').onclick = function () { refundInCard(card, action.order_no, action.refund_type); };
                 card.querySelector('[data-act="cancel"]').onclick = function () { cancelConfirmCard(card, '已取消本次退票申请。'); };
                 if (!isSpecial) fillRefundQuote(card, action.order_no);
+            } else if (action.type === 'change_flight') {
+                card.innerHTML =
+                    '<div class="confirm-card-title">🔄 改签确认</div>'
+                    + '<div class="confirm-card-body">订单号：<b>' + escHtml(action.order_no || '-') + '</b>'
+                    + '<br>新航班：' + escHtml((action.new_flight_no || '-') + ' ' + (action.new_date || '') + ' ' + (action.new_cabin || '') + '舱')
+                    + '<br>免改签费，票价差多退少补。<span style="color:var(--text-muted);">正在计算差价…</span></div>'
+                    + '<div class="confirm-card-actions">'
+                    + '<button type="button" class="confirm-btn confirm-btn--primary" data-act="ok">确认改签</button>'
+                    + '<button type="button" class="confirm-btn" data-act="cancel">取消</button>'
+                    + '</div>';
+                chatContainer.appendChild(card);
+                card.querySelector('[data-act="ok"]').onclick = function () { changeInCard(card, action); };
+                card.querySelector('[data-act="cancel"]').onclick = function () { cancelConfirmCard(card, '已取消本次改签。'); };
+                fillChangeQuote(card, action);
             } else {
                 return;
             }
@@ -2538,6 +2552,64 @@
             }
         }
 
+        async function fillChangeQuote(card, action) {
+            const body = card.querySelector('.confirm-card-body');
+            try {
+                const q = '?order_no=' + encodeURIComponent(action.order_no || '')
+                    + '&new_flight_no=' + encodeURIComponent(action.new_flight_no || '')
+                    + '&new_date=' + encodeURIComponent(action.new_date || '')
+                    + '&new_cabin=' + encodeURIComponent(action.new_cabin || '');
+                const r = await fetch('/api/change_quote' + q);
+                const d = await r.json();
+                if (!r.ok || d.error) {
+                    body.innerHTML = '改签失败：' + escHtml(d.error || ('HTTP ' + r.status));
+                    const okBtn = card.querySelector('[data-act="ok"]');
+                    if (okBtn) okBtn.disabled = true;
+                    return;
+                }
+                body.innerHTML =
+                    '订单号：<b>' + escHtml(d.order_no) + '</b>（' + d.passengers + '人）'
+                    + '<div class="quote-row"><span class="k">原航班</span><span>' + escHtml(d.old.flight_no + ' · ' + d.old.date + ' · ' + d.old.cabin + '舱') + '</span></div>'
+                    + '<div class="quote-row"><span class="k">新航班</span><span>' + escHtml(d.new.airline + d.new.flight_no + ' · ' + d.new.date + ' ' + d.new.dep_time + ' · ' + d.new.cabin + '舱') + '</span></div>'
+                    + '<div class="quote-row"><span class="k">改签费</span><span>免</span></div>'
+                    + '<div class="quote-row"><span class="k">票价差</span><span class="' + (d.fare_diff > 0 ? 'quote-total' : 'st-ok') + '">'
+                    + (d.fare_diff > 0 ? '需补 ¥' + d.fare_diff : (d.fare_diff < 0 ? '退回 ¥' + (-d.fare_diff) : '无差价')) + '</span></div>';
+            } catch (e) {
+                body.insertAdjacentHTML('beforeend', '<div style="color:var(--text-muted);">差价计算失败，请取消后重试</div>');
+                const okBtn = card.querySelector('[data-act="ok"]');
+                if (okBtn) okBtn.disabled = true;
+            }
+        }
+
+        async function changeInCard(card, action) {
+            const okBtn = card.querySelector('[data-act="ok"]');
+            if (okBtn) { okBtn.disabled = true; okBtn.textContent = '改签中…'; }
+            try {
+                const r = await fetch('/api/change', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        order_no: action.order_no, new_flight_no: action.new_flight_no,
+                        new_date: action.new_date, new_cabin: action.new_cabin
+                    })
+                });
+                const d = await r.json();
+                if (!r.ok || d.error) {
+                    card.querySelector('.confirm-card-body').innerHTML += '<br>❌ ' + escHtml(d.error || '改签失败');
+                    if (okBtn) { okBtn.disabled = false; okBtn.textContent = '确认改签'; }
+                    return;
+                }
+                card.classList.add('confirm-card--done');
+                card.querySelector('.confirm-card-actions').innerHTML =
+                    '<span class="my-data-empty">✅ 已改签至 ' + escHtml(d.new.airline + d.new.flight_no
+                        + ' ' + d.new.date + ' ' + d.new.dep_time) + '，'
+                    + (d.fare_diff > 0 ? '补差价 ¥' + d.fare_diff : (d.fare_diff < 0 ? '退差价 ¥' + (-d.fare_diff) : '无差价')) + '</span>';
+            } catch (e) {
+                if (okBtn) { okBtn.disabled = false; okBtn.textContent = '确认改签'; }
+                card.querySelector('.confirm-card-body').textContent = '网络错误，请重试';
+            }
+        }
+
         async function refundInCard(card, orderNo, refundType) {
             const isSpecial = refundType === 'special';
             const okBtn = card.querySelector('[data-act="ok"]');
@@ -2610,7 +2682,7 @@
 
         function statusClass(status) {
             if (status === '待支付') return 'st-pending';
-            if (status === '已出票') return 'st-ok';
+            if (status === '已出票' || status === '已改签') return 'st-ok';
             if (status === '退票中' || status === '已退款') return 'st-refund';
             return '';
         }

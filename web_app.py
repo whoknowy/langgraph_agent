@@ -35,6 +35,10 @@ app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "your-secret-key-here")
 app.config['SESSION_TYPE'] = 'filesystem'
 
+# 订单生命周期：航班起飞后自动「已使用」（后台线程，与客户端/管理端共享 DB）
+from services.lifecycle import start_lifecycle_worker  # noqa: E402
+start_lifecycle_worker()
+
 
 # --- 工具层硬安全：请求期间绑定受信上下文（会员=归属校验 / 管理员=豁免跨会员） ---
 
@@ -360,6 +364,42 @@ def pay():
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': f'支付失败: {str(e)}'}), 500
+
+
+@app.route('/api/change_quote')
+def change_quote():
+    """改签报价（确认卡片展示：新航班信息/差价）。"""
+    try:
+        member, denied = _require_member()
+        if denied:
+            return denied
+        from services import flight_repo
+        result = flight_repo.change_quote(
+            request.args.get('order_no', ''), member['member_id'],
+            request.args.get('new_flight_no', ''), request.args.get('new_date', ''),
+            request.args.get('new_cabin', ''))
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': f'改签报价失败: {str(e)}'}), 500
+
+
+@app.route('/api/change', methods=['POST'])
+def change():
+    """执行改签（免改签费，差价多退少补；代码层校验，LLM 只能发起卡片）。"""
+    try:
+        member, denied = _require_member()
+        if denied:
+            return denied
+        data = request.get_json() or {}
+        from services import flight_repo
+        result = flight_repo.change_order(
+            data.get('order_no', ''), member['member_id'], data.get('new_flight_no', ''),
+            data.get('new_date', ''), data.get('new_cabin', ''))
+        if result.get('error'):
+            return jsonify(result), 400
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': f'改签失败: {str(e)}'}), 500
 
 
 @app.route('/api/refund_quote')

@@ -488,10 +488,10 @@ def book_flight(member_id: str, flight_no: str, flight_date: str, cabin: str, pa
         return {"error": f"会员号 {member_id} 不存在"}
     order_no = _generate_order_no(conn)
     conn.execute(
-        "INSERT INTO orders (order_no, member_id, flight_no, flight_date, cabin, amount, status, created_at) "
-        "VALUES (?,?,?,?,?,?,?,?)",
+        "INSERT INTO orders (order_no, member_id, flight_no, flight_date, cabin, amount, status, created_at, passengers) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
         (order_no, member_id, quote["flight_no"], quote["flight_date"], quote["cabin"],
-         quote["total_amount"], "待支付", date.today().isoformat()),
+         quote["total_amount"], "待支付", date.today().isoformat(), quote["passengers"]),
     )
     conn.commit()
     conn.close()
@@ -609,6 +609,125 @@ def refund_order_instant(order_no: str, member_id: str = None) -> dict:
     return {"success": True, "order_no": order_no, "status": "已退款",
             "refund_amount": quote["predict_amount"], "fee": quote["fee"],
             "message": f"订单 {order_no} 已退款 {quote['predict_amount']} 元（手续费 {quote['fee']} 元，{quote['fee_tier']}）"}
+
+# ------------------------------------------------ 改签（免改签费，差价多退少补）
+
+def _ticket_passengers(row) -> int:
+    """订单乘机人数：新订单有记录；种子订单金额即单人票价，按1人。"""
+    p = row["passengers"] if "passengers" in row.keys() else None
+    try:
+        return int(p) if p else 1
+    except (TypeError, ValueError):
+        return 1
+
+
+def change_quote(order_no: str, member_id: str, new_flight_no: str, new_date: str, new_cabin: str) -> dict:
+    """改签报价：同航线任意航司任意未来日期，免改签费，只计算票价差（多退少补）。"""
+    order_no = security.normalize(order_no)
+    new_flight_no = security.normalize(new_flight_no)
+    new_cabin = (new_cabin or "").strip()
+    if new_cabin not in ("经济", "商务"):
+        return {"error": "舱位仅支持：经济 / 商务"}
+
+    conn = _conn()
+    o = conn.execute(
+        "SELECT o.order_no, o.member_id, o.status, o.amount, o.passengers, o.flight_no, o.flight_date, "
+        "o.cabin, f.dep_iata, f.arr_iata, f.dep_time "
+        "FROM orders o JOIN flights f ON f.flight_no = o.flight_no WHERE o.order_no = ?",
+        (order_no,)).fetchone()
+    if not o:
+        conn.close()
+        return {"error": f"订单不存在：{order_no}"}
+    if member_id and security.normalize(member_id) != security.normalize(o["member_id"]):
+        conn.close()
+        return {"error": "无权限：只能改签登录会员本人的订单"}
+    if o["status"] not in ("已出票", "已改签"):
+        conn.close()
+        return {"error": f"订单状态为「{o['status']}」，只有「已出票/已改签」的订单可以改签"}
+    if o["dep_iata"] == o["arr_iata"]:
+        conn.close()
+        return {"error": "订单航线数据异常"}
+
+    from datetime import datetime as _dt
+    try:
+        old_depart = _dt.strptime(f"{o['flight_date']} {o['dep_time']}", "%Y-%m-%d %H:%M")
+    except Exception:
+        old_depart = None
+    if old_depart and (old_depart - _dt.now()).total_seconds() <= 0:
+        conn.close()
+        return {"error": "原航班已起飞，无法改签"}
+
+    nd = _normalize_date(new_date)
+    if not nd:
+        conn.close()
+        return {"error": "新日期格式应为 YYYY-MM-DD"}
+    if nd <= date.today():
+        conn.close()
+        return {"error": "改签日期必须是今天之后的日期"}
+
+    nf = conn.execute(
+        "SELECT f.flight_no, a.name_cn AS airline, f.dep_iata, f.arr_iata, f.dep_time, f.arr_time, "
+        "fd.city_cn AS dep_city, fa.city_cn AS arr_city "
+        "FROM flights f JOIN airlines a ON a.code = f.airline_code "
+        "JOIN airports fd ON fd.iata3 = f.dep_iata JOIN airports fa ON fa.iata3 = f.arr_iata "
+        "WHERE f.flight_no = ?", (new_flight_no,)).fetchone()
+    if not nf:
+        conn.close()
+        return {"error": f"新航班不存在：{new_flight_no}"}
+    if (nf["dep_iata"], nf["arr_iata"]) != (o["dep_iata"], o["arr_iata"]):
+        conn.close()
+        return {"error": f"改签仅支持同一航线（{o['dep_iata']}-{o['arr_iata']}），新航班航线不符"}
+    np_row = conn.execute(
+        "SELECT price FROM flight_prices WHERE flight_no = ? AND flight_date = ? AND cabin = ?",
+        (new_flight_no, nd.isoformat(), new_cabin)).fetchone()
+    conn.close()
+    if not np_row:
+        return {"error": f"{new_flight_no} 在 {nd.isoformat()} 无 {new_cabin}舱 在售票价"}
+
+    passengers = _ticket_passengers(o)
+    old_unit = int(o["amount"]) // max(1, passengers)
+    new_unit = int(np_row["price"])
+    new_total = new_unit * passengers
+    diff = new_total - int(o["amount"])
+    return {"order_no": order_no, "passengers": passengers,
+            "old": {"flight_no": o["flight_no"], "date": o["flight_date"], "cabin": o["cabin"],
+                    "amount": int(o["amount"])},
+            "new": {"flight_no": nf["flight_no"], "airline": nf["airline"],
+                    "route": f"{nf['dep_city']}-{nf['arr_city']}", "date": nd.isoformat(),
+                    "dep_time": nf["dep_time"], "arr_time": nf["arr_time"],
+                    "cabin": new_cabin, "unit_price": new_unit, "amount": new_total},
+            "fare_diff": diff,
+            "diff_desc": (f"需补差价 {diff} 元" if diff > 0 else
+                          (f"退回差价 {-diff} 元" if diff < 0 else "票价相同，无差价")),
+            "change_fee": 0,
+            "message": f"改签免手续费，{('补差价 ' + str(diff) + ' 元') if diff > 0 else (('退差价 ' + str(-diff) + ' 元') if diff < 0 else '无差价')}"}
+
+
+def change_order(order_no: str, member_id: str, new_flight_no: str, new_date: str, new_cabin: str) -> dict:
+    """执行改签：更新订单航班/日期/舱位/金额，状态置为「已改签」。
+
+    免改签费，仅多退少补票价差（负差价直接调减金额，演示不产生退款流水）。
+    """
+    quote = change_quote(order_no, member_id, new_flight_no, new_date, new_cabin)
+    if quote.get("error"):
+        return quote
+
+    order_no = security.normalize(order_no)
+    new_info = quote["new"]
+    conn = _conn()
+    conn.execute(
+        "UPDATE orders SET flight_no = ?, flight_date = ?, cabin = ?, amount = ?, status = '已改签', "
+        "admin_note = ? WHERE order_no = ?",
+        (new_info["flight_no"], new_info["date"], new_info["cabin"], new_info["amount"],
+         f"改签: {quote['old']['flight_no']}/{quote['old']['date']}/{quote['old']['cabin']} -> "
+         f"{new_info['flight_no']}/{new_info['date']}/{new_info['cabin']}，{quote['diff_desc']}",
+         order_no))
+    conn.commit()
+    conn.close()
+    return {"success": True, "order_no": order_no, "status": "已改签",
+            "old": quote["old"], "new": new_info, "fare_diff": quote["fare_diff"],
+            "message": f"订单 {order_no} 已改签至 {new_info['airline']}{new_info['flight_no']} "
+                       f"{new_info['date']} {new_info['dep_time']}，{quote['diff_desc']}"}
 
 
 # ---------------------------------------------------------------- 天气

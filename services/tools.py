@@ -245,6 +245,23 @@ def submit_booking_request(flight_no: str, flight_date: str, cabin: str, passeng
 
 
 @tool
+def change_request(order_no: str, new_flight_no: str, new_date: str, new_cabin: str) -> str:
+    """【改签确认工具】用户要求改签且已确认新航班方案后调用，发起改签确认请求。
+
+    改签范围：同一航线（出发/到达相同）任意航司任意未来日期，舱位可变。
+    免改签费，票价差多退少补。系统会向用户展示改签确认卡片，用户点击"确认改签"后
+    由系统执行。本工具不会真正改签。
+
+    Args:
+        order_no: 订单号（如 O0123456）
+        new_flight_no: 改签后的新航班号（同航线，用 search_flights 查询后确定）
+        new_date: 新出发日期 YYYY-MM-DD
+        new_cabin: 新舱位（经济 / 商务）
+    """
+    return _dump({"status": "awaiting_user_confirmation"})
+
+
+@tool
 def refund_request(order_no: str, reason: str = "", refund_type: str = "voluntary") -> str:
     """【退票确认工具】用户要求退票且提供订单号后调用，发起退票确认请求。
 

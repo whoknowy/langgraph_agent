@@ -120,7 +120,7 @@ suffix = str(random.randint(1000, 9999))
 new_flight_no = "CA" + suffix
 al_code = "X" + random.choice("ABCDEFGH") + str(random.randint(0, 9))[:1]
 al_code = ("X" + random.choice("QWRTYP"))[:2] + str(random.randint(10, 99))[:2]
-al_code = "Z" + str(random.randint(0, 9))
+al_code = "".join(random.choice("ABCDEFGHJKLMNPQRSTUVWX") for _ in range(2))
 ap_code = "".join(random.choice("QXZJNMG") for _ in range(1)) + "".join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ") for _ in range(2))
 ap_city = "测试城" + suffix
 d, _ = req(admin_op, "GET", "/admin/api/airports")
@@ -162,6 +162,55 @@ d, _ = req(admin_op, "GET", "/admin/api/orders?status=" + urllib.parse.quote("�
 results.append(check("11.订单全局查询(按状态)", any(o["order_no"] == order_a for o in d.get("orders", []))))
 d, _ = req(admin_op, "GET", "/admin/api/customers?q=M1001")
 results.append(check("12.会员查询", d.get("count", 0) >= 1 and d["customers"][0]["name"] == "李磊"))
+
+# ---- 改签闭环（免改签费，差价多退少补） ----
+d, code = req(member_op, "POST", "/api/book",
+              {"flight_no": "CA1061", "flight_date": "2026-08-31", "cabin": "经济", "passengers": 2})
+chg_order = d["order_no"]
+results.append(check("14a.下单passengers落库", d.get("passengers") == 2))
+req(member_op, "POST", "/api/pay", {"order_no": chg_order})
+# 新航班：同航线（北京-上海）任意航司，晚一周
+import datetime as _dt
+new_date = (_dt.date.today() + _dt.timedelta(days=7)).isoformat()
+d, code = req(member_op, "GET", f"/api/change_quote?order_no={chg_order}&new_flight_no=MU1074&new_date={new_date}&new_cabin={urllib.parse.quote('经济')}")
+results.append(check("14b.改签报价(差价=新总价-原金额)",
+                     code is None and d.get("fare_diff") == d.get("new", {}).get("amount", 0) - d.get("old", {}).get("amount", 0)
+                     and d.get("change_fee") == 0,
+                     f"| 原金额={d.get('old', {}).get('amount')} 新总额={d.get('new', {}).get('amount')} 差价={d.get('fare_diff')}"))
+d, code = req(member_op, "POST", "/api/change", {"order_no": chg_order, "new_flight_no": "MU1074",
+                                                 "new_date": new_date, "new_cabin": "经济"})
+results.append(check("14c.执行改签(已改签)", code is None and d.get("status") == "已改签",
+                     f"| {d.get('message', d.get('error'))}"))
+d, _ = req(member_op, "GET", "/api/my/orders")
+row = next((o for o in d.get("orders", []) if o["order_no"] == chg_order), {})
+results.append(check("14d.订单数据已更新为新航班",
+                     row.get("flight") == "东方航空MU1074" and row.get("flight_date") == new_date
+                     and row.get("status") == "已改签"))
+# 越权：他人改签应拒绝
+d, code = req(member_op, "POST", "/api/change", {"order_no": "O1889686", "new_flight_no": "MU1074",
+                                                 "new_date": new_date, "new_cabin": "经济"})
+results.append(check("14e.改签他人订单被拒绝", code == 400))
+
+# ---- 生命周期：起飞后自动「已使用」，退票被状态机拒绝 ----
+conn = __import__("sqlite3").connect("data/flight_system.db")
+d, code = req(member_op, "POST", "/api/book",
+              {"flight_no": "CA1061", "flight_date": "2026-08-31", "cabin": "经济", "passengers": 1})
+fly_order = d["order_no"]
+req(member_op, "POST", "/api/pay", {"order_no": fly_order})
+conn.execute("UPDATE orders SET flight_date = ?, dep_time2 = ? WHERE order_no = ?" if False else
+             "UPDATE orders SET flight_date = ? WHERE order_no = ?",
+             ((_dt.date.today() - _dt.timedelta(days=1)).isoformat(), fly_order))
+conn.commit(); conn.close()
+from services.lifecycle import mark_flown_orders
+mark_flown_orders()
+d, _ = req(member_op, "GET", "/api/my/orders")
+row = next((o for o in d.get("orders", []) if o["order_no"] == fly_order), {})
+results.append(check("15a.起飞后订单自动「已使用」", row.get("status") == "已使用"))
+d, code = req(member_op, "POST", "/api/refund", {"order_no": fly_order, "refund_type": "voluntary"})
+results.append(check("15b.已使用订单退票被状态机拒绝", code == 400))
+d, code = req(member_op, "POST", "/api/change", {"order_no": fly_order, "new_flight_no": "MU1074",
+                                                 "new_date": new_date, "new_cabin": "经济"})
+results.append(check("15c.已使用订单改签被状态机拒绝", code == 400))
 
 # ---- 越权：会员会话访问管理接口 ----
 d, code = req(member_op, "GET", "/admin/api/stats")
