@@ -356,6 +356,134 @@ def create_complaint(member_id: str = None, order_no: str = None, content: str =
             "message": f"投诉已登记，投诉单号 {ticket_no}，我们将在24小时内跟进处理"}
 
 
+# ---------------------------------------------------------------- 会员/订票
+
+def get_customer(member_id: str) -> dict:
+    """查询会员信息（登录校验与身份注入用）。"""
+    conn = _conn()
+    r = conn.execute("SELECT member_id, name, phone, email, level FROM customers WHERE member_id = ?",
+                     ((member_id or "").strip().upper(),)).fetchone()
+    conn.close()
+    return dict(r) if r else {"error": f"会员不存在：{member_id}"}
+
+
+def list_demo_accounts(limit: int = 3) -> list:
+    """演示账号（登录页一键填入）：手机号仅返回后4位。"""
+    conn = _conn()
+    rows = conn.execute("SELECT member_id, name, phone, level FROM customers ORDER BY member_id LIMIT ?",
+                        (int(limit),)).fetchall()
+    conn.close()
+    return [{"member_id": r["member_id"], "name": r["name"],
+             "phone_suffix": r["phone"][-4:], "level": r["level"]} for r in rows]
+
+
+def booking_quote(flight_no: str, flight_date: str, cabin: str, passengers: int = 1) -> dict:
+    """订票报价：按航班+日期+舱位取实时票价，返回单价与总价。"""
+    d = _normalize_date(flight_date)
+    if not flight_no or not d:
+        return {"error": "需要航班号与日期 YYYY-MM-DD"}
+    cabin = (cabin or "").strip()
+    if cabin not in ("经济", "商务"):
+        return {"error": "舱位仅支持：经济 / 商务"}
+    try:
+        passengers = int(passengers)
+    except (TypeError, ValueError):
+        return {"error": "人数必须是整数"}
+    if not 1 <= passengers <= 9:
+        return {"error": "人数需在 1-9 之间"}
+
+    conn = _conn()
+    frow = conn.execute(
+        "SELECT f.flight_no, a.name_cn AS airline, f.dep_time, "
+        "fd.city_cn AS dep_city, fa.city_cn AS arr_city "
+        "FROM flights f JOIN airlines a ON a.code = f.airline_code "
+        "JOIN airports fd ON fd.iata3 = f.dep_iata JOIN airports fa ON fa.iata3 = f.arr_iata "
+        "WHERE f.flight_no = ?", (flight_no.strip().upper(),)).fetchone()
+    if not frow:
+        conn.close()
+        return {"error": f"航班不存在：{flight_no}"}
+    prow = conn.execute(
+        "SELECT price FROM flight_prices WHERE flight_no = ? AND flight_date = ? AND cabin = ?",
+        (frow["flight_no"], d.isoformat(), cabin)).fetchone()
+    conn.close()
+    if not prow:
+        return {"error": f"{flight_no} 在 {d.isoformat()} 无 {cabin}舱 在售票价"}
+
+    unit = int(prow["price"])
+    return {"flight_no": frow["flight_no"], "airline": frow["airline"],
+            "route": f"{frow['dep_city']}-{frow['arr_city']}", "dep_time": frow["dep_time"],
+            "flight_date": d.isoformat(), "cabin": cabin, "passengers": passengers,
+            "unit_price": unit, "total_amount": unit * passengers}
+
+
+def _generate_order_no(conn: sqlite3.Connection) -> str:
+    """生成唯一订单号：O + 7位随机数字（与种子数据格式一致）。"""
+    import random
+    for _ in range(20):
+        no = "O" + "".join(random.choice("0123456789") for _ in range(7))
+        if not conn.execute("SELECT 1 FROM orders WHERE order_no = ?", (no,)).fetchone():
+            return no
+    raise RuntimeError("订单号生成失败")
+
+
+def book_flight(member_id: str, flight_no: str, flight_date: str, cabin: str, passengers: int = 1) -> dict:
+    """创建订单（状态"待支付"）。member_id 必须为已登录会员。"""
+    if not member_id:
+        return {"error": "需要登录会员身份才能订票"}
+    quote = booking_quote(flight_no, flight_date, cabin, passengers)
+    if quote.get("error"):
+        return quote
+
+    conn = _conn()
+    cust = conn.execute("SELECT 1 FROM customers WHERE member_id = ?", (member_id,)).fetchone()
+    if not cust:
+        conn.close()
+        return {"error": f"会员号 {member_id} 不存在"}
+    order_no = _generate_order_no(conn)
+    conn.execute(
+        "INSERT INTO orders (order_no, member_id, flight_no, flight_date, cabin, amount, status, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (order_no, member_id, quote["flight_no"], quote["flight_date"], quote["cabin"],
+         quote["total_amount"], "待支付", date.today().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+    return {"success": True, "order_no": order_no, **quote, "status": "待支付",
+            "message": f"订单 {order_no} 已创建（待支付），金额 {quote['total_amount']} 元"}
+
+
+def _transition_order(order_no: str, member_id: str, from_status: str, to_status: str) -> dict:
+    """订单状态流转（校验归属与前置状态）。"""
+    conn = _conn()
+    r = conn.execute("SELECT member_id, status FROM orders WHERE order_no = ?",
+                     ((order_no or "").strip().upper(),)).fetchone()
+    if not r:
+        conn.close()
+        return {"error": f"订单不存在：{order_no}"}
+    if member_id and r["member_id"] != member_id:
+        conn.close()
+        return {"error": "订单不属于当前登录会员"}
+    if r["status"] != from_status:
+        conn.close()
+        return {"error": f"订单状态为「{r['status']}」，无法执行该操作（需为「{from_status}」）"}
+    order_no = order_no.strip().upper()
+    conn.execute("UPDATE orders SET status = ? WHERE order_no = ?", (to_status, order_no))
+    conn.commit()
+    conn.close()
+    return {"success": True, "order_no": order_no.strip().upper(), "status": to_status,
+            "message": f"订单 {order_no.strip().upper()} 状态已更新为「{to_status}」"}
+
+
+def pay_order(order_no: str, member_id: str = None) -> dict:
+    """支付订单：待支付 → 已出票。"""
+    return _transition_order(order_no, member_id, "待支付", "已出票")
+
+
+def refund_order(order_no: str, member_id: str = None) -> dict:
+    """申请退票：已出票 → 退票中。"""
+    return _transition_order(order_no, member_id, "已出票", "退票中")
+
+
 # ---------------------------------------------------------------- 天气
 
 def get_city_coords(city: str) -> dict:

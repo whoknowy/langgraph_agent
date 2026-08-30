@@ -389,3 +389,10 @@ tmp/
 *.backup
 
 .langgraph_api
+
+# local env & runtime
+.env
+data/
+*.log
+.langgraph_api/
+_tmp_*.json

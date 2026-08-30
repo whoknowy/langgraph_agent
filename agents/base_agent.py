@@ -25,6 +25,7 @@ class BaseAgent(ABC):
         self.expertise = expertise
         self.llm = None  # 由 initialize_agents 注入
         self._react_cache: Dict[Any, Any] = {}
+        self._pending_action: Any = None  # 确认卡片请求（由伪工具钩子写入）
 
     def set_llm(self, llm):
         self.llm = llm
@@ -38,7 +39,7 @@ class BaseAgent(ABC):
         from services.tools import all_tools
         return [t for t in all_tools() if t.name != "create_complaint"]
 
-    def _react_system_prompt(self) -> str:
+    def _react_system_prompt(self, identity: str = "") -> str:
         from datetime import date as _date
         return (
             f"你是{self.name}，专门负责{self.role}。"
@@ -48,16 +49,45 @@ class BaseAgent(ABC):
             "回答规范：\n"
             "1. 需要数据时**主动调用工具**查询（航班/价格/趋势/延误/天气/订单/投诉），不要凭记忆编造；\n"
             "2. 工具返回的数值（票价、概率、温度等）如实引用，不得虚构；\n"
-            "3. 若信息不足（如缺少会员号/日期），先礼貌追问，不要猜测；\n"
+            "3. 若信息不足（如缺少日期），先礼貌追问，不要猜测；\n"
             "4. 一条消息里包含多个需求时，逐一向用户说明清楚；\n"
             "5. 用简洁、专业、友好的中文回复。"
+            + self._identity_suffix(identity)
         )
+
+    @staticmethod
+    def _identity_suffix(identity: str) -> str:
+        return f"\n\n{identity}" if identity else ""
+
+    def _identity_context(self, state: Dict[str, Any]) -> str:
+        """从 state 取登录会员身份并查库，生成注入提示词的身份说明。"""
+        member_id = state.get("member_id")
+        if not member_id:
+            return ""
+        try:
+            from services import flight_repo
+            cust = flight_repo.get_customer(member_id)
+            if cust.get("error"):
+                return f"当前登录会员：{member_id}（档案校验失败，涉及该身份的写操作请谨慎）"
+            return (
+                f"当前登录会员：{cust['member_id']} {cust['name']}"
+                f"（{cust['level']}会员，手机尾号{str(cust['phone'])[-4:]}）。"
+                "涉及该会员的订单/账单/投诉查询与订票操作可直接使用此身份，无需向用户追问会员号；"
+                "若用户提供的会员号与登录身份不一致，请礼貌提醒并以登录身份为准。"
+            )
+        except Exception as e:
+            print(f"{self.name} 身份注入失败: {e}")
+            return ""
+
+    def _on_tool_call(self, name: str, args: dict):
+        """工具调用钩子。返回 (True, result) 表示已拦截（不执行真实工具），result 作为工具返回值。"""
+        return (False, None)
 
     # ------------------------------------------------------------------
     # ReAct 循环（模型自主 function calling，保持逐 token 流式回调）
     # ------------------------------------------------------------------
 
-    def _react_answer(self, user_query: str, history: List[Dict] = None) -> str:
+    def _react_answer(self, user_query: str, history: List[Dict] = None, identity: str = "") -> str:
         """运行模型自主工具调用循环，返回最终答复文本。
 
         无绑定工具或调用失败时返回 ""（由调用方走无工具降级链路）。
@@ -76,7 +106,7 @@ class BaseAgent(ABC):
                 self._react_cache[key] = self.llm.bind_tools(tools)
             llm_with_tools = self._react_cache[key]
 
-            messages = [SystemMessage(content=self._react_system_prompt())]
+            messages = [SystemMessage(content=self._react_system_prompt(identity))]
             messages.extend(self._history_messages(history))
             messages.append(HumanMessage(content=user_query))
 
@@ -88,15 +118,19 @@ class BaseAgent(ABC):
                 for tc in tool_calls:
                     name = tc.get("name") or ""
                     args = tc.get("args") or {}
-                    tool = tools_by_name().get(name)
-                    if not tool:
-                        result = {"error": f"工具不存在: {name}"}
+                    handled, hook_result = self._on_tool_call(name, args)
+                    if handled:
+                        result = hook_result
                     else:
-                        try:
-                            raw = tool.invoke(args)
-                            result = json.loads(raw) if isinstance(raw, str) else raw
-                        except Exception as e:
-                            result = {"error": f"工具执行失败: {e}"}
+                        tool = tools_by_name().get(name)
+                        if not tool:
+                            result = {"error": f"工具不存在: {name}"}
+                        else:
+                            try:
+                                raw = tool.invoke(args)
+                                result = json.loads(raw) if isinstance(raw, str) else raw
+                            except Exception as e:
+                                result = {"error": f"工具执行失败: {e}"}
                     print(f"[{self.name}] 模型自主调用工具: {name} -> "
                           f"{json.dumps(result, ensure_ascii=False)[:150]}")
                     messages.append(ToolMessage(
@@ -109,12 +143,12 @@ class BaseAgent(ABC):
             print(f"{self.name} ReAct 调用失败，降级为常规链路: {e}")
             return ""
 
-    def _plain_answer(self, user_query: str, history: List[Dict] = None) -> str:
+    def _plain_answer(self, user_query: str, history: List[Dict] = None, identity: str = "") -> str:
         """无工具降级：一次普通调用（保持人设与上下文）。"""
         if self.llm is None:
             return "抱歉，系统暂时无法处理您的请求，请稍后重试。"
         try:
-            messages = [SystemMessage(content=self._react_system_prompt())]
+            messages = [SystemMessage(content=self._react_system_prompt(identity))]
             messages.extend(self._history_messages(history))
             messages.append(HumanMessage(content=user_query))
             return self.llm.invoke(messages).content or ""
@@ -183,24 +217,28 @@ class BaseAgent(ABC):
         """处理客户查询。state 至少包含 customer_query 与 messages（checkpoint 历史）。"""
 
     def _run(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """process 的公共骨架：取历史 → ReAct → 降级 → 返回增量。"""
+        """process 的公共骨架：取历史与身份 → ReAct → 降级 → 返回增量。"""
         query = state["customer_query"]
         history = list(state.get("messages") or [])
         # 历史末尾是本轮用户消息本身（由图入口的 reducer 追加），剔除后传入
         if history and history[-1].get("role") == "user" and history[-1].get("content") == query:
             history = history[:-1]
 
+        identity = self._identity_context(state)
+        self._pending_action = None
+
         try:
-            response = self._react_answer(query, history)
+            response = self._react_answer(query, history, identity)
         except Exception as e:
             print(f"{self.name} ReAct 异常: {e}")
             response = ""
         if not response:
-            response = self._plain_answer(query, history)
+            response = self._plain_answer(query, history, identity)
 
         return {
             "agent_response": response,
             "current_agent": self.name,
+            "pending_action": self._pending_action,
         }
 
     def get_info(self) -> Dict[str, Any]:

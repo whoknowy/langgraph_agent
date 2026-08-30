@@ -224,6 +224,40 @@ def create_complaint(member_id: str = "", order_no: str = "", content: str = "")
         return _dump({"error": f"投诉登记失败: {e}"})
 
 
+# ------------------------------------------------ 确认卡片伪工具（schema-only）
+# 这两个工具不执行任何写操作：Agent 的 ReAct 循环通过 _on_tool_call 钩子拦截调用，
+# 把参数交给前端确认卡片；用户点击确认后由 REST 接口（/api/book 等）真正写库。
+
+@tool
+def submit_booking_request(flight_no: str, flight_date: str, cabin: str, passengers: int = 1) -> str:
+    """【订票确认工具】当用户的订票信息收集齐全后调用，发起订票确认请求。
+
+    系统会向用户展示确认卡片，用户点击"确认预订"后由系统正式下单（订单状态：待支付）。
+    本工具不会真正下单。参数不全时不要调用，先向用户追问缺失信息。
+
+    Args:
+        flight_no: 航班号（如 CA1061）
+        flight_date: 出发日期 YYYY-MM-DD
+        cabin: 舱位（经济 / 商务）
+        passengers: 乘机人数（1-9）
+    """
+    return _dump({"status": "awaiting_user_confirmation"})
+
+
+@tool
+def refund_request(order_no: str, reason: str = "") -> str:
+    """【退票确认工具】用户要求退票且提供订单号后调用，发起退票确认请求。
+
+    系统会向用户展示退票确认卡片，用户点击"确认退票"后由系统执行退票（订单状态：退票中）。
+    本工具不会真正退票。仅支持"已出票"状态的订单。
+
+    Args:
+        order_no: 订单号（如 O0123456）
+        reason: 退票原因（可选）
+    """
+    return _dump({"status": "awaiting_user_confirmation"})
+
+
 # ---------------------------------------------------------------- 注册表
 
 def _map_airline_code(name: str) -> str:

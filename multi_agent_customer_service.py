@@ -53,6 +53,12 @@ class AgentState(TypedDict):
     guard_blocked: Optional[bool]
     guard_response: Optional[str]
 
+    # 登录会员身份（由 web 层传入）
+    member_id: Optional[str]
+
+    # 确认卡片请求（伪工具钩子产生，前端确认后经 REST 执行）
+    pending_action: Optional[Dict[str, Any]]
+
     # 路由结果
     target_agent: Optional[str]
 
@@ -145,6 +151,8 @@ def _execute_agent_node(state: AgentState, agent_name: str) -> AgentState:
     new_state = _copy_state(state)
     new_state["agent_response"] = result.get("agent_response", "")
     new_state["current_agent"] = result.get("current_agent", agent_name)
+    # 每轮都覆盖写，避免上一轮的确认卡片残留
+    new_state["pending_action"] = result.get("pending_action")
     print(f"[Agent] {agent_name} 执行完成")
     return new_state
 
@@ -183,6 +191,9 @@ def final_response_node(state: AgentState) -> AgentState:
     else:
         final_response = agent_response or "感谢您的咨询，如有其他问题请随时提问。"
 
+    # 拦截路径不经过 Agent 节点，清掉可能残留的上一轮确认卡片
+    pending_action = None if guard_blocked else state.get("pending_action")
+
     # 只返回本轮增量：input 中的用户消息已由 add reducer 累加进通道，
     # 这里仅在缺失时补一条用户轮，避免整段历史被重复累加
     messages_update = []
@@ -196,6 +207,7 @@ def final_response_node(state: AgentState) -> AgentState:
 
     new_state = state.copy()
     new_state["response"] = final_response
+    new_state["pending_action"] = pending_action
     new_state["messages"] = messages_update
 
     print("[节点] 最终响应生成完成")
@@ -256,9 +268,10 @@ class SkillPipelineExecutor:
     def execute(self, query: str, session_id: str = None, customer_info: Dict = None) -> Dict[str, Any]:
         if session_id is None:
             session_id = str(uuid.uuid4())
-        return self._execute_with_langgraph(query, session_id)
+        member_id = (customer_info or {}).get("member_id")
+        return self._execute_with_langgraph(query, session_id, member_id)
 
-    def _execute_with_langgraph(self, query: str, session_id: str) -> Dict[str, Any]:
+    def _execute_with_langgraph(self, query: str, session_id: str, member_id: str = None) -> Dict[str, Any]:
         if self.workflow is None:
             return {"success": False, "session_id": session_id,
                     "response": "系统组件缺失，请检查 LangGraph 安装。", "terminated": False}
@@ -266,6 +279,7 @@ class SkillPipelineExecutor:
         initial_state: AgentState = {
             "customer_query": query,
             "session_id": session_id,
+            "member_id": member_id,
             "messages": [{"role": "user", "content": query}],
         }
 

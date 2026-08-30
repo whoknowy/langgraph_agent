@@ -38,11 +38,26 @@ app.config['SESSION_TYPE'] = 'filesystem'
 
 # --- Flask session 内的本地对话占位（主页模板可能使用）---
 
+def _current_member() -> Dict[str, Any]:
+    """当前登录会员（未登录返回空 dict）。"""
+    return session.get('member') or {}
+
+
+def _require_member():
+    """聊天等接口的登录门禁：未登录返回 (None, 401响应)。"""
+    member = _current_member()
+    if not member:
+        return None, (jsonify({'error': '未登录，请先登录会员账号'}), 401)
+    return member, None
+
+
 def _local_chat_response(user_message: str, session_id: str):
     """LangGraph 服务未启动时，回退到本地多智能体流程。"""
     try:
         from multi_agent_customer_service import process_customer_query
-        result = process_customer_query(user_message, session_id)
+        member = _current_member()
+        result = process_customer_query(user_message, session_id,
+                                        customer_info={"member_id": member.get("member_id")})
         return jsonify({
             'response': result.get('response', ''),
             'session_id': session_id,
@@ -83,11 +98,16 @@ def index():
 def chat():
     """处理聊天请求"""
     try:
+        member, denied = _require_member()
+        if denied:
+            return denied
+
         data = request.get_json()
         user_message = (data.get('message') or '').strip()
         client_session_id = data.get('session_id', 'default')
 
-        ai_text, err_msg, http_code = run_chat_sync(user_message, client_session_id)
+        ai_text, err_msg, http_code = run_chat_sync(user_message, client_session_id,
+                                                    member_id=member.get('member_id'))
         if err_msg in ('无法创建或找到助手', '无法创建线程'):
             return _local_chat_response(user_message, client_session_id)
         if err_msg:
@@ -110,12 +130,17 @@ def chat():
 def chat_stream():
     """处理流式聊天请求"""
     try:
+        member, denied = _require_member()
+        if denied:
+            return denied
+
         data = request.get_json()
         user_message = (data.get('message') or '').strip()
         client_session_id = data.get('session_id', 'default')
 
         return Response(
-            stream_chat_tokens(user_message, client_session_id),
+            stream_chat_tokens(user_message, client_session_id,
+                               member_id=member.get('member_id')),
             mimetype='text/event-stream'
         )
 
@@ -191,6 +216,169 @@ def create_new_session():
         })
     except Exception as e:
         return jsonify({'error': f'创建会话失败: {str(e)}'}), 500
+
+
+# --- 会员登录与身份 ---
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    """会员登录：member_id + 手机号后4位（演示级身份校验）。"""
+    try:
+        data = request.get_json() or {}
+        member_id = (data.get('member_id') or '').strip().upper()
+        phone_suffix = (data.get('phone_suffix') or '').strip()
+        if not member_id or not phone_suffix:
+            return jsonify({'error': '请输入会员号和手机号后4位'}), 400
+
+        from services import flight_repo
+        cust = flight_repo.get_customer(member_id)
+        if cust.get('error'):
+            return jsonify({'error': '会员号不存在，请核对后重试'}), 401
+        if str(cust.get('phone', ''))[-4:] != phone_suffix:
+            return jsonify({'error': '手机号后4位不正确'}), 401
+
+        session['member'] = {
+            'member_id': cust['member_id'],
+            'name': cust['name'],
+            'level': cust['level'],
+        }
+        return jsonify({'member': session['member'], 'message': f"欢迎回来，{cust['name']}"})
+    except Exception as e:
+        return jsonify({'error': f'登录失败: {str(e)}'}), 500
+
+
+@app.route('/api/logout', methods=['POST'])
+def logout():
+    """退出登录"""
+    session.pop('member', None)
+    return jsonify({'message': '已退出登录'})
+
+
+@app.route('/api/me')
+def me():
+    """当前登录会员"""
+    member = _current_member()
+    if not member:
+        return jsonify({'member': None}), 401
+    return jsonify({'member': member})
+
+
+@app.route('/api/demo_accounts')
+def demo_accounts():
+    """演示账号（登录页一键填入）。"""
+    try:
+        from services import flight_repo
+        return jsonify({'accounts': flight_repo.list_demo_accounts(3)})
+    except Exception as e:
+        return jsonify({'error': f'获取演示账号失败: {str(e)}'}), 500
+
+
+# --- 订票 / 支付 / 退票（REST，真正的写库动作） ---
+
+@app.route('/api/booking_quote')
+def booking_quote():
+    """订票报价（确认卡片展示用）。"""
+    try:
+        member, denied = _require_member()
+        if denied:
+            return denied
+        from services import flight_repo
+        result = flight_repo.booking_quote(
+            request.args.get('flight_no', ''),
+            request.args.get('flight_date', ''),
+            request.args.get('cabin', ''),
+            request.args.get('passengers', 1),
+        )
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': f'报价失败: {str(e)}'}), 500
+
+
+@app.route('/api/book', methods=['POST'])
+def book():
+    """创建订单（待支付）。member_id 以登录身份为准。"""
+    try:
+        member, denied = _require_member()
+        if denied:
+            return denied
+        data = request.get_json() or {}
+        from services import flight_repo
+        result = flight_repo.book_flight(
+            member_id=member['member_id'],
+            flight_no=data.get('flight_no', ''),
+            flight_date=data.get('flight_date', ''),
+            cabin=data.get('cabin', ''),
+            passengers=data.get('passengers', 1),
+        )
+        if result.get('error'):
+            return jsonify(result), 400
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': f'下单失败: {str(e)}'}), 500
+
+
+@app.route('/api/pay', methods=['POST'])
+def pay():
+    """支付订单：待支付 → 已出票。"""
+    try:
+        member, denied = _require_member()
+        if denied:
+            return denied
+        data = request.get_json() or {}
+        from services import flight_repo
+        result = flight_repo.pay_order(data.get('order_no', ''), member_id=member['member_id'])
+        if result.get('error'):
+            return jsonify(result), 400
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': f'支付失败: {str(e)}'}), 500
+
+
+@app.route('/api/refund', methods=['POST'])
+def refund():
+    """申请退票：已出票 → 退票中。"""
+    try:
+        member, denied = _require_member()
+        if denied:
+            return denied
+        data = request.get_json() or {}
+        from services import flight_repo
+        result = flight_repo.refund_order(data.get('order_no', ''), member_id=member['member_id'])
+        if result.get('error'):
+            return jsonify(result), 400
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': f'退票失败: {str(e)}'}), 500
+
+
+# --- 我的数据面板（直查库，不过 LLM） ---
+
+@app.route('/api/my/orders')
+def my_orders():
+    """当前会员的订单列表。"""
+    try:
+        member, denied = _require_member()
+        if denied:
+            return denied
+        from services import flight_repo
+        result = flight_repo.get_order_bill(member_id=member['member_id'])
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': f'查询订单失败: {str(e)}'}), 500
+
+
+@app.route('/api/my/complaints')
+def my_complaints():
+    """当前会员的投诉列表。"""
+    try:
+        member, denied = _require_member()
+        if denied:
+            return denied
+        from services import flight_repo
+        result = flight_repo.query_complaints(member_id=member['member_id'])
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': f'查询投诉失败: {str(e)}'}), 500
 
 
 @app.route('/api/health')

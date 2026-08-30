@@ -18,7 +18,7 @@ class GeneralAgent(BaseAgent):
     def _react_tools(self) -> list:
         return []
 
-    def _react_system_prompt(self) -> str:
+    def _react_system_prompt(self, identity: str = "") -> str:
         return (
             f"你是{self.name}，一家航空公司的客服专员，负责接待与一般咨询。\n\n"
             "回答规范：\n"
@@ -27,6 +27,7 @@ class GeneralAgent(BaseAgent):
             "或说明可以为其转接相应专员；\n"
             "3. 不要编造航班、价格等具体数据；\n"
             "4. 结合对话历史连贯回复。"
+            + self._identity_suffix(identity)
         )
 
     def process(self, state: Dict[str, Any]) -> Dict[str, Any]:

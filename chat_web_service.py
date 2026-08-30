@@ -434,7 +434,8 @@ def clear_thread_and_create_new(thread_id: str) -> Tuple[Optional[str], Optional
 # 一次聊天运行（阻塞轮询）
 # -----------------------------------------------------------------------------
 
-def run_chat_sync(user_message: str, client_session_id: Optional[str] = None) -> Tuple[Optional[str], Optional[str], Optional[int]]:
+def run_chat_sync(user_message: str, client_session_id: Optional[str] = None,
+                  member_id: Optional[str] = None) -> Tuple[Optional[str], Optional[str], Optional[int]]:
     """
     在当前线程上提交一轮用户消息并等待完成。
     client_session_id: 前端传入的会话 ID（可为 LangGraph 线程 ID）。
@@ -454,20 +455,19 @@ def run_chat_sync(user_message: str, client_session_id: Optional[str] = None) ->
     assert _assistant_id and _current_thread_id
 
     try:
+        graph_input: Dict[str, Any] = {
+            "messages": [{"role": "user", "content": user_message.strip()}],
+            "customer_query": user_message.strip(),
+            "session_id": _current_thread_id,
+        }
+        if member_id:
+            graph_input["member_id"] = member_id
+
         run_resp = requests.post(
             f"{LANGGRAPH_API_URL}/threads/{_current_thread_id}/runs",
             json={
                 "assistant_id": _assistant_id,
-                "input": {
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": user_message.strip()
-                        }
-                    ],
-                    "customer_query": user_message.strip(),
-                    "session_id": _current_thread_id
-                }
+                "input": graph_input,
             },
             timeout=30
         )
@@ -666,13 +666,15 @@ def _local_stream_fallback(user_message: str, client_session_id: Optional[str] =
     yield "data: [DONE]\n\n"
 
 
-def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = None) -> Iterable[str]:
+def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = None,
+                       member_id: Optional[str] = None) -> Iterable[str]:
     """
     LangGraph 原生 Token 级流式聊天。
 
     通过 POST /threads/{tid}/runs/stream（stream_mode=["messages"]）拿到模型逐
-    token 分片，转成 SSE data 行下发；结束时补发 done 事件（含 thread_id 与完整
-    响应）。LangGraph 不可达时回退本地流程；runs/stream 端点不可用时回退轮询实现。
+    token 分片，转成 SSE data 行下发；结束时回读线程状态补发 pending_action
+    （确认卡片）事件与 done 事件（含 thread_id 与完整响应）。
+    LangGraph 不可达时回退本地流程；runs/stream 端点不可用时回退轮询实现。
     """
     global _assistant_id, _current_thread_id
 
@@ -692,16 +694,20 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
     assert _assistant_id and _current_thread_id
     tid = _current_thread_id
 
+    graph_input: Dict[str, Any] = {
+        "messages": [{"role": "user", "content": user_message.strip()}],
+        "customer_query": user_message.strip(),
+        "session_id": tid,
+    }
+    if member_id:
+        graph_input["member_id"] = member_id
+
     try:
         response = requests.post(
             f"{LANGGRAPH_API_URL}/threads/{tid}/runs/stream",
             json={
                 "assistant_id": _assistant_id,
-                "input": {
-                    "messages": [{"role": "user", "content": user_message.strip()}],
-                    "customer_query": user_message.strip(),
-                    "session_id": tid,
-                },
+                "input": graph_input,
                 "stream_mode": ["messages"],
             },
             stream=True,
@@ -809,11 +815,16 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
 
     # 兜底：整轮没有任何流式输出（如输入守卫高危拦截，无 LLM 参与）时，
     # 回读线程状态中的最终响应并一次性下发，避免前端收到空气泡。
+    final_state = _fetch_thread_final(tid)
     if not any(p.strip() for p in full_parts):
-        final_text = _fetch_thread_response(tid)
+        final_text = final_state.get("response")
         if final_text:
             full_parts.append(final_text)
             yield _sse_line({"content": final_text})
+
+    # 确认卡片请求（Agent 通过伪工具发起，用户点击后经 REST 执行）
+    if final_state.get("pending_action"):
+        yield _sse_line({"pending_action": final_state["pending_action"]})
 
     yield _sse_line({
         "done": True,
@@ -825,18 +836,23 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
     yield "data: [DONE]\n\n"
 
 
-def _fetch_thread_response(thread_id: str) -> Optional[str]:
-    """回读线程状态中的最终响应（用于无流式输出的路径）。"""
+def _fetch_thread_final(thread_id: str) -> Dict[str, Any]:
+    """回读线程状态中的最终响应与确认卡片请求。"""
     try:
         response = requests.get(f"{LANGGRAPH_API_URL}/threads/{thread_id}/state", timeout=5)
         if response.status_code == 200:
             values = (response.json() or {}).get("values") or {}
+            out: Dict[str, Any] = {}
             resp = values.get("response")
             if isinstance(resp, str) and resp.strip():
-                return resp
+                out["response"] = resp
+            pa = values.get("pending_action")
+            if isinstance(pa, dict) and pa.get("type"):
+                out["pending_action"] = pa
+            return out
     except Exception as e:
-        print(f"⚠️ 回读线程响应失败: {e}")
-    return None
+        print(f"⚠️ 回读线程状态失败: {e}")
+    return {}
 
 
 def langgraph_connectivity_test() -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
