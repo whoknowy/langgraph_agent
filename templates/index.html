@@ -2737,7 +2737,7 @@
                     payBtn.type = 'button'; payBtn.className = 'my-row-btn'; payBtn.textContent = '支付';
                     payBtn.onclick = function () { panelOrderAction(o.order_no, 'pay'); };
                     tdOps.appendChild(payBtn);
-                } else if (o.status === '已出票') {
+                } else if (o.status === '已出票' || o.status === '已改签') {
                     const rfBtn = document.createElement('button');
                     rfBtn.type = 'button'; rfBtn.className = 'my-row-btn my-row-btn--danger'; rfBtn.textContent = '退票';
                     rfBtn.onclick = function () { panelOrderAction(o.order_no, 'refund'); };
