@@ -1,179 +1,44 @@
 """
-投诉处理专家智能体
-专门负责客户投诉和建议处理
+投诉处理专家智能体：投诉查询、新投诉登记、安抚与解决方案。
+
+投诉记录存于本地 SQLite complaints 表；用户表达新投诉时由模型调用
+create_complaint 工具落库并返回投诉单号（替代旧版模拟工单系统）。
 """
 
 from typing import Dict, List, Any
-from langchain_core.messages import HumanMessage, SystemMessage
+
 from .base_agent import BaseAgent
-from memory import store_complaint_memory
+
 
 class ComplaintAgent(BaseAgent):
     def __init__(self):
         super().__init__(
             name="投诉处理专家",
             role="客户投诉和建议处理",
-            expertise=["问题记录", "解决方案", "补偿措施", "服务改进"]
+            expertise=["投诉查询", "投诉登记", "安抚沟通", "补偿方案"],
         )
 
-        # TODO: 投诉处理信息应该从客服系统获取，这里只是模拟数据
-        # 实际应用中应该连接客服数据库或调用客服API服务
-        self.complaint_database = {
-            "服务问题": {
-                "响应速度慢": "承诺24小时内响应，超时提供补偿",
-                "服务态度差": "记录问题，安排专人跟进，提供道歉补偿",
-                "专业能力不足": "安排专业培训，提供专家支持",
-                "处理流程": "记录问题 → 分析原因 → 制定方案 → 执行解决 → 回访确认"
-            },
-            "产品质量": {
-                "功能缺陷": "提供免费维修或更换，延长保修期",
-                "外观瑕疵": "提供更换或折扣补偿",
-                "性能不达标": "技术检测确认后，提供升级或退款",
-                "补偿标准": "根据问题严重程度，提供10%-100%的补偿"
-            },
-            "物流配送": {
-                "配送延迟": "超时提供运费补偿，加急配送",
-                "包装破损": "拍照记录，提供更换或补偿",
-                "配送错误": "免费重新配送，提供额外补偿",
-                "紧急处理": "24小时内响应，48小时内解决"
-            }
-        }
+    def _react_tools(self) -> list:
+        # 投诉专家独享 create_complaint（登记新投诉落库）
+        from services.tools import all_tools
+        return all_tools()
+
+    def _react_system_prompt(self) -> str:
+        return (
+            f"你是{self.name}，专门负责{self.role}。"
+            f"你的专业领域包括：{', '.join(self.expertise)}。\n\n"
+            "处理规范：\n"
+            "1. 用户询问已有投诉的处理进度时，调用 query_complaint 查询（需会员号或投诉单号，缺少时先追问）；\n"
+            "2. 用户表达对本次服务/订单的**新投诉**并希望正式反馈时，先致歉安抚，"
+            "再调用 create_complaint 登记投诉，并在回复中告知投诉单号与后续处理时限；"
+            "用户明确要求\"正式提交/登记投诉\"时必须调用 create_complaint，"
+            "即使名下已有历史投诉记录也不要只查询了事；"
+            "注意 create_complaint 只需会员号或订单号**其中之一**即可登记，"
+            "用户已提供会员号时直接登记，不要再追问订单号；\n"
+            "3. 用户只是情绪宣泄、未要求登记时，以安抚和解决方案沟通为主，不要强行落库；\n"
+            "4. 工具返回的内容如实引用，不得虚构单号或处理结果；\n"
+            "5. 用真诚、耐心、专业的中文回复。"
+        )
 
     def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """处理投诉相关查询"""
-        customer_query = state["customer_query"]
-        session_id = state.get("session_id", "default")
-
-        # 添加用户消息到会话历史
-        self._add_message_to_session(session_id, customer_query, is_user=True)
-
-        # 从会话管理器获取对话历史上下文
-        conversation_context = self._get_conversation_context(session_id)
-
-        # 优先：模型自主工具调用（ReAct）——按会员/投诉单查询真实投诉记录
-        try:
-            react_payload = ""
-            if conversation_context:
-                react_payload += f"对话历史上下文：\n{conversation_context}\n\n"
-            react_payload += f"客户需求：{customer_query}"
-            response_content = self._react_answer(react_payload)
-        except Exception as e:
-            print(f"投诉专家 ReAct 预处理失败: {e}")
-            response_content = ""
-
-        if not response_content:
-            # 降级：常规流式调用
-            matched_info = self._match_complaint_info(customer_query)
-
-            # 构建系统提示并增强对话上下文说明
-            base_system_prompt = f"""你是{self.name}，专门负责{self.role}。
-你的专业领域包括：{', '.join(self.expertise)}
-
-请以专业、耐心的态度处理客户投诉：
-1. 认真倾听客户的问题和不满
-2. 表达理解和歉意
-3. 提供具体的解决方案和时间承诺
-4. 如果问题复杂，说明后续处理流程
-
-回答要真诚、专业，体现对客户的重视。如果投诉超出你的处理权限，请说明并承诺转交给相关部门处理。"""
-
-            system_prompt = self._enhance_system_prompt_with_context(base_system_prompt)
-
-            # 构建消息列表
-            messages = []
-
-            # 添加对话历史上下文（如果有的话）
-            if conversation_context:
-                context_message = f"""对话历史上下文：
-{conversation_context}
-
-请基于以上对话历史和当前查询，提供连贯的处理方案。"""
-                messages.append(SystemMessage(content=context_message))
-
-            # 添加系统提示
-            messages.append(SystemMessage(content=system_prompt))
-
-            # 如果有匹配的投诉信息，添加到上下文中
-            if matched_info:
-                complaint_context = f"""投诉处理政策：
-{matched_info}
-
-当前查询：{customer_query}"""
-                messages.append(HumanMessage(content=complaint_context))
-            else:
-                messages.append(HumanMessage(content=customer_query))
-
-            # 调用LLM（流式：逐 token 触发 LangChain 回调，LangGraph 原生流可实时转发）
-            try:
-                response_content = ""
-                streamed_ok = True
-                try:
-                    for _chunk in self.llm.stream(messages):
-                        response_content += (_chunk.content or "")
-                except Exception as _stream_err:
-                    print(f"投诉专家流式调用失败，降级为整体调用: {_stream_err}")
-                    streamed_ok = False
-                if not streamed_ok:
-                    response = self.llm.invoke(messages)
-                    response_content = response.content
-            except Exception as e:
-                print(f"投诉专家调用LLM时出错: {e}")
-                response_content = "抱歉，处理您的投诉时遇到系统错误，请稍后重试。"
-
-        # 添加AI回复到会话历史
-        self._add_message_to_session(session_id, response_content, is_user=False)
-
-        # 存储投诉记忆到长期记忆
-        try:
-            # 提取投诉详情（使用用户查询作为投诉详情）
-            complaint_details = customer_query
-            
-            # 提取解决方案（使用AI回复作为解决方案）
-            solution = response_content
-            
-            # 生成后续跟进信息
-            follow_up = "客服将在24小时内联系您，确认问题处理情况"
-            
-            # 存储到长期记忆
-            store_complaint_memory(session_id, complaint_details, solution, follow_up)
-        except Exception as e:
-            print(f"存储投诉记忆时出错: {e}")
-
-        # 更新状态
-        state["response"] = response_content
-        state["current_agent"] = self.name
-        state["tools_used"].append(f"{self.name}_processing")
-
-        return state
-
-    def _match_complaint_info(self, query: str) -> str:
-        """匹配查询中的投诉信息"""
-        query_lower = query.lower()
-        matched_info = []
-
-        # 精确匹配投诉类型
-        for category, solutions in self.complaint_database.items():
-            if any(keyword in query_lower for keyword in category.lower().split()):
-                # 格式化投诉信息
-                info_text = f"""【{category}】\n"""
-                for issue, solution in solutions.items():
-                    info_text += f"• {issue}：{solution}\n"
-                matched_info.append(info_text)
-
-        # 如果没有精确匹配，尝试关键词匹配
-        if not matched_info:
-            for category, solutions in self.complaint_database.items():
-                if any(keyword in query_lower for keyword in ["投诉", "问题", "建议", "不满", "改进"]):
-                    info_text = f"""相关处理：{category}\n"""
-                    # 只显示前2项解决方案
-                    for i, (issue, solution) in enumerate(solutions.items()):
-                        if i < 2:
-                            info_text += f"• {issue}：{solution}\n"
-                    info_text += "..."
-                    matched_info.append(info_text)
-
-        return "\n".join(matched_info) if matched_info else ""
-
-    def _react_tools(self):
-        from services.tools import query_complaint, get_order_bill
-        return [query_complaint, get_order_bill]
+        return self._run(state)

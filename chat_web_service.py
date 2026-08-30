@@ -218,62 +218,69 @@ def ensure_assistant_exists() -> bool:
         return False
 
 
+_session_thread_map: Dict[str, str] = {}
+
+
+def _thread_exists(thread_id: str) -> bool:
+    try:
+        return requests.get(f"{LANGGRAPH_API_URL}/threads/{thread_id}", timeout=5).status_code == 200
+    except Exception:
+        return False
+
+
+def _create_thread() -> Optional[str]:
+    try:
+        response = requests.post(f"{LANGGRAPH_API_URL}/threads", json={}, timeout=10)
+        if response.status_code == 200:
+            return response.json()["thread_id"]
+        print(f"❌ 创建线程失败: {response.status_code}")
+    except Exception as e:
+        print(f"❌ 创建线程时出错: {e}")
+    return None
+
+
 def ensure_thread_exists(client_session_id: Optional[str] = None) -> bool:
     """
-    确保有可用的 LangGraph 线程。
-    client_session_id: 前端传入的 session_id；若是合法线程 ID 则复用。"""
+    确保有可用的 LangGraph 线程，返回是否成功。
+
+    会话隔离规则：
+    - client_session_id 已映射到有效线程 → 复用；
+    - client_session_id 本身是有效线程 ID（前端直接传线程 ID）→ 复用并登记映射；
+    - 其余非缺省会话 ID（如前端新建会话的 uuid）→ 新建独立线程并登记，
+      避免第一条消息串到其它会话的历史；
+    - 'default'/缺省 → 沿用旧行为：优先复用当前缓存线程，否则新建。"""
     global _current_thread_id
 
     sid = client_session_id
     if sid and sid != 'default':
-        try:
-            thread_response = requests.get(
-                f"{LANGGRAPH_API_URL}/threads/{sid}",
-                timeout=5
-            )
-            if thread_response.status_code == 200:
-                _current_thread_id = sid
+        mapped = _session_thread_map.get(sid)
+        if mapped:
+            if _thread_exists(mapped):
+                _current_thread_id = mapped
                 return True
-            else:
-                print(f"⚠️ 会话ID {sid} 不是有效的LangGraph线程ID，将创建新线程")
-                sid = None
-        except Exception as e:
-            print(f"⚠️ 验证会话ID {sid} 时出错: {e}")
-            sid = None
-
-    if _current_thread_id:
-        # 缓存的线程可能已被删除（如前端删除会话后），先校验，失效则重建
-        try:
-            check_response = requests.get(
-                f"{LANGGRAPH_API_URL}/threads/{_current_thread_id}",
-                timeout=5
-            )
-            if check_response.status_code == 200:
-                return True
-            print(f"⚠️ 缓存的线程 {_current_thread_id} 已不存在，将创建新线程")
-        except Exception as e:
-            print(f"⚠️ 校验缓存线程 {_current_thread_id} 时出错: {e}，将创建新线程")
-        _current_thread_id = None
-
-    try:
-        response = requests.post(
-            f"{LANGGRAPH_API_URL}/threads",
-            json={},
-            timeout=10
-        )
-
-        if response.status_code == 200:
-            result = response.json()
-            _current_thread_id = result["thread_id"]
-            print(f"✅ 创建新线程: {_current_thread_id}")
+            _session_thread_map.pop(sid, None)
+        if _thread_exists(sid):
+            _session_thread_map[sid] = sid
+            _current_thread_id = sid
             return True
-        else:
-            print(f"❌ 创建线程失败: {response.status_code}")
-            return False
-
-    except Exception as e:
-        print(f"❌ 确保线程存在时出错: {e}")
+        new_tid = _create_thread()
+        if new_tid:
+            _session_thread_map[sid] = new_tid
+            _current_thread_id = new_tid
+            print(f"✅ 为会话 {sid[:8]}… 创建新线程: {new_tid}")
+            return True
         return False
+
+    if _current_thread_id and _thread_exists(_current_thread_id):
+        return True
+    _current_thread_id = None
+    new_tid = _create_thread()
+    if new_tid:
+        _current_thread_id = new_tid
+        print(f"✅ 创建新线程: {new_tid}")
+        return True
+    print("❌ 无法创建线程")
+    return False
 
 
 def _normalize_created_at(created_at: Any) -> float:
@@ -395,6 +402,8 @@ def delete_remote_thread(thread_id: str) -> Tuple[bool, int]:
     """删除 LangGraph 线程。成功为任意 2xx（DELETE 常为 204 No Content）。"""
     response = requests.delete(f"{LANGGRAPH_API_URL}/threads/{thread_id}", timeout=10)
     ok = 200 <= response.status_code < 300
+    if ok:
+        _session_thread_map.pop(thread_id, None)
     return ok, response.status_code
 
 
@@ -403,20 +412,21 @@ def clear_thread_and_create_new(thread_id: str) -> Tuple[Optional[str], Optional
     删除旧线程并在服务端新建线程。
     成功返回 (new_thread_id, None)，失败返回 (None, error)。
     """
+    global _current_thread_id
     ok, status = delete_remote_thread(thread_id)
     if not ok:
         return None, f'清空会话失败: {status}'
 
-    new_thread_response = requests.post(
-        f"{LANGGRAPH_API_URL}/threads",
-        json={},
-        timeout=10
-    )
-
-    if new_thread_response.status_code != 200:
+    new_thread_id = _create_thread()
+    if not new_thread_id:
         return None, '创建新线程失败'
 
-    new_thread_id = new_thread_response.json()["thread_id"]
+    # 把仍指向旧线程的会话映射迁移到新线程
+    for sid, tid in list(_session_thread_map.items()):
+        if tid == thread_id:
+            _session_thread_map[sid] = new_thread_id
+    if _current_thread_id == thread_id:
+        _current_thread_id = new_thread_id
     return new_thread_id, None
 
 
@@ -712,6 +722,7 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
     current_event: Optional[str] = None
     prev_content = ""
     emitted_tools: set = set()
+    msg_nodes: Dict[str, str] = {}  # 消息id -> 产生它的图节点（来自 messages/metadata 事件）
     try:
         for raw in response.iter_lines(decode_unicode=True):
             line = (raw or "").strip() if not isinstance(raw, bytes) else raw.decode("utf-8", "replace").strip()
@@ -730,12 +741,25 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
             except Exception:
                 continue
 
+            if current_event == "messages/metadata" and isinstance(payload, dict):
+                # data: {消息id: {"metadata": {"langgraph_node": 节点名, ...}}}
+                for mid, info in payload.items():
+                    node = ((info or {}).get("metadata") or {}).get("langgraph_node")
+                    if mid and node:
+                        msg_nodes[mid] = node
+                continue
+
             if isinstance(payload, list):
-                # messages / messages/partial 事件：data 是消息数组，content 为「累计文本」，
+                # messages / messages/partial 事件：data 是消息分片数组（累计文本），
                 # 与上一分片做增量，仅下发新增片段（Token 级打字效果）；
-                # 模型决定调用工具时，chunk.tool_calls 出现工具名（累计分片），发 running 事件
+                # 模型决定调用工具时，chunk.tool_calls 出现工具名（累计分片），发 running 事件；
+                # 意图分类节点的内部输出不进入对话流，按消息id对应的节点过滤。
                 if current_event in ("messages", "messages/partial"):
                     msg = payload[0] if payload else None
+                    msg_id = msg.get("id") if isinstance(msg, dict) else None
+                    if msg_id and msg_nodes.get(msg_id) == "intent_classifier":
+                        prev_content = ""
+                        continue
                     content = _extract_stream_content(msg)
                     if content:
                         delta = content[len(prev_content):] if content.startswith(prev_content) else content
@@ -757,6 +781,12 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
             if event == "messages":
                 data_obj = payload.get("data", {})
                 chunk = data_obj.get("chunk", {}) if isinstance(data_obj, dict) else None
+                meta = data_obj.get("metadata", {}) if isinstance(data_obj, dict) else {}
+                chunk_id = chunk.get("id") if isinstance(chunk, dict) else None
+                if (isinstance(meta, dict) and meta.get("langgraph_node") == "intent_classifier") \
+                        or (chunk_id and msg_nodes.get(chunk_id) == "intent_classifier"):
+                    prev_content = ""
+                    continue
                 content = _extract_stream_content(chunk)
                 if content:
                     delta = content[len(prev_content):] if content.startswith(prev_content) else content
@@ -777,6 +807,14 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
         yield "data: [DONE]\n\n"
         return
 
+    # 兜底：整轮没有任何流式输出（如输入守卫高危拦截，无 LLM 参与）时，
+    # 回读线程状态中的最终响应并一次性下发，避免前端收到空气泡。
+    if not any(p.strip() for p in full_parts):
+        final_text = _fetch_thread_response(tid)
+        if final_text:
+            full_parts.append(final_text)
+            yield _sse_line({"content": final_text})
+
     yield _sse_line({
         "done": True,
         "session_id": tid,
@@ -785,6 +823,20 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
         "tools": sorted(emitted_tools),
     })
     yield "data: [DONE]\n\n"
+
+
+def _fetch_thread_response(thread_id: str) -> Optional[str]:
+    """回读线程状态中的最终响应（用于无流式输出的路径）。"""
+    try:
+        response = requests.get(f"{LANGGRAPH_API_URL}/threads/{thread_id}/state", timeout=5)
+        if response.status_code == 200:
+            values = (response.json() or {}).get("values") or {}
+            resp = values.get("response")
+            if isinstance(resp, str) and resp.strip():
+                return resp
+    except Exception as e:
+        print(f"⚠️ 回读线程响应失败: {e}")
+    return None
 
 
 def langgraph_connectivity_test() -> Tuple[Optional[Dict[str, Any]], Optional[str]]:

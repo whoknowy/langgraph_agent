@@ -315,6 +315,46 @@ def query_complaints(member_id: str = None, ticket_no: str = None) -> dict:
         return {"error": "未找到相关投诉记录"}
     return {"complaints": [dict(r) for r in rows], "count": len(rows)}
 
+def create_complaint(member_id: str = None, order_no: str = None, content: str = None) -> dict:
+    """新增投诉记录（状态"处理中"，单号接续 T 序号自增）。
+
+    member_id 与 order_no 至少提供一个，便于关联到具体客户/订单。
+    """
+    if not content or not str(content).strip():
+        return {"error": "投诉内容不能为空"}
+    if not member_id and not order_no:
+        return {"error": "需要提供会员号（M开头）或订单号（O开头）之一才能登记投诉"}
+
+    conn = _conn()
+    if member_id:
+        row = conn.execute("SELECT 1 FROM customers WHERE member_id = ?", (member_id,)).fetchone()
+        if not row:
+            conn.close()
+            return {"error": f"会员号 {member_id} 不存在"}
+    if order_no:
+        row = conn.execute("SELECT member_id FROM orders WHERE order_no = ?", (order_no,)).fetchone()
+        if not row:
+            conn.close()
+            return {"error": f"订单号 {order_no} 不存在"}
+        if not member_id:
+            member_id = row["member_id"]
+
+    max_row = conn.execute(
+        "SELECT MAX(CAST(SUBSTR(ticket_no, 2) AS INTEGER)) AS m FROM complaints WHERE ticket_no LIKE 'T%'"
+    ).fetchone()
+    next_no = (max_row["m"] or 1000) + 1
+    ticket_no = f"T{next_no}"
+
+    conn.execute(
+        "INSERT INTO complaints (ticket_no, member_id, order_no, content, status, created_at) "
+        "VALUES (?,?,?,?,?,?)",
+        (ticket_no, member_id, order_no, str(content).strip(), "处理中", date.today().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+    return {"success": True, "ticket_no": ticket_no, "status": "处理中",
+            "message": f"投诉已登记，投诉单号 {ticket_no}，我们将在24小时内跟进处理"}
+
 
 # ---------------------------------------------------------------- 天气
 

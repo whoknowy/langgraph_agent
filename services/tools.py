@@ -205,6 +205,25 @@ def query_complaint(member_id: str = "", ticket_no: str = "") -> str:
         return _dump({"error": f"投诉记录查询失败: {e}"})
 
 
+@tool
+def create_complaint(member_id: str = "", order_no: str = "", content: str = "") -> str:
+    """登记用户的新投诉并生成投诉单号（状态为"处理中"）。
+
+    仅当用户表达了对本次服务/订单的新投诉并希望正式提交时调用；
+    只是查询已有投诉处理进度时不要调用本工具。
+
+    Args:
+        member_id: 会员号（如 M1005）
+        order_no: 关联的订单号（如 O0017887），可选
+        content: 投诉内容概述（从用户描述中整理）
+    """
+    try:
+        data = flight_repo.create_complaint(member_id or None, order_no or None, content or None)
+        return _dump(data)
+    except Exception as e:  # pragma: no cover - 兜底
+        return _dump({"error": f"投诉登记失败: {e}"})
+
+
 # ---------------------------------------------------------------- 注册表
 
 def _map_airline_code(name: str) -> str:
@@ -236,6 +255,7 @@ def all_tools():
         get_weather,
         get_order_bill,
         query_complaint,
+        create_complaint,
     ]
 
 
