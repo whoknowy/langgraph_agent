@@ -62,7 +62,7 @@ def create_pending_refund():
                   {"flight_no": "CA1061", "flight_date": "2026-08-31", "cabin": "经济", "passengers": 1})
     order_no = d["order_no"]
     req(member_op, "POST", "/api/pay", {"order_no": order_no})
-    d, _ = req(member_op, "POST", "/api/refund", {"order_no": order_no})
+    d, _ = req(member_op, "POST", "/api/refund", {"order_no": order_no, "refund_type": "special"})
     assert d.get("status") == "退票中"
     return order_no
 

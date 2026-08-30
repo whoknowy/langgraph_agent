@@ -245,15 +245,17 @@ def submit_booking_request(flight_no: str, flight_date: str, cabin: str, passeng
 
 
 @tool
-def refund_request(order_no: str, reason: str = "") -> str:
+def refund_request(order_no: str, reason: str = "", refund_type: str = "voluntary") -> str:
     """【退票确认工具】用户要求退票且提供订单号后调用，发起退票确认请求。
 
-    系统会向用户展示退票确认卡片，用户点击"确认退票"后由系统执行退票（订单状态：退票中）。
-    本工具不会真正退票。仅支持"已出票"状态的订单。
+    系统会向用户展示退票确认卡片（自愿退票会显示手续费与预计到账金额），
+    用户点击"确认退票"后由系统执行退票。本工具不会真正退票。仅支持"已出票"状态的订单。
 
     Args:
         order_no: 订单号（如 O0123456）
         reason: 退票原因（可选）
+        refund_type: voluntary=自愿退票（按规则费率即时退款）；special=非自愿退票
+            （因航班延误/取消等特殊原因，进入人工审核，可争取全额退款）
     """
     return _dump({"status": "awaiting_user_confirmation"})
 

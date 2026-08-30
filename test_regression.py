@@ -161,13 +161,19 @@ results.append(check("13b.下单(待支付)", booked.get("success") and booked.g
                      f"| 订单号={order_no}"))
 paid = post_json("/api/pay", {"order_no": order_no})
 results.append(check("13c.支付(已出票)", paid.get("status") == "已出票"))
-refunded = post_json("/api/refund", {"order_no": order_no})
-results.append(check("13d.退票(退票中)", refunded.get("status") == "退票中"))
+quote_r = get_json("/api/refund_quote?order_no=" + order_no)
+results.append(check("13d.退票报价(手续费/到账)", quote_r.get("predict_amount") == quote_r.get("amount", 0) - quote_r.get("fee", 0),
+                     f"| 票面={quote_r.get('amount')} 手续费={quote_r.get('fee')} 档位={quote_r.get('fee_tier')}"))
+refunded = post_json("/api/refund", {"order_no": order_no, "refund_type": "voluntary"})
+results.append(check("13e.自愿退票即时退款(已退款)", refunded.get("status") == "已退款"
+                     and refunded.get("refund_amount") == quote_r.get("predict_amount"),
+                     f"| 到账={refunded.get('refund_amount')}"))
 
 # ---- 14. 我的数据面板 ----
 my_orders = get_json("/api/my/orders")
 mine = [o for o in (my_orders.get("orders") or []) if o.get("order_no") == order_no]
-results.append(check("14a.我的订单含新订单", bool(mine) and mine[0].get("status") == "退票中"))
+results.append(check("14a.我的订单含新订单(已退款+到账金额)", bool(mine) and mine[0].get("status") == "已退款"
+                     and mine[0].get("refund_amount") == quote_r.get("predict_amount")))
 my_complaints = get_json("/api/my/complaints")
 results.append(check("14b.我的投诉可查询", my_complaints.get("count", 0) >= 1,
                      f"| 数量={my_complaints.get('count')}"))

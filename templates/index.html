@@ -2399,18 +2399,22 @@
                 card.querySelector('[data-act="ok"]').onclick = function () { confirmBooking(card, action); };
                 card.querySelector('[data-act="cancel"]').onclick = function () { cancelConfirmCard(card, '已取消本次订票。'); };
             } else if (action.type === 'refund') {
+                const isSpecial = (action.refund_type === 'special');
                 card.innerHTML =
-                    '<div class="confirm-card-title">↩️ 退票确认</div>'
+                    '<div class="confirm-card-title">↩️ 退票确认' + (isSpecial ? '（特殊通道）' : '') + '</div>'
                     + '<div class="confirm-card-body">订单号：<b>' + escHtml(action.order_no || '-') + '</b>'
                     + (action.reason ? '<br>退票原因：' + escHtml(action.reason) : '')
-                    + '<br>确认后订单状态将变更为「退票中」。</div>'
+                    + (isSpecial
+                        ? '<br>因航班延误/取消等特殊原因申请退票，提交后进入<b>人工审核</b>（1-3个工作日），审核通过可全额退款。</div>'
+                        : '<br><span style="color:var(--text-muted);">正在计算退票手续费…</span></div>')
                     + '<div class="confirm-card-actions">'
                     + '<button type="button" class="confirm-btn confirm-btn--primary" data-act="ok">确认退票</button>'
                     + '<button type="button" class="confirm-btn" data-act="cancel">取消</button>'
                     + '</div>';
                 chatContainer.appendChild(card);
-                card.querySelector('[data-act="ok"]').onclick = function () { refundInCard(card, action.order_no); };
+                card.querySelector('[data-act="ok"]').onclick = function () { refundInCard(card, action.order_no, action.refund_type); };
                 card.querySelector('[data-act="cancel"]').onclick = function () { cancelConfirmCard(card, '已取消本次退票申请。'); };
+                if (!isSpecial) fillRefundQuote(card, action.order_no);
             } else {
                 return;
             }
@@ -2512,16 +2516,39 @@
             }
         }
 
-        async function refundInCard(card, orderNo) {
+        async function fillRefundQuote(card, orderNo) {
+            const body = card.querySelector('.confirm-card-body');
+            try {
+                const r = await fetch('/api/refund_quote?order_no=' + encodeURIComponent(orderNo));
+                const d = await r.json();
+                if (!r.ok || d.error) {
+                    body.innerHTML = '报价失败：' + escHtml(d.error || ('HTTP ' + r.status));
+                    const okBtn = card.querySelector('[data-act="ok"]');
+                    if (okBtn) okBtn.disabled = true;
+                    return;
+                }
+                body.insertAdjacentHTML('beforeend',
+                    '<div class="quote-row"><span class="k">票面金额</span><span>¥' + d.amount + '</span></div>'
+                    + '<div class="quote-row"><span class="k">手续费（' + escHtml(d.fee_tier) + '）</span><span>-¥' + d.fee + '</span></div>'
+                    + '<div class="quote-row"><span class="k">预计到账</span><span class="quote-total">¥' + d.predict_amount + '</span></div>');
+            } catch (e) {
+                body.insertAdjacentHTML('beforeend', '<div style="color:var(--text-muted);">手续费计算失败，请取消后重试</div>');
+                const okBtn = card.querySelector('[data-act="ok"]');
+                if (okBtn) okBtn.disabled = true;
+            }
+        }
+
+        async function refundInCard(card, orderNo, refundType) {
+            const isSpecial = refundType === 'special';
             const okBtn = card.querySelector('[data-act="ok"]');
             const refundBtn = card.querySelector('[data-act="refund"]');
-            if (okBtn) { okBtn.disabled = true; okBtn.textContent = '退票中…'; }
-            if (refundBtn) { refundBtn.disabled = true; refundBtn.textContent = '退票中…'; }
+            if (okBtn) { okBtn.disabled = true; okBtn.textContent = '提交中…'; }
+            if (refundBtn) { refundBtn.disabled = true; refundBtn.textContent = '提交中…'; }
             try {
                 const r = await fetch('/api/refund', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ order_no: orderNo })
+                    body: JSON.stringify({ order_no: orderNo, refund_type: refundType || 'voluntary' })
                 });
                 const d = await r.json();
                 if (!r.ok || d.error) {
@@ -2530,8 +2557,14 @@
                     if (refundBtn) { refundBtn.disabled = false; refundBtn.textContent = '申请退票'; }
                     return;
                 }
-                card.querySelector('.confirm-card-actions').innerHTML =
-                    '<span class="my-data-empty">✅ 退票申请已提交，订单状态：退票中</span>';
+                if (d.status === '已退款') {
+                    card.querySelector('.confirm-card-actions').innerHTML =
+                        '<span class="my-data-empty">✅ 退票成功：已退款 ¥' + d.refund_amount
+                        + '（手续费 ¥' + d.fee + '），即时到账</span>';
+                } else {
+                    card.querySelector('.confirm-card-actions').innerHTML =
+                        '<span class="my-data-empty">✅ 特殊退票申请已提交（退票中），人工审核 1-3 个工作日</span>';
+                }
             } catch (e) {
                 if (okBtn) { okBtn.disabled = false; okBtn.textContent = '确认退票'; }
             }
@@ -2649,14 +2682,16 @@
 
         async function panelOrderAction(orderNo, act) {
             const url = act === 'pay' ? '/api/pay' : '/api/refund';
+            const body = act === 'pay' ? { order_no: orderNo } : { order_no: orderNo, refund_type: 'voluntary' };
             try {
                 const r = await fetch(url, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ order_no: orderNo })
+                    body: JSON.stringify(body)
                 });
                 const d = await r.json();
                 if (!r.ok || d.error) { alert(d.error || '操作失败'); }
+                else if (act === 'refund') { toast('退票成功：已退款 ¥' + d.refund_amount + '（手续费 ¥' + d.fee + '）'); }
                 refreshMyData();
             } catch (e) {
                 alert('网络错误，请重试');

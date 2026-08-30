@@ -527,8 +527,88 @@ def pay_order(order_no: str, member_id: str = None) -> dict:
 
 
 def refund_order(order_no: str, member_id: str = None) -> dict:
-    """申请退票：已出票 → 退票中。"""
+    """特殊退票（非自愿：延误/取消等）：已出票 → 退票中，进入管理端审批队列。"""
     return _transition_order(order_no, member_id, "已出票", "退票中")
+
+
+# ------------------------------------------------ 自愿退票（规则费率，即时退款）
+
+def _refund_fee_rate(hours_to_departure: float):
+    """自愿退票费率（公示规则）。返回 (费率, 档位说明)。"""
+    if hours_to_departure >= 72:
+        return 0.05, "起飞前72小时以上（收5%）"
+    if hours_to_departure >= 48:
+        return 0.10, "起飞前48-72小时（收10%）"
+    if hours_to_departure >= 24:
+        return 0.20, "起飞前24-48小时（收20%）"
+    return 0.30, "起飞前24小时以内（收30%）"
+
+
+def _order_departure(order_no: str):
+    """查询订单对应的起飞时间；返回 (Row订单, depart(datetime) 或 None)。"""
+    conn = _conn()
+    r = conn.execute(
+        "SELECT o.order_no, o.member_id, o.status, o.amount, o.flight_date, f.dep_time "
+        "FROM orders o JOIN flights f ON f.flight_no = o.flight_no "
+        "WHERE o.order_no = ?", (security.normalize(order_no),)).fetchone()
+    conn.close()
+    if not r:
+        return r, None
+    try:
+        from datetime import datetime as _dt
+        depart = _dt.strptime(f"{r['flight_date']} {r['dep_time']}", "%Y-%m-%d %H:%M")
+    except Exception:
+        depart = None
+    return r, depart
+
+
+def refund_quote(order_no: str, member_id: str = None) -> dict:
+    """自愿退票报价：返回手续费与预计到账金额（供确认卡片展示）。"""
+    order_no = security.normalize(order_no)
+    r, depart = _order_departure(order_no)
+    if not r:
+        return {"error": f"订单不存在：{order_no}"}
+    if member_id and security.normalize(member_id) != security.normalize(r["member_id"]):
+        return {"error": "无权限：只能退登录会员本人的订单"}
+    if r["status"] != "已出票":
+        return {"error": f"订单状态为「{r['status']}」，只有「已出票」的订单可以退票"}
+    if depart is None:
+        return {"error": "订单缺少航班起飞时间，无法计算退款"}
+
+    from datetime import datetime as _dt
+    hours = (_dt.now() - depart).total_seconds() / 3600
+    if hours >= 0:
+        return {"error": "航班已起飞，自愿退票通道已关闭；如因航班延误/取消需要退票，请走特殊退票通道"}
+    rate, tier = _refund_fee_rate(-hours)
+    amount = int(r["amount"])
+    fee = int(amount * rate)
+    return {"order_no": order_no, "amount": amount, "fee_rate": rate, "fee_tier": tier,
+            "fee": fee, "predict_amount": amount - fee, "depart_time": depart.isoformat(sep=" ", timespec="minutes")}
+
+
+def refund_order_instant(order_no: str, member_id: str = None) -> dict:
+    """自愿退票（规则费率，即时到账）：已出票 → 已退款。
+
+    费用在代码层按公示规则计算，不经 LLM 决定。
+    """
+    order_no = security.normalize(order_no)
+    quote = refund_quote(order_no, member_id)
+    if quote.get("error"):
+        return quote
+    if member_id:
+        row_check = _order_departure(order_no)[0]
+        if security.normalize(member_id) != security.normalize(row_check["member_id"]):
+            return {"error": "无权限：只能退登录会员本人的订单"}
+
+    conn = _conn()
+    conn.execute(
+        "UPDATE orders SET status = '已退款', refund_amount = ?, admin_note = ? WHERE order_no = ?",
+        (quote["predict_amount"], f"自愿退票：{quote['fee_tier']}，手续费{quote['fee']}元", order_no))
+    conn.commit()
+    conn.close()
+    return {"success": True, "order_no": order_no, "status": "已退款",
+            "refund_amount": quote["predict_amount"], "fee": quote["fee"],
+            "message": f"订单 {order_no} 已退款 {quote['predict_amount']} 元（手续费 {quote['fee']} 元，{quote['fee_tier']}）"}
 
 
 # ---------------------------------------------------------------- 天气

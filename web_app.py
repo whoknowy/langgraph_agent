@@ -362,16 +362,38 @@ def pay():
         return jsonify({'error': f'支付失败: {str(e)}'}), 500
 
 
+@app.route('/api/refund_quote')
+def refund_quote():
+    """自愿退票报价（确认卡片展示：手续费/预计到账）。"""
+    try:
+        member, denied = _require_member()
+        if denied:
+            return denied
+        from services import flight_repo
+        result = flight_repo.refund_quote(request.args.get('order_no', ''),
+                                          member_id=member['member_id'])
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': f'报价失败: {str(e)}'}), 500
+
+
 @app.route('/api/refund', methods=['POST'])
 def refund():
-    """申请退票：已出票 → 退票中。"""
+    """退票：voluntary=自愿（规则费率即时退款）；special=非自愿特殊通道（退票中，管理端审批）。"""
     try:
         member, denied = _require_member()
         if denied:
             return denied
         data = request.get_json() or {}
         from services import flight_repo
-        result = flight_repo.refund_order(data.get('order_no', ''), member_id=member['member_id'])
+        refund_type = (data.get('refund_type') or 'voluntary').strip()
+        if refund_type == 'special':
+            result = flight_repo.refund_order(data.get('order_no', ''), member_id=member['member_id'])
+            if result.get('error'):
+                return jsonify(result), 400
+            result['message'] = result.get('message', '') + '（特殊退票已受理，人工审核中）'
+            return jsonify(result)
+        result = flight_repo.refund_order_instant(data.get('order_no', ''), member_id=member['member_id'])
         if result.get('error'):
             return jsonify(result), 400
         return jsonify(result)
