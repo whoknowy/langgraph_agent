@@ -16,7 +16,6 @@ from flask import Flask, render_template, request, jsonify, session, Response
 
 from chat_web_service import (
     run_chat_sync,
-    stream_chat_events,
     stream_chat_tokens,
     fetch_sessions_list,
     fetch_session_detail,
