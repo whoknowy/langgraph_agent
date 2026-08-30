@@ -78,6 +78,9 @@ python -c "import web_app; web_app.app.run(host='0.0.0.0', port=5000, debug=Fals
 首次启动自动建库并生成种子数据。Windows 下若 langgraph dev 文件监听崩溃，
 改文件后需手动重启。
 
+> 📖 更详细的分步启动指南（环境要求、.env 配置、启动验证、30 秒功能体验路线、
+> 常用操作与故障排查表）见 [GETTING_STARTED.md](GETTING_STARTED.md)。
+
 ## 测试
 
 ```bash
