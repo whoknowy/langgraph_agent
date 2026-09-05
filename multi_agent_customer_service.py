@@ -29,7 +29,7 @@ from operator import add
 from dotenv import load_dotenv
 load_dotenv()
 
-from skills import run_sensitive_guard, classify_intent
+from skills import run_sensitive_guard, classify_intent, mask_sensitive
 from agents import initialize_agents
 
 try:
@@ -314,7 +314,7 @@ class SkillPipelineExecutor:
             return {
                 "success": True,
                 "session_id": session_id,
-                "response": result.get("response", ""),
+                "response": mask_sensitive(result.get("response", "")),
                 "current_agent": result.get("current_agent", ""),
                 "target_agent": result.get("target_agent", ""),
                 "messages": result.get("messages", []),

@@ -387,6 +387,74 @@ class TestSseParsers:
         assert conversation_history_from_state_data(42) == []
 
 
+# ---------------------------------------------------------------- 敏感词守卫与打码
+
+class TestSensitiveFilter:
+    def test_emotion_l2_passes(self):
+        from skills import run_sensitive_guard
+        g = run_sensitive_guard("我对航班延误非常不满意")
+        assert g["level"] == 2 and not g["blocked"] and g["response"] == ""
+
+    def test_l3_blocks(self):
+        from skills import run_sensitive_guard
+        g = run_sensitive_guard("你们就是骗子")
+        assert g["blocked"] and g["level"] == 3 and "不便于处理" in g["response"]
+
+    def test_compliance_lexicon_blocks(self):
+        """合规词库（政治/暴恐/色情/广告）任取文件首个词条应按 L3 拦截。"""
+        from pathlib import Path
+        from skills import run_sensitive_guard
+        lex = Path("skills/lexicons")
+        assert lex.exists(), "合规词库文件缺失"
+        tested = 0
+        for f in sorted(lex.glob("*.txt")):
+            first = next((w for w in f.read_text(encoding="utf-8").splitlines() if w.strip()), "")
+            if not first:
+                continue
+            g = run_sensitive_guard(f"这句话里有{first}这个词")
+            assert g["blocked"] and g["level"] == 3, f"{f.stem} 首词条未拦截: {first}"
+            tested += 1
+        assert tested >= 4
+
+    def test_mask_sensitive(self):
+        from skills import mask_sensitive
+        out = mask_sensitive("这是骗子说的法轮功内容")
+        assert "*" in out and "骗子" not in out and "法轮功" not in out
+        assert mask_sensitive("正常航班查询没有问题") == "正常航班查询没有问题"
+
+    def test_mask_keeps_l1_l2_readable(self):
+        from skills import mask_sensitive
+        # 情绪词（L1/L2）不打码——输出侧只拦合规/高危
+        assert "不满意" in mask_sensitive("我们非常不满意这个结果")
+
+    def test_stream_masker_split_tokens(self):
+        """敏感词被拆在多个 token 里也能完整打码。"""
+        from skills import StreamMasker
+        m = StreamMasker()
+        out = ""
+        for ch in "你们就是骗子":  # 逐字符流式
+            out += m.feed(ch)
+        out += m.flush()
+        assert "*" in out and "骗子" not in out
+
+    def test_stream_masker_plain_text_intact(self):
+        from skills import StreamMasker
+        m = StreamMasker()
+        text = "明天北京到上海的航班一共有12班，经济舱价格600元起。"
+        out = "".join(m.feed(text[i:i + 3]) for i in range(0, len(text), 3)) + m.flush()
+        assert out == text
+
+    def test_complaint_content_masked(self):
+        from services import flight_repo, db
+        security.set_current_member("M1001")
+        r = flight_repo.create_complaint("M1001", None, "服务太差，你们就是骗子公司")
+        assert r.get("success")
+        conn = db.get_connection()
+        row = conn.execute("SELECT content FROM complaints WHERE ticket_no=?", (r["ticket_no"],)).fetchone()
+        conn.close()
+        assert "骗子" not in row["content"] and "*" in row["content"]
+
+
 # ---------------------------------------------------------------- 直接运行入口
 
 if __name__ == "__main__":

@@ -389,10 +389,11 @@ def create_complaint(member_id: str = None, order_no: str = None, content: str =
     next_no = (max_row["m"] or 1000) + 1
     ticket_no = f"T{next_no}"
 
+    from skills import mask_sensitive  # 懒导入：避免 skills→agents→tools→flight_repo 装载环
     conn.execute(
         "INSERT INTO complaints (ticket_no, member_id, order_no, content, status, created_at) "
         "VALUES (?,?,?,?,?,?)",
-        (ticket_no, member_id, order_no, str(content).strip(), "处理中", date.today().isoformat()),
+        (ticket_no, member_id, order_no, mask_sensitive(str(content).strip()), "处理中", date.today().isoformat()),
     )
     conn.commit()
     conn.close()

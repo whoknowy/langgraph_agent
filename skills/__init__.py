@@ -8,11 +8,11 @@ Skill 模块
 旧版的 Skill/SkillResult 注册与调度机制已随工具模拟层一并移除。
 """
 
-from .sensitive_word_filter import run_sensitive_guard
+from .sensitive_word_filter import run_sensitive_guard, mask_sensitive, StreamMasker
 from .intent_classifier import classify_intent, AGENT_OPTIONS
 
 __all__ = [
-    "run_sensitive_guard",
+    "run_sensitive_guard", "mask_sensitive", "StreamMasker",
     "classify_intent",
     "AGENT_OPTIONS",
 ]

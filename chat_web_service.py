@@ -15,6 +15,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import requests
 from dotenv import load_dotenv
 
+from skills import StreamMasker, mask_sensitive
+
 load_dotenv()
 
 # -----------------------------------------------------------------------------
@@ -729,6 +731,8 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
     prev_content = ""
     emitted_tools: set = set()
     msg_nodes: Dict[str, str] = {}  # 消息id -> 产生它的图节点（来自 messages/metadata 事件）
+    masker = StreamMasker()  # 输出侧敏感词打码（跨 token 缓冲）
+    masked_parts: List[str] = []
     try:
         for raw in response.iter_lines(decode_unicode=True):
             line = (raw or "").strip() if not isinstance(raw, bytes) else raw.decode("utf-8", "replace").strip()
@@ -772,7 +776,10 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
                         prev_content = content
                         if delta:
                             full_parts.append(delta)
-                            yield _sse_line({"content": delta})
+                            _masked = masker.feed(delta)
+                            if _masked:
+                                masked_parts.append(_masked)
+                                yield _sse_line({"content": _masked})
                     if isinstance(msg, dict):
                         for tc in msg.get("tool_calls") or []:
                             if isinstance(tc, dict) and tc.get("name") and tc["name"] not in emitted_tools:
@@ -799,7 +806,10 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
                     prev_content = content
                     if delta:
                         full_parts.append(delta)
-                        yield _sse_line({"content": delta})
+                        _masked = masker.feed(delta)
+                        if _masked:
+                            masked_parts.append(_masked)
+                            yield _sse_line({"content": _masked})
                 if isinstance(chunk, dict):
                     for tc in chunk.get("tool_calls") or []:
                         if isinstance(tc, dict) and tc.get("name") and tc["name"] not in emitted_tools:
@@ -815,12 +825,19 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
 
     # 兜底：整轮没有任何流式输出（如输入守卫高危拦截，无 LLM 参与）时，
     # 回读线程状态中的最终响应并一次性下发，避免前端收到空气泡。
+    _rest = masker.flush()
+    if _rest:
+        masked_parts.append(_rest)
+        yield _sse_line({"content": _rest})
+
     final_state = _fetch_thread_final(tid)
     if not any(p.strip() for p in full_parts):
         final_text = final_state.get("response")
         if final_text:
             full_parts.append(final_text)
-            yield _sse_line({"content": final_text})
+            _masked_final = mask_sensitive(final_text)
+            masked_parts.append(_masked_final)
+            yield _sse_line({"content": _masked_final})
 
     # 确认卡片请求（Agent 通过伪工具发起，用户点击后经 REST 执行）
     if final_state.get("pending_action"):
@@ -830,7 +847,7 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
         "done": True,
         "session_id": tid,
         "thread_id": tid,
-        "response": "".join(full_parts),
+        "response": "".join(masked_parts) or "".join(full_parts),
         "tools": sorted(emitted_tools),
     })
     yield "data: [DONE]\n\n"
