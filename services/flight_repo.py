@@ -602,7 +602,11 @@ def pay_order(order_no: str, member_id: str = None) -> dict:
 
 def refund_order(order_no: str, member_id: str = None) -> dict:
     """特殊退票（非自愿：延误/取消等）：已出票/已改签 → 退票中，进入管理端审批队列。"""
-    return _transition_order(order_no, member_id, ("已出票", "已改签"), "退票中")
+    result = _transition_order(order_no, member_id, ("已出票", "已改签"), "退票中")
+    if result.get("success"):
+        from services import checkin_repo
+        checkin_repo.cancel_checkin(order_no)   # 退票审批期间释放座位；驳回后可重新值机
+    return result
 
 
 # ------------------------------------------------ 自愿退票（规则费率，即时退款）
@@ -674,6 +678,8 @@ def refund_order_instant(order_no: str, member_id: str = None) -> dict:
         if security.normalize(member_id) != security.normalize(row_check["member_id"]):
             return {"error": "无权限：只能退登录会员本人的订单"}
 
+    from services import checkin_repo
+    checkin_repo.cancel_checkin(order_no)   # 退票自动取消值机、释放座位
     conn = _conn()
     conn.execute(
         "UPDATE orders SET status = '已退款', refund_amount = ?, admin_note = ?, refunded_at = ? WHERE order_no = ?",
@@ -799,10 +805,12 @@ def change_order(order_no: str, member_id: str, new_flight_no: str, new_date: st
          order_no))
     conn.commit()
     conn.close()
+    from services import checkin_repo
+    checkin_repo.cancel_checkin(order_no)   # 新航班需重新值机，原座位自动释放
     return {"success": True, "order_no": order_no, "status": "已改签",
             "old": quote["old"], "new": new_info, "fare_diff": quote["fare_diff"],
             "message": f"订单 {order_no} 已改签至 {new_info['airline']}{new_info['flight_no']} "
-                       f"{new_info['date']} {new_info['dep_time']}，{quote['diff_desc']}"}
+                       f"{new_info['date']} {new_info['dep_time']}，{quote['diff_desc']}（原值机已取消，请重新值机）"}
 
 
 # ---------------------------------------------------------------- 天气

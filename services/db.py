@@ -131,6 +131,27 @@ CREATE TABLE IF NOT EXISTS session_titles (
     title      TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS seats (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    flight_no   TEXT NOT NULL,
+    flight_date TEXT NOT NULL,
+    seat_no     TEXT NOT NULL,
+    cabin       TEXT NOT NULL CHECK (cabin IN ('经济', '商务')),
+    status      TEXT NOT NULL DEFAULT 'free' CHECK (status IN ('free', 'occupied')),
+    order_no    TEXT,
+    UNIQUE (flight_no, flight_date, seat_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_seats_flight ON seats(flight_no, flight_date);
+
+CREATE TABLE IF NOT EXISTS checkins (
+    order_no      TEXT PRIMARY KEY,
+    seat_no       TEXT NOT NULL,
+    gate          TEXT NOT NULL,
+    boarding_time TEXT NOT NULL,
+    checkin_at    TEXT NOT NULL
+);
 """
 
 

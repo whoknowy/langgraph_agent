@@ -625,6 +625,219 @@ class TestStatsTrend:
         assert row["status"] == "已退款" and row["refunded_at"]
 
 
+# ---------------------------------------------------------------- 值机选座（功能C）
+
+class TestCheckinWindow:
+    """值机窗口纯函数（时间显式注入，确定性好）。"""
+
+    def _dep(self, hours):
+        return datetime.now() + timedelta(hours=hours)
+
+    def test_not_open_yet(self):
+        from services import checkin_repo
+        ok, reason = checkin_repo.checkin_window_status(self._dep(30))
+        assert not ok and "24小时" in reason
+
+    def test_open_in_window(self):
+        from services import checkin_repo
+        ok, reason = checkin_repo.checkin_window_status(self._dep(3))
+        assert ok and reason == ""
+
+    def test_closed_near_departure(self):
+        from services import checkin_repo
+        ok, reason = checkin_repo.checkin_window_status(self._dep(0.3))
+        assert not ok and "截止" in reason
+
+    def test_departed(self):
+        from services import checkin_repo
+        ok, reason = checkin_repo.checkin_window_status(self._dep(-1))
+        assert not ok and "已起飞" in reason
+
+    def test_none_departure(self):
+        from services import checkin_repo
+        ok, reason = checkin_repo.checkin_window_status(None)
+        assert not ok and reason
+
+
+class TestCheckinFlow:
+    """座位图生成 + 值机/改座/取消/登机牌（独立临时库）。"""
+
+    def _add_flight_order(self, order_no, member_id="M1001", status="已出票",
+                          hours_ahead=3.0, cabin="经济", flight_no="CA9001"):
+        """插入一个落在值机窗口内的航班+订单，返回 (flight_no, flight_date)。"""
+        dep = datetime.now() + timedelta(hours=hours_ahead)
+        fdate = dep.date().isoformat()
+        ftime = dep.strftime("%H:%M")
+        conn = db.get_connection()
+        conn.execute(
+            "INSERT INTO flights (flight_no, airline_code, dep_iata, arr_iata, dep_time, arr_time, "
+            "duration_min, aircraft, freq_days) VALUES (?,'CA','PEK','SHA',?,'23:59',120,'B737','1234567')",
+            (flight_no, ftime))
+        conn.execute(
+            "INSERT INTO orders (order_no, member_id, flight_no, flight_date, cabin, amount, "
+            "status, created_at, passengers) VALUES (?,?,?,?,?,?,?,?,1)",
+            (order_no, member_id, flight_no, fdate, cabin, 800, status,
+             datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        conn.close()
+        return flight_no, fdate
+
+    def _pick_seat(self, flight_no, fdate, cabin="经济", want="free"):
+        """从确定性座位图里挑一个指定状态的座位。"""
+        from services import checkin_repo
+        m = checkin_repo.seat_map(flight_no, fdate)
+        for row in m["cabins"][cabin]:
+            for s in row["seats"]:
+                if want == "free" and s["status"] == "free":
+                    return s["seat_no"]
+                if want == "occupied" and s["status"] == "occupied":
+                    return s["seat_no"]
+        raise AssertionError(f"座位图里没有符合要求的座位: {cabin}/{want}")
+
+    def test_seat_map_deterministic_and_layout(self):
+        from services import checkin_repo
+        flight_no, fdate = self._add_flight_order("K1")
+        m1 = checkin_repo.seat_map(flight_no, fdate)
+        m2 = checkin_repo.seat_map(flight_no, fdate)
+        assert "error" not in m1 and m1["total"] == 162        # 3排×4 + 25排×6
+        assert m1["free"] == m2["free"]                        # 确定性预占
+        biz_rows = m1["cabins"]["商务"]
+        assert len(biz_rows) == 3 and len(biz_rows[0]["seats"]) == 4
+        assert len(m1["cabins"]["经济"]) == 25
+
+    def test_seat_map_rejects_unknown_flight(self):
+        from services import checkin_repo
+        assert "error" in checkin_repo.seat_map("ZZ9999", FUTURE)
+
+    def test_checkin_success_and_boarding_pass(self):
+        from services import checkin_repo
+        flight_no, fdate = self._add_flight_order("K2")
+        seat = self._pick_seat(flight_no, fdate)
+        r = checkin_repo.do_checkin("K2", "M1001", seat)
+        assert r.get("success") and r["seat_no"] == seat and r["passenger"] == "李磊"
+        assert r["gate"] and r["boarding_time"]
+        bp = checkin_repo.get_boarding_pass("K2", "M1001")
+        assert bp["seat_no"] == seat and bp["route"] == "北京 → 上海"
+
+    def test_checkin_rejects_occupied_seat(self):
+        from services import checkin_repo
+        flight_no, fdate = self._add_flight_order("K3")
+        seat = self._pick_seat(flight_no, fdate, want="occupied")
+        assert "已被占用" in checkin_repo.do_checkin("K3", "M1001", seat)["error"]
+
+    def test_checkin_rejects_wrong_cabin(self):
+        from services import checkin_repo
+        flight_no, fdate = self._add_flight_order("K4", cabin="经济")
+        biz_seat = self._pick_seat(flight_no, fdate, cabin="商务")
+        assert "商务舱" in checkin_repo.do_checkin("K4", "M1001", biz_seat)["error"]
+
+    def test_checkin_rejects_other_member(self):
+        from services import checkin_repo
+        flight_no, fdate = self._add_flight_order("K5", member_id="M1002")
+        seat = self._pick_seat(flight_no, fdate)
+        assert "无权限" in checkin_repo.do_checkin("K5", "M1001", seat)["error"]
+        assert "无权限" in checkin_repo.get_boarding_pass("K5", "M1001")["error"]
+        assert "无权限" in checkin_repo.cancel_checkin("K5", "M1001")["error"]
+
+    def test_checkin_rejects_non_issued_status(self):
+        from services import checkin_repo
+        flight_no, fdate = self._add_flight_order("K6", status="待支付")
+        seat = self._pick_seat(flight_no, fdate)
+        assert "待支付" in checkin_repo.do_checkin("K6", "M1001", seat)["error"]
+
+    def test_checkin_rejects_out_of_window(self):
+        from services import checkin_repo
+        self._add_flight_order("K7", hours_ahead=40)
+        assert "尚未开放" in checkin_repo.do_checkin("K7", "M1001", "36E")["error"]
+
+    def test_reseat_releases_old_seat(self):
+        from services import checkin_repo
+        flight_no, fdate = self._add_flight_order("K8")
+        seat1 = self._pick_seat(flight_no, fdate)
+        r1 = checkin_repo.do_checkin("K8", "M1001", seat1)
+        assert r1.get("success"), r1
+        # 占掉另一个空闲座位作为改座目标
+        seat2 = self._pick_seat(flight_no, fdate)
+        r2 = checkin_repo.do_checkin("K8", "M1001", seat2)
+        assert r2.get("success") and r2["message"] == "改座成功", r2
+        conn = db.get_connection()
+        old = conn.execute("SELECT status FROM seats WHERE flight_no=? AND seat_no=?",
+                           (flight_no, seat1)).fetchone()
+        new = conn.execute("SELECT status, order_no FROM seats WHERE flight_no=? AND seat_no=?",
+                           (flight_no, seat2)).fetchone()
+        conn.close()
+        assert old["status"] == "free" and new["status"] == "occupied" and new["order_no"] == "K8"
+
+    def test_cancel_checkin_releases_seat(self):
+        from services import checkin_repo
+        flight_no, fdate = self._add_flight_order("K9")
+        seat = self._pick_seat(flight_no, fdate)
+        checkin_repo.do_checkin("K9", "M1001", seat)
+        r = checkin_repo.cancel_checkin("K9", "M1001")
+        assert r["success"] and r["released"]
+        conn = db.get_connection()
+        s = conn.execute("SELECT status FROM seats WHERE flight_no=? AND seat_no=?",
+                         (flight_no, seat)).fetchone()
+        ck = conn.execute("SELECT 1 FROM checkins WHERE order_no='K9'").fetchone()
+        conn.close()
+        assert s["status"] == "free" and ck is None
+        r2 = checkin_repo.cancel_checkin("K9", "M1001")   # 幂等
+        assert r2["success"] and not r2["released"]
+
+    def test_boarding_pass_requires_checkin(self):
+        from services import checkin_repo
+        self._add_flight_order("K10")
+        assert "尚未值机" in checkin_repo.get_boarding_pass("K10", "M1001")["error"]
+
+    def test_unknown_order_and_seat(self):
+        from services import checkin_repo
+        assert "不存在" in checkin_repo.do_checkin("NOPE", "M1001", "40C")["error"]
+        self._add_flight_order("K11")
+        assert "不存在" in checkin_repo.do_checkin("K11", "M1001", "99Z")["error"]
+
+    def test_refund_auto_cancels_checkin(self):
+        """自愿退票应自动取消值机并释放座位。"""
+        from services import checkin_repo, flight_repo
+        flight_no, fdate = self._add_flight_order("K12")
+        seat = self._pick_seat(flight_no, fdate)
+        checkin_repo.do_checkin("K12", "M1001", seat)
+        security.set_current_member("M1001")
+        r = flight_repo.refund_order_instant("K12", "M1001")
+        assert r.get("success"), r
+        conn = db.get_connection()
+        ck = conn.execute("SELECT 1 FROM checkins WHERE order_no='K12'").fetchone()
+        s = conn.execute("SELECT status FROM seats WHERE flight_no=? AND seat_no=?",
+                         (flight_no, seat)).fetchone()
+        conn.close()
+        assert ck is None and s["status"] == "free"
+
+    def test_change_order_auto_cancels_checkin(self):
+        """改签应自动取消值机（新航班需重新值机）。"""
+        from services import checkin_repo, flight_repo
+        self._add_flight_order("K13")
+        seat = self._pick_seat("CA9001", (datetime.now() + timedelta(hours=3)).date().isoformat())
+        checkin_repo.do_checkin("K13", "M1001", seat)
+        conn = db.get_connection()
+        dep = datetime.now() + timedelta(days=2)
+        conn.execute(
+            "INSERT INTO flights (flight_no, airline_code, dep_iata, arr_iata, dep_time, arr_time, "
+            "duration_min, aircraft, freq_days) VALUES ('CA9002','CA','PEK','SHA',?,'23:00',120,'B737','1234567')",
+            (dep.strftime("%H:%M"),))
+        conn.execute(
+            "INSERT INTO flight_prices (flight_no, flight_date, cabin, price) VALUES "
+            "('CA9002',?, '经济', 700), ('CA9002', ?, '商务', 1600)",
+            (dep.date().isoformat(), dep.date().isoformat()))
+        conn.commit()
+        conn.close()
+        security.set_current_member("M1001")
+        r = flight_repo.change_order("K13", "M1001", "CA9002", dep.date().isoformat(), "经济")
+        assert r.get("success"), r
+        conn = db.get_connection()
+        ck = conn.execute("SELECT 1 FROM checkins WHERE order_no='K13'").fetchone()
+        conn.close()
+        assert ck is None
+
+
 # ---------------------------------------------------------------- 直接运行入口
 
 if __name__ == "__main__":

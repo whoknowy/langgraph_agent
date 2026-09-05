@@ -146,6 +146,8 @@ def approve_refund(order_no: str, refund_amount: int = None, admin_note: str = "
     result = flight_repo._transition_order(order_no, None, "退票中", "已退款")
     if result.get("error"):
         return result
+    from services import checkin_repo
+    checkin_repo.cancel_checkin(order_no)   # 退款完成，自动取消值机、释放座位
     conn = _conn()
     conn.execute("UPDATE orders SET refund_amount = ?, admin_note = ?, refunded_at = ? WHERE order_no = ?",
                  (amount, (admin_note or "").strip(),
