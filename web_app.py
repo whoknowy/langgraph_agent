@@ -581,6 +581,20 @@ def admin_stats():
     return jsonify(admin_repo.get_stats())
 
 
+@app.route('/admin/api/stats/trend')
+def admin_stats_trend():
+    """工作台图表：近 N 天订单/退款趋势 + 热门航线 Top5。"""
+    admin, denied = admin_required()
+    if denied:
+        return denied
+    from services import admin_repo
+    try:
+        days = int(request.args.get('days', 7))
+    except (TypeError, ValueError):
+        days = 7
+    return jsonify(admin_repo.stats_trend(days))
+
+
 # ---- 退款处理 ----
 
 @app.route('/admin/api/refunds')

@@ -87,6 +87,27 @@
         .st-bad { color: var(--red); }
         .empty { color: var(--text-muted); font-size: 13px; padding: 14px 4px; }
 
+        /* ===== 工作台图表（纯 CSS，无图表库） ===== */
+        .trend-chart { display: flex; align-items: stretch; gap: 10px; height: 170px; padding: 18px 4px 0; }
+        .trend-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+        .trend-bars { flex: 1; display: flex; align-items: flex-end; justify-content: center; gap: 4px; }
+        .bar { width: 16px; max-width: 32px; border-radius: 4px 4px 0 0; min-height: 2px; position: relative; transition: height .3s ease; }
+        .bar-order { background: var(--primary); }
+        .bar-refund { background: var(--red); }
+        .bar .v { position: absolute; top: -16px; left: 50%; transform: translateX(-50%); font-size: 10.5px; color: var(--text-muted); }
+        .trend-day { margin-top: 6px; text-align: center; font-size: 11.5px; color: var(--text-muted); white-space: nowrap; }
+        .chart-legend { margin-top: 8px; font-size: 12px; color: var(--text-muted); display: flex; gap: 16px; align-items: center; }
+        .chart-legend .lg { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+        .lg-order { background: var(--primary); }
+        .lg-refund { background: var(--red); }
+        .route-chart { display: flex; flex-direction: column; gap: 9px; padding: 6px 2px; }
+        .route-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+        .route-name { width: 130px; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .route-track { flex: 1; background: #eef2f7; border-radius: 6px; height: 18px; overflow: hidden; }
+        .route-fill { height: 100%; min-width: 2px; background: linear-gradient(90deg, var(--primary), #60a5fa); border-radius: 6px; transition: width .3s ease; }
+        .route-count { width: 34px; font-size: 12px; color: var(--text-muted); }
+
+
         /* 弹窗 */
         .modal { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; }
         .modal[hidden] { display: none; }
@@ -147,6 +168,15 @@
                     <div class="stat-card warn" onclick="switchPage('complaints')"><div class="num" id="stComplaints">-</div><div class="lbl">待处理投诉</div></div>
                     <div class="stat-card"><div class="num" id="stFlights">-</div><div class="lbl">在售航班</div></div>
                     <div class="stat-card"><div class="num" id="stToday">-</div><div class="lbl">今日新增订单</div></div>
+                </div>
+                <div class="panel">
+                    <h3>近 7 天订单 / 退款趋势</h3>
+                    <div class="trend-chart" id="trendChart"><div class="empty">加载中…</div></div>
+                    <div class="chart-legend"><span><span class="lg lg-order"></span>订单量</span><span><span class="lg lg-refund"></span>退款量</span></div>
+                </div>
+                <div class="panel">
+                    <h3>热门航线 Top5（近 7 天订单量）</h3>
+                    <div class="route-chart" id="routeChart"><div class="empty">加载中…</div></div>
                 </div>
                 <div class="panel"><h3>使用提示</h3>
                     <div class="empty">退款处理：处理「退票中」订单（同意退款 / 驳回）；投诉处理：回复并解决或升级；航班管理：新增航班将自动生成未来 25 天在售票价，客户端立即可查可订。</div>
@@ -317,6 +347,7 @@
             $('adminLogin').hidden = true;
             $('adminWho').textContent = '👤 ' + a.name + '（' + a.username + '）';
             refreshStats();
+            loadTrend();
             loadRefunds();
         }
 
@@ -338,7 +369,7 @@
         function switchPage(name) {
             document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.page === name));
             document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + name));
-            if (name === 'dash') refreshStats();
+            if (name === 'dash') { refreshStats(); loadTrend(); }
             if (name === 'refunds') loadRefunds();
             if (name === 'complaints') loadComplaints();
             if (name === 'flights') { loadFlights(); ensureBaseLists(); }
@@ -361,6 +392,46 @@
         function setBadge(id, n) {
             const b = $(id);
             if (n > 0) { b.textContent = n; b.hidden = false; } else { b.hidden = true; }
+        }
+
+        // ============ 工作台图表（纯 CSS 渲染） ============
+        async function loadTrend() {
+            try {
+                const d = await api('/admin/api/stats/trend?days=7');
+                renderTrendChart(d);
+                renderRouteChart(d.top_routes || []);
+            } catch (e) {
+                $('trendChart').innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
+                $('routeChart').innerHTML = '';
+            }
+        }
+
+        function renderTrendChart(d) {
+            const days = d.days || [], orders = d.orders || [], refunds = d.refunds || [];
+            const max = Math.max(1, ...orders, ...refunds);
+            $('trendChart').innerHTML = days.map((day, i) => {
+                const o = orders[i] || 0, r = refunds[i] || 0;
+                const oh = Math.round(o / max * 100), rh = Math.round(r / max * 100);
+                return '<div class="trend-col">'
+                    + '<div class="trend-bars">'
+                    + '<div class="bar bar-order" style="height:' + oh + '%" title="订单 ' + o + '"><span class="v">' + (o || '') + '</span></div>'
+                    + '<div class="bar bar-refund" style="height:' + rh + '%" title="退款 ' + r + '"><span class="v">' + (r || '') + '</span></div>'
+                    + '</div>'
+                    + '<div class="trend-day">' + esc(day.slice(5)) + '</div>'
+                    + '</div>';
+            }).join('');
+        }
+
+        function renderRouteChart(routes) {
+            const box = $('routeChart');
+            if (!routes.length) { box.innerHTML = '<div class="empty">近 7 天暂无订单数据</div>'; return; }
+            const max = Math.max(...routes.map(r => r.count), 1);
+            box.innerHTML = routes.map(r =>
+                '<div class="route-row">'
+                + '<div class="route-name" title="' + esc(r.route) + '">' + esc(r.route) + '</div>'
+                + '<div class="route-track"><div class="route-fill" style="width:' + Math.round(r.count / max * 100) + '%"></div></div>'
+                + '<div class="route-count">' + r.count + '</div>'
+                + '</div>').join('');
         }
 
         // ============ 退款处理 ============

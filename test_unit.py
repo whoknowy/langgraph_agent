@@ -455,6 +455,176 @@ class TestSensitiveFilter:
         assert "骗子" not in row["content"] and "*" in row["content"]
 
 
+# ---------------------------------------------------------------- 会话标题（功能A）
+
+class TestSessionTitles:
+    """session_titles 仓库 + 标题清洗/兜底逻辑（不触 LLM）。"""
+
+    def test_clean_title(self):
+        from services.session_titles import clean_title
+        assert clean_title("  查询  航班\n信息  ") == "查询 航班 信息"
+        assert clean_title(None) == ""
+        assert clean_title("正常标题") == "正常标题"
+        assert clean_title("x" * 100).endswith("x") and len(clean_title("x" * 100)) == 60
+
+    def test_fallback_title_short_kept(self):
+        from services.session_titles import fallback_title
+        assert fallback_title("查机票") == "查机票"
+
+    def test_fallback_title_long_truncated(self):
+        from services.session_titles import fallback_title, FALLBACK_MAX_LEN
+        t = fallback_title("帮我查一下明天北京到上海的经济舱机票有哪些航班可以选择")
+        assert len(t) == FALLBACK_MAX_LEN + 1 and t.endswith("…")
+        assert t.startswith("帮我查一下明天北京到上海的")
+
+    def test_fallback_title_flattens_whitespace(self):
+        from services.session_titles import fallback_title
+        assert fallback_title("查询\n航班\t信息") == "查询 航班 信息"
+
+    def test_fallback_title_empty(self):
+        from services.session_titles import fallback_title
+        assert fallback_title("") == "" and fallback_title(None) == ""
+
+    def test_save_get_roundtrip_and_upsert(self):
+        from services import session_titles
+        assert session_titles.get_title("T1") == ""
+        assert session_titles.save_title(" T1 ", "查询航班") is True
+        assert session_titles.get_title("T1") == "查询航班"
+        # 覆盖更新
+        session_titles.save_title("T1", "改签咨询")
+        assert session_titles.get_title("T1") == "改签咨询"
+
+    def test_save_rejects_blank(self):
+        from services import session_titles
+        assert session_titles.save_title("", "标题") is False
+        assert session_titles.save_title("T2", "   ") is False
+        assert session_titles.save_title("T2", None) is False
+
+    def test_delete_title(self):
+        from services import session_titles
+        session_titles.save_title("T3", "投诉进度")
+        session_titles.delete_title("T3")
+        assert session_titles.get_title("T3") == ""
+        session_titles.delete_title("不存在")  # 幂等
+
+    def test_generate_title_fallback_on_llm_error(self, monkeypatch):
+        """LLM 抛异常时兜底为首条消息截断（同步路径，注入 _invoke_llm 失败）。"""
+        import services.session_titles as st
+
+        def _boom(text):
+            raise RuntimeError("no llm")
+        monkeypatch.setattr(st, "_invoke_llm", _boom)
+        # 15 字消息 → 截断为 14 字 + 省略号
+        assert st.generate_title("帮我订一张明天北京到上海的机票") == "帮我订一张明天北京到上海的机…"
+
+    def test_generate_title_empty_message(self):
+        import services.session_titles as st
+        assert st.generate_title("   ") == ""
+
+
+# ---------------------------------------------------------------- 工作台趋势（功能B）
+
+class TestStatsTrend:
+    """admin_repo.stats_trend 聚合逻辑（临时库种子数据）。"""
+
+    def _seed_order(self, conn, order_no, member_id="M1001", created=None, refunded=None,
+                    flight_no="CA1061", status="已出票"):
+        conn.execute(
+            "INSERT INTO orders (order_no, member_id, flight_no, flight_date, cabin, amount, status, "
+            "created_at, refunded_at, passengers) VALUES (?,?,?,?,?,?,?,?,?,1)",
+            (order_no, member_id, flight_no, FUTURE, "经济", 800, status,
+             created, refunded))
+
+    def test_trend_counts_by_day(self):
+        from services import admin_repo
+        from datetime import date, timedelta
+        conn = db.get_connection()
+        today = date.today()
+        self._seed_order(conn, "A1", created=today.strftime("%Y-%m-%d 09:00:00"))
+        self._seed_order(conn, "A2", created=today.strftime("%Y-%m-%d 21:30:00"))
+        self._seed_order(conn, "A3", created=(today - timedelta(days=1)).strftime("%Y-%m-%d 08:00:00"))
+        # 超出 7 天窗口的订单不计入
+        self._seed_order(conn, "A4", created=(today - timedelta(days=9)).strftime("%Y-%m-%d 08:00:00"))
+        # 退款：今日 1 笔、昨日 1 笔、无退款时间的存量订单不计入
+        self._seed_order(conn, "A5", created=today.strftime("%Y-%m-%d 10:00:00"),
+                         refunded=today.strftime("%Y-%m-%d 12:00:00"), status="已退款")
+        self._seed_order(conn, "A6", created=(today - timedelta(days=2)).strftime("%Y-%m-%d 10:00:00"),
+                         refunded=(today - timedelta(days=1)).strftime("%Y-%m-%d 15:00:00"), status="已退款")
+        self._seed_order(conn, "A7", created=(today - timedelta(days=1)).strftime("%Y-%m-%d 10:00:00"),
+                         status="已退款")
+        conn.commit()
+        conn.close()
+
+        d = admin_repo.stats_trend(7)
+        assert len(d["days"]) == 7 and d["days"][-1] == today.isoformat()
+        assert d["days"][0] == (today - timedelta(days=6)).isoformat()
+        assert d["orders"][-1] == 3          # 今日 A1 A2 A5
+        assert d["orders"][-2] == 2          # 昨日 A3 A7
+        assert d["refunds"][-1] == 1         # 今日 A5
+        assert d["refunds"][-2] == 1         # 昨日 A6
+        assert sum(d["orders"]) == 6         # 今日3+昨日2+前日1；9 天前的不算
+        assert sum(d["refunds"]) == 2        # 无 refunded_at 的 A7 不算
+
+    def test_trend_top_routes(self):
+        from services import admin_repo
+        conn = db.get_connection()
+        # 航线聚合走 INNER JOIN flights：先补两条航线航班
+        conn.execute("INSERT INTO flights (flight_no, airline_code, dep_iata, arr_iata, dep_time, arr_time, duration_min, aircraft, freq_days) "
+                     "VALUES ('CA2000','CA','SHA','PEK','11:00','13:10',130,'B737','1234567'),"
+                     "('CA3000','CA','PEK','SHA','14:00','16:10',130,'B737','1234567')")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for i in range(3):
+            self._seed_order(conn, f"B1{i}", created=now)                 # 北京-上海 ×3
+        for i in range(2):
+            self._seed_order(conn, f"B2{i}", created=now, flight_no="CA2000")  # 上海-北京 ×2
+        self._seed_order(conn, "B3", created=now, flight_no="CA3000")     # 北京-上海 ×1（第4班）
+        conn.commit()
+        conn.close()
+
+        d = admin_repo.stats_trend(7)
+        top = d["top_routes"]
+        assert top[0] == {"route": "北京-上海", "count": 4}
+        assert top[1] == {"route": "上海-北京", "count": 2}
+        assert len(top) == 2
+
+    def test_trend_empty_db_all_zero(self):
+        from services import admin_repo
+        d = admin_repo.stats_trend(7)
+        assert len(d["days"]) == 7
+        assert d["orders"] == [0] * 7 and d["refunds"] == [0] * 7
+        assert d["top_routes"] == []
+
+    def test_trend_days_param_clamped(self):
+        from services import admin_repo
+        assert len(admin_repo.stats_trend(0)["days"]) == 1
+        assert len(admin_repo.stats_trend(999)["days"]) == 30
+
+    def test_today_orders_uses_date_prefix(self):
+        """get_stats 的今日订单按 created_at 日期前缀统计（回归：等值比较恒为0）。"""
+        from services import admin_repo
+        conn = db.get_connection()
+        self._seed_order(conn, "C1", created=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        conn.commit()
+        conn.close()
+        assert admin_repo.get_stats()["today_orders"] == 1
+
+    def test_refund_writes_refunded_at(self):
+        """自愿退票即时退款应写入 refunded_at（图表数据源）。"""
+        from services import flight_repo, db
+        conn = db.get_connection()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._seed_order(conn, "D1", created=now)
+        conn.commit()
+        conn.close()
+        security.set_current_member("M1001")
+        r = flight_repo.refund_order_instant("D1", "M1001")
+        assert r.get("success")
+        conn = db.get_connection()
+        row = conn.execute("SELECT refunded_at, status FROM orders WHERE order_no='D1'").fetchone()
+        conn.close()
+        assert row["status"] == "已退款" and row["refunded_at"]
+
+
 # ---------------------------------------------------------------- 直接运行入口
 
 if __name__ == "__main__":

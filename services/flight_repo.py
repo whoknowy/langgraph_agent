@@ -676,8 +676,9 @@ def refund_order_instant(order_no: str, member_id: str = None) -> dict:
 
     conn = _conn()
     conn.execute(
-        "UPDATE orders SET status = '已退款', refund_amount = ?, admin_note = ? WHERE order_no = ?",
-        (quote["predict_amount"], f"自愿退票：{quote['fee_tier']}，手续费{quote['fee']}元", order_no))
+        "UPDATE orders SET status = '已退款', refund_amount = ?, admin_note = ?, refunded_at = ? WHERE order_no = ?",
+        (quote["predict_amount"], f"自愿退票：{quote['fee_tier']}，手续费{quote['fee']}元",
+         datetime.now().strftime("%Y-%m-%d %H:%M:%S"), order_no))
     conn.commit()
     conn.close()
     return {"success": True, "order_no": order_no, "status": "已退款",

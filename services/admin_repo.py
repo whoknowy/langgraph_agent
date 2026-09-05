@@ -7,7 +7,7 @@
 """
 
 import random
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from services import db
 from services.db_seed import HORIZON_DAYS
@@ -32,10 +32,57 @@ def get_stats() -> dict:
         "pending_refunds": one("SELECT COUNT(*) FROM orders WHERE status = '退票中'"),
         "pending_complaints": one("SELECT COUNT(*) FROM complaints WHERE status IN ('处理中','已升级')"),
         "flights_on_sale": one("SELECT COUNT(DISTINCT flight_no) FROM flights"),
-        "today_orders": one("SELECT COUNT(*) FROM orders WHERE created_at = ?", (today,)),
+        # created_at 是完整时间戳，按日期前缀比较才是"今日"（等值比较恒为 0）
+        "today_orders": one("SELECT COUNT(*) FROM orders WHERE substr(created_at, 1, 10) = ?", (today,)),
     }
     conn.close()
     return stats
+
+
+def stats_trend(days: int = 7) -> dict:
+    """工作台图表数据：近 N 天订单量/退款量趋势 + 热门航线 Top5。
+
+    - 订单按 created_at 日期前缀聚合；退款按 refunded_at（退款完成时刻，
+      存量已退款订单无此列不计入）；日期轴恒为今天往前 N 天，缺数补 0。
+    - 热门航线按近 N 天订单量取前 5（出发城市-到达城市）。
+    """
+    days = max(1, min(int(days), 30))
+    conn = _conn()
+    today = date.today()
+    dates = [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
+    start = dates[0]
+
+    def by_day(column: str) -> dict:
+        counts = {d: 0 for d in dates}
+        sql = (f"SELECT substr({column}, 1, 10) AS day, COUNT(*) AS n FROM orders "
+               f"WHERE {column} IS NOT NULL AND substr({column}, 1, 10) >= ? "
+               f"GROUP BY day")
+        for r in conn.execute(sql, (start,)):
+            day = str(r["day"])
+            if day in counts:
+                counts[day] = r["n"]
+        return counts
+
+    orders_by_day = by_day("created_at")
+    refunds_by_day = by_day("refunded_at")
+
+    routes = conn.execute(
+        "SELECT fd.city_cn || '-' || fa.city_cn AS route, COUNT(*) AS n "
+        "FROM orders o "
+        "JOIN flights f ON f.flight_no = o.flight_no "
+        "JOIN airports fd ON fd.iata3 = f.dep_iata "
+        "JOIN airports fa ON fa.iata3 = f.arr_iata "
+        "WHERE substr(o.created_at, 1, 10) >= ? "
+        "GROUP BY route ORDER BY n DESC, route LIMIT 5",
+        (start,)).fetchall()
+    conn.close()
+
+    return {
+        "days": dates,
+        "orders": [orders_by_day[d] for d in dates],
+        "refunds": [refunds_by_day[d] for d in dates],
+        "top_routes": [{"route": r["route"], "count": r["n"]} for r in routes],
+    }
 
 
 # ---------------------------------------------------------------- 订单 / 退款
@@ -100,8 +147,9 @@ def approve_refund(order_no: str, refund_amount: int = None, admin_note: str = "
     if result.get("error"):
         return result
     conn = _conn()
-    conn.execute("UPDATE orders SET refund_amount = ?, admin_note = ? WHERE order_no = ?",
-                 (amount, (admin_note or "").strip(), security_normalize(order_no)))
+    conn.execute("UPDATE orders SET refund_amount = ?, admin_note = ?, refunded_at = ? WHERE order_no = ?",
+                 (amount, (admin_note or "").strip(),
+                  datetime.now().strftime("%Y-%m-%d %H:%M:%S"), security_normalize(order_no)))
     notification_repo.create_notification(
         conn=conn, member_id=row["member_id"], title="退款审核通过", ntype="refund",
         content=f"您的订单 {security_normalize(order_no)} 退票审核已通过，退款 {amount} 元将原路退回，请注意查收。")
