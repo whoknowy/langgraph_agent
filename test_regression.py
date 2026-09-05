@@ -2,12 +2,24 @@
 """回归验收脚本：登录 → 聊天（流式+卡片） → 订票闭环 → 数据面板。每个用例独立会话。"""
 import io
 import json
+import os
 import sys
 import urllib.request
 import urllib.error
 import http.cookiejar
 import uuid
 from datetime import date, timedelta
+
+# ── Token 门禁 ───────────────────────────────────────────────────────────────
+# 本脚本会发起 20+ 轮真实 LLM 对话（高 token 消耗，约 10 分钟）。
+# 默认拒绝执行，日常验证请用零 token 手段（python -m pytest test_unit.py -q）。
+# 确需运行：python test_regression.py --go  或设环境变量 REGRESSION_GO=1
+if "--go" not in sys.argv and os.getenv("REGRESSION_GO", "") != "1":
+    print("⛔ 客户端回归会消耗大量 token（20+ 轮真实 LLM 对话，约 10 分钟），已阻止执行。")
+    print("   日常验证请用零 token 手段：python -m pytest test_unit.py -q（秒级，45+ 用例）")
+    print("   涉及管理端/订单流改动时：python test_admin.py（纯 REST，≈0 token）")
+    print("   确要运行本回归：python test_regression.py --go   或设环境变量 REGRESSION_GO=1")
+    sys.exit(0)
 
 FUTURE_DATE = (date.today() + timedelta(days=3)).isoformat()  # 订未来日期，避免生命周期扫描把过期票置为已使用
 

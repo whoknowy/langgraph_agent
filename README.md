@@ -89,11 +89,13 @@ python -c "import web_app; web_app.app.run(host='0.0.0.0', port=5000, debug=Fals
 
 | 层级 | 命令 | 耗时 | Token | 何时跑 |
 |---|---|---|---|---|
-| 单元测试 | `python -m pytest test_unit.py -q` | ~5秒 | **0** | **每次改代码后随便跑**（费率/状态机/注册/越权/通知/搜索解析等 45 用例，独立临时库） |
+| 单元测试 | `python -m pytest test_unit.py -q` | ~5秒 | **0** | **每次改代码后随便跑**（费率/状态机/注册/越权/通知/搜索解析/标题/趋势聚合等 69 用例，独立临时库） |
 | 管理端回归 | `python test_admin.py` | ~1分钟 | ≈0（纯 REST+DB） | 涉及管理端/订单流改动时 |
-| 客户端回归 | `python test_regression.py` | ~10分钟 | **高**（20+ 轮真实 LLM 对话） | 仅在里程碑/演示前/大改动合并前跑 |
+| 客户端回归 | `python test_regression.py --go` | ~10分钟 | **高**（20+ 轮真实 LLM 对话） | 仅在演示前/里程碑，且经明确确认后 |
 
-日常迭代循环：改代码 → `pytest test_unit.py` 秒级验证 → 手测界面 → 提交；`test_regression.py` 留到关键节点。
+**Token 纪律**：客户端回归默认被门禁阻止，需显式 `--go`（或 `REGRESSION_GO=1`）才会运行；
+不带参数执行只打印零 token 替代方案提示。日常迭代循环：改代码 → `pytest test_unit.py`
+秒级验证 → 手测界面 → 提交；`test_regression.py` 留到关键节点，且跑之前先问一句。
 
 ## 项目结构
 
