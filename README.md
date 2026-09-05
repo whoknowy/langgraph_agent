@@ -120,6 +120,12 @@ python -c "import web_app; web_app.app.run(host='0.0.0.0', port=5000, debug=Fals
 └── data/flight_system.db         # 本地数据库（自动生成）
 ```
 
+## 路线图
+
+- ✅ 会话自动起标题（LLM 生成，失败兜底首问截断）
+- ✅ 管理端工作台图表（7 天订单/退款趋势 + 热门航线 Top5，纯 CSS）
+- ⬜ 功能C（下一轮）：值机选座 + 登机牌
+
 ## 已知边界
 
 - 会话历史由 langgraph dev 持久化到本地（.langgraph_api/），**重启进程后聊天记录保留**（超过30天不活跃的会话由 TTL 策略清理）；业务数据在 SQLite 不受影响；

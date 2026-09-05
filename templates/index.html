@@ -2668,8 +2668,9 @@
                                 renderConfirmCard(pendingAction);
                                 pendingAction = null;
                             }
-                            // 标题由后端在 done 后异步生成，稍后刷新侧栏取回
+                            // 标题由后端在 done 后异步生成（LLM 需数秒），分两次延迟刷新侧栏取回
                             setTimeout(refreshSessionList, 1500);
+                            setTimeout(refreshSessionList, 8000);
                             return true;
                         }
                     }
