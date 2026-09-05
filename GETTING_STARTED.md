@@ -50,15 +50,31 @@ FLASK_SECRET_KEY=change-me-to-a-random-string
 ### ① LangGraph 智能体服务（端口 2024）
 
 ```bash
-langgraph dev --no-browser
+langgraph dev --no-browser --no-reload
 ```
 
 - 首次启动会自动创建 SQLite 数据库并生成种子数据（26 机场/10 航司/300+ 航班/未来30天票价）；
 - 看到 `Application startup complete` 即就绪。
 
 > Windows 提示：langgraph dev 的文件监听在部分环境下会崩溃，**修改代码后请手动重启此进程**。
+
+### 可选：接入 LangSmith 轨迹观测（答辩加分项）
+
+1. 到 [smith.langchain.com](https://smith.langchain.com) 免费注册并创建 API Key（`lsv2_pt_...`）；
+2. 在 `.env` 中取消注释并填写：
+
+   ```
+   LANGSMITH_TRACING=true
+   LANGSMITH_API_KEY=lsv2_pt_xxxxxxxx
+   LANGSMITH_PROJECT=airline-customer-agent
+   ```
+
+3. 重启两个服务，Flask 启动日志出现「🔭 LangSmith 轨迹观测已启用」即生效；
+4. 平台内即可看到每轮对话的完整轨迹：敏感词守卫 → 意图分类 → Agent 的 ReAct 循环 → 每次工具调用的入参与返回。零代码接入（LangChain 原生读取 `LANGSMITH_*` 环境变量）。
+
+> 也可以换成自建 Langfuse（`pip install langfuse` + 回调处理器），演示效果类似。
 > 若遇到 OpenBLAS 相关报错，用以下方式启动：
-> `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 langgraph dev --no-browser`
+> `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 langgraph dev --no-browser --no-reload`
 
 ### ② Web 服务（端口 5000）
 

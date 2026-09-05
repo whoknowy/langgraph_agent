@@ -82,9 +82,9 @@ def list_refund_queue() -> dict:
 
 def approve_refund(order_no: str, refund_amount: int = None, admin_note: str = "") -> dict:
     """同意退款：退票中 → 已退款，记录实际退款金额与备注（默认全额）。"""
-    from services import flight_repo
+    from services import flight_repo, notification_repo
     conn = _conn()
-    row = conn.execute("SELECT status, amount FROM orders WHERE order_no = ?",
+    row = conn.execute("SELECT status, amount, member_id FROM orders WHERE order_no = ?",
                        (security_normalize(order_no),)).fetchone()
     conn.close()
     if not row:
@@ -102,6 +102,9 @@ def approve_refund(order_no: str, refund_amount: int = None, admin_note: str = "
     conn = _conn()
     conn.execute("UPDATE orders SET refund_amount = ?, admin_note = ? WHERE order_no = ?",
                  (amount, (admin_note or "").strip(), security_normalize(order_no)))
+    notification_repo.create_notification(
+        conn=conn, member_id=row["member_id"], title="退款审核通过", ntype="refund",
+        content=f"您的订单 {security_normalize(order_no)} 退票审核已通过，退款 {amount} 元将原路退回，请注意查收。")
     conn.commit()
     conn.close()
     return {"success": True, "order_no": security_normalize(order_no),
@@ -111,9 +114,10 @@ def approve_refund(order_no: str, refund_amount: int = None, admin_note: str = "
 
 def reject_refund(order_no: str, admin_note: str = "") -> dict:
     """驳回退票：退票中 → 恢复进入审批前的状态（改签单回到「已改签」，其余回「已出票」）。"""
+    from services import notification_repo
     order_no_n = security_normalize(order_no)
     conn = _conn()
-    r = conn.execute("SELECT status, prev_status FROM orders WHERE order_no = ?",
+    r = conn.execute("SELECT status, prev_status, member_id FROM orders WHERE order_no = ?",
                      (order_no_n,)).fetchone()
     if not r:
         conn.close()
@@ -124,6 +128,11 @@ def reject_refund(order_no: str, admin_note: str = "") -> dict:
     restore = r["prev_status"] or "已出票"
     conn.execute("UPDATE orders SET status = ?, admin_note = ? WHERE order_no = ?",
                  (restore, "驳回退票：" + (admin_note or "").strip(), order_no_n))
+    notification_repo.create_notification(
+        conn=conn, member_id=r["member_id"], title="退票审核结果", ntype="refund",
+        content=(f"您的订单 {order_no_n} 退票申请未通过审核"
+                 + (f"（{admin_note.strip()}）" if (admin_note or "").strip() else "")
+                 + f"，订单已恢复为「{restore}」。"))
     conn.commit()
     conn.close()
     return {"success": True, "order_no": order_no_n, "status": restore,
@@ -164,11 +173,12 @@ def list_complaints(status: str = None, q: str = None, limit: int = 200) -> dict
 
 def resolve_complaint(ticket_no: str, reply: str) -> dict:
     """回复并解决投诉（处理中/已升级 → 已解决）。"""
+    from services import notification_repo
     tn = security_normalize(ticket_no)
     if not (reply or "").strip():
         return {"error": "处理回复不能为空"}
     conn = _conn()
-    row = conn.execute("SELECT status FROM complaints WHERE ticket_no = ?", (tn,)).fetchone()
+    row = conn.execute("SELECT status, member_id FROM complaints WHERE ticket_no = ?", (tn,)).fetchone()
     if not row:
         conn.close()
         return {"error": f"投诉单不存在：{ticket_no}"}
@@ -177,6 +187,9 @@ def resolve_complaint(ticket_no: str, reply: str) -> dict:
         return {"error": f"投诉状态为「{row['status']}」，无法执行解决操作"}
     conn.execute("UPDATE complaints SET status = '已解决', reply = ? WHERE ticket_no = ?",
                  (reply.strip(), tn))
+    notification_repo.create_notification(
+        conn=conn, member_id=row["member_id"], title="投诉已回复", ntype="complaint",
+        content=f"您的投诉 {tn} 已处理完毕，客服回复：{reply.strip()}")
     conn.commit()
     conn.close()
     return {"success": True, "ticket_no": tn, "status": "已解决",

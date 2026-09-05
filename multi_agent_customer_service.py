@@ -222,8 +222,12 @@ def final_response_node(state: AgentState) -> AgentState:
 
 # ========== 图构建 ==========
 
-def build_workflow():
-    """构建 LangGraph 工作流图。"""
+def build_workflow(checkpointer=None):
+    """构建 LangGraph 工作流图。
+
+    checkpointer 仅本地兜底执行器使用（SqliteSaver，落盘持久化）；
+    LangGraph 服务端部署时保持 None，由 server 注入平台级 checkpointer。
+    """
     if not HAS_LANGGRAPH:
         return None
 
@@ -257,7 +261,7 @@ def build_workflow():
 
     graph.add_edge("final_response", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 # ========== 向后兼容的执行器（本地兜底路径） ==========
@@ -266,11 +270,24 @@ class SkillPipelineExecutor:
     """进程内执行器：langgraph 服务不可用时由 web 层调用。"""
 
     def __init__(self):
-        self.workflow = build_workflow() if HAS_LANGGRAPH else None
-        if self.workflow is not None:
-            print("✅ 使用 LangGraph 工作流（进程内）")
-        else:
+        self.workflow = None
+        if not HAS_LANGGRAPH:
             print("⚠️ LangGraph 未安装，无法处理请求")
+            return
+        # 本地兜底路径挂 SqliteSaver：对话历史落盘 data/fallback_checkpoints.db，
+        # 服务重启后同 session_id 继续上下文（主链路由 LangGraph server 注入 checkpointer）
+        try:
+            import sqlite3
+            from pathlib import Path
+            from langgraph.checkpoint.sqlite import SqliteSaver
+            _cp_dir = Path(__file__).resolve().parent / "data"
+            _cp_dir.mkdir(parents=True, exist_ok=True)
+            _conn = sqlite3.connect(str(_cp_dir / "fallback_checkpoints.db"), check_same_thread=False)
+            self.workflow = build_workflow(checkpointer=SqliteSaver(_conn))
+            print("✅ 使用 LangGraph 工作流（进程内，SqliteSaver 持久化）")
+        except Exception as e:
+            self.workflow = build_workflow()
+            print(f"⚠️ SqliteSaver 不可用（{e}），兜底路径退化为无持久化")
 
     def execute(self, query: str, session_id: str = None, customer_info: Dict = None) -> Dict[str, Any]:
         if session_id is None:
@@ -291,7 +308,9 @@ class SkillPipelineExecutor:
         }
 
         try:
-            result = self.workflow.invoke(initial_state)
+            result = self.workflow.invoke(
+                initial_state,
+                config={"configurable": {"thread_id": session_id}})
             return {
                 "success": True,
                 "session_id": session_id,

@@ -6,7 +6,7 @@
 """
 
 import sqlite3
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from services import db, security
 from services.db_seed import HORIZON_DAYS
@@ -411,6 +411,70 @@ def get_customer(member_id: str) -> dict:
     return dict(r) if r else {"error": f"会员不存在：{member_id}"}
 
 
+def find_customer_by_account(account: str) -> dict:
+    """按会员号或手机号查找会员（密码登录用）。"""
+    acc = (account or "").strip()
+    if not acc:
+        return {"error": "请输入会员号或手机号"}
+    conn = _conn()
+    r = (conn.execute("SELECT member_id, name, phone, email, level, password_hash FROM customers "
+                      "WHERE member_id = ? OR phone = ?", (acc.upper(), acc)).fetchone())
+    conn.close()
+    return dict(r) if r else {"error": "账号不存在，请核对会员号或手机号"}
+
+
+def register_member(name: str, phone: str, password: str, email: str = "") -> dict:
+    """注册新会员：手机号唯一，口令哈希存储（与 admins 同策略），返回新会员档案。"""
+    from werkzeug.security import generate_password_hash
+    name = (name or "").strip()
+    phone = (phone or "").strip()
+    email = (email or "").strip()
+    if not name or len(name) > 20:
+        return {"error": "请输入姓名（20字以内）"}
+    if not _is_valid_phone(phone):
+        return {"error": "请输入11位手机号"}
+    if not password or len(password) < 6:
+        return {"error": "密码至少6位"}
+    if email and ("@" not in email or len(email) > 50):
+        return {"error": "邮箱格式不正确"}
+
+    conn = _conn()
+    try:
+        if conn.execute("SELECT 1 FROM customers WHERE phone = ?", (phone,)).fetchone():
+            return {"error": "该手机号已注册，请直接登录"}
+        row = conn.execute(
+            "SELECT MAX(CAST(SUBSTR(member_id, 2) AS INTEGER)) AS n FROM customers "
+            "WHERE member_id LIKE 'M%'").fetchone()
+        next_no = (row["n"] or 1000) + 1
+        member_id = f"M{next_no}"
+        conn.execute(
+            "INSERT INTO customers (member_id, name, phone, email, level, password_hash) "
+            "VALUES (?,?,?,?,?,?)",
+            (member_id, name, phone, email or None, "普卡", generate_password_hash(password)))
+        conn.commit()
+        return {"member_id": member_id, "name": name, "phone": phone, "level": "普卡"}
+    finally:
+        conn.close()
+
+
+def verify_member_password(account: str, password: str) -> dict:
+    """密码登录校验：账号为会员号或手机号。仅对设置了密码的账户可用。"""
+    from werkzeug.security import check_password_hash
+    cust = find_customer_by_account(account)
+    if cust.get("error"):
+        return cust
+    if not cust.get("password_hash"):
+        return {"error": "该账户未设置密码，请使用会员号+手机尾号登录"}
+    if not check_password_hash(cust["password_hash"], password or ""):
+        return {"error": "密码不正确"}
+    return {"member_id": cust["member_id"], "name": cust["name"], "level": cust["level"]}
+
+
+def _is_valid_phone(phone: str) -> bool:
+    import re
+    return bool(re.fullmatch(r"1\d{10}", phone or ""))
+
+
 def list_demo_accounts(limit: int = 3) -> list:
     """演示账号（登录页一键填入）：手机号仅返回后4位。"""
     conn = _conn()
@@ -491,7 +555,7 @@ def book_flight(member_id: str, flight_no: str, flight_date: str, cabin: str, pa
         "INSERT INTO orders (order_no, member_id, flight_no, flight_date, cabin, amount, status, created_at, passengers) "
         "VALUES (?,?,?,?,?,?,?,?,?)",
         (order_no, member_id, quote["flight_no"], quote["flight_date"], quote["cabin"],
-         quote["total_amount"], "待支付", date.today().isoformat(), quote["passengers"]),
+         quote["total_amount"], "待支付", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), quote["passengers"]),
     )
     conn.commit()
     conn.close()

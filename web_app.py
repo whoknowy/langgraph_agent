@@ -34,7 +34,13 @@ app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "your-secret-key-here")
 app.config['SESSION_TYPE'] = 'filesystem'
 
-# 订单生命周期：航班起飞后自动「已使用」（后台线程，与客户端/管理端共享 DB）
+# 启动即建表/迁移（幂等）：新表（如 notifications）在已有库上也要生效
+from services import db as _db  # noqa: E402
+_c = _db.get_connection()
+_db.init_schema(_c)
+_c.close()
+
+# 订单生命周期：起飞自动「已使用」+ 待支付超时自动「已取消」（后台线程，与客户端/管理端共享 DB）
 from services.lifecycle import start_lifecycle_worker  # noqa: E402
 start_lifecycle_worker()
 
@@ -102,27 +108,10 @@ def _local_chat_response(user_message: str, session_id: str):
         return jsonify({'error': f'本地客服处理失败: {str(e)}'}), 500
 
 
-def get_conversation_history(session_id: str) -> List[Dict[str, Any]]:
-    if 'conversations' not in session:
-        session['conversations'] = {}
-    return session['conversations'].get(session_id, [])
-
-
-def add_conversation_message(session_id: str, role: str, content: str) -> None:
-    history = get_conversation_history(session_id)
-    history.append({
-        'role': role,
-        'content': content,
-    })
-    session['conversations'][session_id] = history
-
-
 @app.route('/')
 def index():
-    """主页"""
-    current_session_id = session.get('current_session_id', 'default')
-    conversation_history = get_conversation_history(current_session_id)
-    return render_template('index.html', conversation_history=conversation_history)
+    """主页（对话历史由 LangGraph 线程状态经 /api/sessions 系列接口提供）"""
+    return render_template('index.html')
 
 
 @app.route('/api/chat', methods=['POST'])
@@ -204,8 +193,6 @@ def delete_session(session_id):
     try:
         ok, status = delete_remote_thread(session_id)
         if ok:
-            if 'conversations' in session and session_id in session['conversations']:
-                del session['conversations'][session_id]
             return jsonify({'message': '会话删除成功'})
         return jsonify({'error': f'删除会话失败: {status}'}), 500
     except Exception as e:
@@ -219,9 +206,6 @@ def clear_session(session_id):
         new_thread_id, err = clear_thread_and_create_new(session_id)
         if err:
             return jsonify({'error': err}), 500
-
-        if 'conversations' in session and session_id in session['conversations']:
-            session['conversations'][session_id] = []
 
         return jsonify({
             'message': '会话清空成功',
@@ -238,9 +222,6 @@ def create_new_session():
         import uuid
         new_session_id = str(uuid.uuid4())
         session['current_session_id'] = new_session_id
-        if 'conversations' not in session:
-            session['conversations'] = {}
-        session['conversations'][new_session_id] = []
         return jsonify({
             'session_id': new_session_id,
             'message': '新会话创建成功'
@@ -256,12 +237,24 @@ def login():
     """会员登录：member_id + 手机号后4位（演示级身份校验）。"""
     try:
         data = request.get_json() or {}
+        from services import flight_repo
+
+        # 模式一：密码登录（注册会员，账号=会员号或手机号）
+        password = (data.get('password') or '')
+        if password:
+            account = (data.get('account') or data.get('member_id') or data.get('phone') or '').strip()
+            cust = flight_repo.verify_member_password(account, password)
+            if cust.get('error'):
+                return jsonify({'error': cust['error']}), 401
+            session['member'] = {'member_id': cust['member_id'], 'name': cust['name'], 'level': cust['level']}
+            return jsonify({'member': session['member'], 'message': f"欢迎回来，{cust['name']}"})
+
+        # 模式二：演示账号尾号登录（会员号 + 手机号后4位）
         member_id = (data.get('member_id') or '').strip().upper()
         phone_suffix = (data.get('phone_suffix') or '').strip()
         if not member_id or not phone_suffix:
-            return jsonify({'error': '请输入会员号和手机号后4位'}), 400
+            return jsonify({'error': '请输入会员号和手机号后4位（注册会员可用密码登录）'}), 400
 
-        from services import flight_repo
         cust = flight_repo.get_customer(member_id)
         if cust.get('error'):
             return jsonify({'error': '会员号不存在，请核对后重试'}), 401
@@ -276,6 +269,24 @@ def login():
         return jsonify({'member': session['member'], 'message': f"欢迎回来，{cust['name']}"})
     except Exception as e:
         return jsonify({'error': f'登录失败: {str(e)}'}), 500
+
+
+@app.route('/api/register', methods=['POST'])
+def register():
+    """会员注册：手机号唯一，口令哈希存储，成功后自动登录。"""
+    try:
+        data = request.get_json() or {}
+        from services import flight_repo
+        result = flight_repo.register_member(
+            data.get('name') or '', data.get('phone') or '',
+            data.get('password') or '', data.get('email') or '')
+        if result.get('error'):
+            return jsonify({'error': result['error']}), 400
+        session['member'] = {'member_id': result['member_id'], 'name': result['name'], 'level': result['level']}
+        return jsonify({'member': session['member'],
+                        'message': f"注册成功，{result['name']}！你的会员号是 {result['member_id']}"})
+    except Exception as e:
+        return jsonify({'error': f'注册失败: {str(e)}'}), 500
 
 
 @app.route('/api/logout', methods=['POST'])
@@ -468,6 +479,36 @@ def my_complaints():
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': f'查询投诉失败: {str(e)}'}), 500
+
+
+@app.route('/api/my/notifications')
+def my_notifications():
+    """当前会员的站内通知列表。"""
+    try:
+        member, denied = _require_member()
+        if denied:
+            return denied
+        from services import notification_repo
+        unread_only = request.args.get('unread') in ('1', 'true')
+        items = notification_repo.list_notifications(member['member_id'], unread_only=unread_only)
+        return jsonify({'notifications': items,
+                        'unread_count': notification_repo.unread_count(member['member_id'])})
+    except Exception as e:
+        return jsonify({'error': f'查询通知失败: {str(e)}'}), 500
+
+
+@app.route('/api/my/notifications/read', methods=['POST'])
+def my_notifications_read():
+    """当前会员的全部通知置为已读。"""
+    try:
+        member, denied = _require_member()
+        if denied:
+            return denied
+        from services import notification_repo
+        n = notification_repo.mark_all_read(member['member_id'])
+        return jsonify({'success': True, 'marked': n})
+    except Exception as e:
+        return jsonify({'error': f'标记已读失败: {str(e)}'}), 500
 
 
 # ============================================================
@@ -735,6 +776,10 @@ def test_langgraph():
 
 def main():
     """主函数"""
+    if os.getenv("LANGSMITH_TRACING", "").lower() == "true" and os.getenv("LANGSMITH_API_KEY"):
+        print("🔭 LangSmith 轨迹观测已启用（项目:", os.getenv("LANGSMITH_PROJECT", "default"), "）")
+    else:
+        print("🔭 LangSmith 轨迹观测未启用（.env 配置 LANGSMITH_* 后自动上报）")
     print("🚀 多智能体客服系统 Web 应用")
     print("=" * 60)
     print("🌐 启动 Web 服务...")

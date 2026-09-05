@@ -9,6 +9,7 @@
 
 import json
 import datetime as _dt
+import os
 
 import requests
 from langchain_core.tools import tool
@@ -16,6 +17,7 @@ from langchain_core.tools import tool
 from services import flight_repo
 
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+BOCHA_WEB_SEARCH_URL = "https://api.bocha.cn/v1/web-search"
 WEATHER_CODES = {
     0: "晴", 1: "大部晴朗", 2: "多云", 3: "阴",
     45: "雾", 48: "雾凇",
@@ -117,6 +119,60 @@ def get_weather(city: str, date: str = "") -> str:
         return _dump(_fetch_open_meteo(coords["city"], coords["lat"], coords["lon"], date))
     except Exception as e:  # pragma: no cover - 兜底
         return _dump({"error": f"天气查询失败: {e}"})
+
+
+@tool
+def web_search(query: str, count: int = 5) -> str:
+    """联网搜索最新信息（博查 Web Search）：景点开放/门票/预约政策、当地节庆活动、交通管制、出行提示等。
+
+    旅行规划中涉及"现在/最近/今年"的实时信息，或对目的地细节没有把握时调用；
+    引用搜索结果时注明来源网站，不得编造内容或链接。
+
+    Args:
+        query: 搜索关键词（简洁明确，如"西安 兵马俑 门票 预约"）
+        count: 返回条数（1-10）
+    """
+    try:
+        return _dump(_fetch_bocha_web_search(query, count))
+    except Exception as e:  # pragma: no cover - 兜底
+        return _dump({"error": f"联网搜索失败: {e}"})
+
+
+def _fetch_bocha_web_search(query: str, count: int = 5) -> dict:
+    api_key = os.getenv("BOCHA_API_KEY", "")
+    if not api_key:
+        return {"error": "未配置 BOCHA_API_KEY，联网搜索不可用。请基于既有知识回答，并注明信息可能不是最新。"}
+    try:
+        n = max(1, min(int(count or 5), 10))
+    except (TypeError, ValueError):
+        n = 5
+    try:
+        resp = requests.post(
+            BOCHA_WEB_SEARCH_URL,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            data=json.dumps({"query": query, "summary": True, "count": n}),
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        return {"error": f"联网搜索服务不可用: {e}"}
+    if data.get("code") != 200:
+        return {"error": f"联网搜索返回异常: {data.get('msg') or data.get('code')}"}
+    pages = ((data.get("data") or {}).get("webPages") or {}).get("value") or []
+    results = []
+    for p in pages[:n]:
+        summary = (p.get("summary") or p.get("snippet") or "").strip()
+        results.append({
+            "title": (p.get("name") or "").strip(),
+            "summary": summary[:300],
+            "url": p.get("url") or "",
+            "site": (p.get("siteName") or "").strip(),
+            "date": (p.get("datePublished") or "")[:10],
+        })
+    if not results:
+        return {"results": [], "note": "未搜到相关结果，请更换关键词或基于既有知识回答"}
+    return {"results": results}
 
 
 def _fetch_open_meteo(city: str, lat: float, lon: float, date_str: str) -> dict:
@@ -224,6 +280,27 @@ def create_complaint(member_id: str = "", order_no: str = "", content: str = "")
         return _dump({"error": f"投诉登记失败: {e}"})
 
 
+@tool
+def query_notifications(only_unread: bool = False) -> str:
+    """查询当前登录会员的站内服务通知（退款审核结果、订单超时自动取消、投诉回复等）。
+
+    用户询问审批进度/通知/退款处理结果，或需要转告系统消息时调用；
+    通知以登录身份为准，无需向用户追问会员号。
+
+    Args:
+        only_unread: 是否只看未读通知
+    """
+    from services import notification_repo, security
+    member_id = security.get_current_member()
+    if not member_id:
+        return _dump({"error": "未登录：请先登录会员账号后再查询通知"})
+    try:
+        items = notification_repo.list_notifications(member_id, unread_only=bool(only_unread))
+        return _dump({"notifications": items, "unread_count": notification_repo.unread_count(member_id)})
+    except Exception as e:  # pragma: no cover - 兜底
+        return _dump({"error": f"通知查询失败: {e}"})
+
+
 # ------------------------------------------------ 确认卡片伪工具（schema-only）
 # 这两个工具不执行任何写操作：Agent 的 ReAct 循环通过 _on_tool_call 钩子拦截调用，
 # 把参数交给前端确认卡片；用户点击确认后由 REST 接口（/api/book 等）真正写库。
@@ -309,6 +386,8 @@ def all_tools():
         get_order_bill,
         query_complaint,
         create_complaint,
+        query_notifications,
+        web_search,
     ]
 
 

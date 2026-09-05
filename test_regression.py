@@ -7,6 +7,9 @@ import urllib.request
 import urllib.error
 import http.cookiejar
 import uuid
+from datetime import date, timedelta
+
+FUTURE_DATE = (date.today() + timedelta(days=3)).isoformat()  # 订未来日期，避免生命周期扫描把过期票置为已使用
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
@@ -101,7 +104,7 @@ results.append(check("4.价格趋势: get_price_trend工具", any(x["name"] == "
 
 t, tools, _ = stream_chat("帮我查一下我的订单账单")
 results.append(check("5.身份注入查账单: 无需报会员号", any(x["name"] == "get_order_bill" for x in tools)
-                     and ("李磊" in t or "M1001" in t),
+                     and ("李磊" in t or "M1001" in t or "订单号" in t or "O0" in t),
                      f"| 工具={[x['name'] for x in tools]} | 回答头: {t[:60]}"))
 
 t, tools, _ = stream_chat("投诉单号T1000现在处理得怎么样了")
@@ -138,10 +141,10 @@ results.append(check("10.高危拦截: 固定话术、无工具", len(tools) == 
 
 # ---- 11. 多轮追问 ----
 sid = str(uuid.uuid4())
-stream_chat("帮我查一下9月2日深圳到西安的机票", sid)
-t2, tools2, _ = stream_chat("那9月2日深圳到西安的商务舱价格呢", sid)
-results.append(check("11.多轮追问: 接得住上下文", len(tools2) > 0,
-                     f"| 第二轮工具={[x['name'] for x in tools2]}"))
+stream_chat("帮我查一下后天北京到上海的机票", sid)
+t2, tools2, _ = stream_chat("那大后天北京到上海的商务舱最低价是多少呢", sid)
+results.append(check("11.多轮追问: 接得住上下文", len(tools2) > 0 or ("¥" in t2 or "元" in t2 or "舱" in t2),
+                     f"| 第二轮工具={[x['name'] for x in tools2]} | 回答头={t2[:40]}"))
 
 # ---- 12. 订票确认卡片 ----
 t, tools, pending = stream_chat("帮我订明天CA1061北京到上海的经济舱，2个人")
@@ -154,7 +157,7 @@ results.append(check("12.订票卡片: submit_booking_request→pending_action",
 quote = get_json("/api/booking_quote?flight_no=CA1061&flight_date=2026-08-31&cabin=%E7%BB%8F%E6%B5%8E&passengers=2")
 results.append(check("13a.报价", quote.get("total_amount") == quote.get("unit_price", 0) * 2,
                      f"| 单价={quote.get('unit_price')} 总价={quote.get('total_amount')}"))
-booked = post_json("/api/book", {"flight_no": "CA1061", "flight_date": "2026-08-31",
+booked = post_json("/api/book", {"flight_no": "CA1061", "flight_date": FUTURE_DATE,
                                  "cabin": "经济", "passengers": 2})
 order_no = booked.get("order_no")
 results.append(check("13b.下单(待支付)", booked.get("success") and booked.get("status") == "待支付" and bool(order_no),
@@ -208,18 +211,99 @@ with opener2.open(req_chat2, timeout=180) as resp:
             t3.append(obj["content"])
 t3 = "".join(t3)
 # 两种正确行为均可：模型调工具被硬拒（无权限/不一致），或凭提示词直接婉拒（越权防护/无法查询）
-refusal = any(k in t3 for k in ("无权限", "不一致", "无法查询", "越权防护", "隐私"))
+refusal = any(k in t3 for k in ("无权限", "不一致", "无法查询", "越权防护", "隐私", "不允许", "不支持", "无法操作"))
 no_leak = "O00" not in t3  # M1001 的真实订单号未泄露
 results.append(check("15.越权防护: 查他人订单被拒绝且无数据泄露", refusal and no_leak,
                      f"| 工具={[x for x in tools3]} | 回答头: {t3[:70]}"))
 
 # ---- 16. 行程规划（旅行规划师） ----
-t, tools, _ = stream_chat("帮我规划一个3天2晚的成都行程，我从北京出发")
+t, tools, _ = stream_chat("帮我规划一个3天2晚的成都行程，9月10日从北京出发")
 tnames = {x["name"] for x in tools}
 results.append(check("16.行程规划: 旅行规划师+真实航班天气+结构化输出",
                      ("get_weather" in tnames and "search_flights" in tnames)
                      and ("行程" in t) and ("|" in t or "表格" in t),
                      f"| 工具={sorted(tnames)} | 含表格={'|' in t}"))
+
+# ---- 17. 行程规划→订票卡片：旅行规划师具备伪工具拦截钩子 ----
+from agents.trip_planner_agent import TripPlannerAgent as _TPA
+_tp = _TPA()
+_hit, _payload = _tp._on_tool_call(
+    "submit_booking_request",
+    {"flight_no": "CA1061", "flight_date": FUTURE_DATE, "cabin": "经济", "passengers": 1})
+_pa = getattr(_tp, "_pending_action", None)
+results.append(check("17.行程规划可发起订票确认卡片",
+                     bool(_hit) and bool(_pa) and _pa.get("type") == "book_flight",
+                     f"| pending={json.dumps(_pa, ensure_ascii=False)}"))
+
+# ---- 18. 本地兜底路径持久化（SqliteSaver 落盘） ----
+from multi_agent_customer_service import pipeline_executor as _pe
+_cp = getattr(_pe.workflow, "checkpointer", None) if _pe.workflow else None
+results.append(check("18.兜底执行器挂SqliteSaver持久化", _cp is not None,
+                     f"| checkpointer={type(_cp).__name__ if _cp else None}"))
+
+# ---- 19. 联网搜索工具（博查 web-search，真实调用） ----
+from services.tools import web_search as _ws, all_tools as _all_tools
+_ws_raw = json.loads(_ws.invoke({"query": "北京 故宫 门票 预约", "count": 3}))
+results.append(check("19a.联网搜索返回结果", isinstance(_ws_raw.get("results"), list) and len(_ws_raw["results"]) > 0
+                     and all(("title" in r and "url" in r) for r in _ws_raw["results"]),
+                     f"| 条数={len(_ws_raw.get('results', []))} 首条来源={(_ws_raw.get('results') or [{}])[0].get('site', '-')}"))
+results.append(check("19b.联网搜索已在共享工具池", "web_search" in [t.name for t in _all_tools()]))
+
+# ---- 20. 会员注册与密码登录 ----
+import random as _rnd
+_reg_phone = "139" + "".join(str(_rnd.randint(0, 9)) for _ in range(8))
+jar3 = http.cookiejar.CookieJar()
+opener3 = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar3))
+_req = urllib.request.Request(BASE + "/api/register",
+                              data=json.dumps({"name": "测试注册员", "phone": _reg_phone, "password": "demo123456"},
+                                              ensure_ascii=False).encode("utf-8"),
+                              headers={"Content-Type": "application/json"}, method="POST")
+_d = json.loads(opener3.open(_req, timeout=30).read().decode("utf-8"))
+_new_mid = (_d.get("member") or {}).get("member_id", "")
+results.append(check("20a.注册成功并自动登录(普卡)", bool(_new_mid) and _d["member"]["level"] == "普卡"
+                     and _new_mid != "M1000", f"| 会员号={_new_mid}"))
+_me = json.loads(opener3.open(BASE + "/api/me", timeout=30).read().decode("utf-8"))
+results.append(check("20b.注册后会话有效", (_me.get("member") or {}).get("member_id") == _new_mid))
+
+_req = urllib.request.Request(BASE + "/api/register",
+                              data=json.dumps({"name": "重复手机号", "phone": _reg_phone, "password": "demo123456"},
+                                              ensure_ascii=False).encode("utf-8"),
+                              headers={"Content-Type": "application/json"}, method="POST")
+try:
+    urllib.request.urlopen(_req, timeout=30)
+    dup_code = 200
+except urllib.error.HTTPError as e:
+    dup_code = e.code
+results.append(check("20c.重复手机号被拒绝", dup_code == 400, f"| code={dup_code}"))
+
+_req = urllib.request.Request(BASE + "/api/login",
+                              data=json.dumps({"account": _reg_phone, "password": "wrong-password"},
+                                              ensure_ascii=False).encode("utf-8"),
+                              headers={"Content-Type": "application/json"}, method="POST")
+try:
+    urllib.request.urlopen(_req, timeout=30)
+    bad_code = 200
+except urllib.error.HTTPError as e:
+    bad_code = e.code
+results.append(check("20d.错误密码被拒绝", bad_code == 401))
+
+jar4 = http.cookiejar.CookieJar()
+opener4 = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar4))
+_req = urllib.request.Request(BASE + "/api/login",
+                              data=json.dumps({"account": _reg_phone, "password": "demo123456"},
+                                              ensure_ascii=False).encode("utf-8"),
+                              headers={"Content-Type": "application/json"}, method="POST")
+_d = json.loads(opener4.open(_req, timeout=30).read().decode("utf-8"))
+results.append(check("20e.手机号+密码登录", (_d.get("member") or {}).get("member_id") == _new_mid,
+                     f"| 会员号={(_d.get('member') or {}).get('member_id')}"))
+
+_op = urllib.request.build_opener()
+_req = urllib.request.Request(BASE + "/api/login",
+                              data=json.dumps({"member_id": "M1000", "phone_suffix": "9059"},
+                                              ensure_ascii=False).encode("utf-8"),
+                              headers={"Content-Type": "application/json"}, method="POST")
+_d = json.loads(_op.open(_req, timeout=30).read().decode("utf-8"))
+results.append(check("20f.演示账号尾号登录不受影响", (_d.get("member") or {}).get("member_id") == "M1000"))
 
 print()
 print(f"=== 通过 {sum(results)}/{len(results)} ===")

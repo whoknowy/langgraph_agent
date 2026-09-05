@@ -5,6 +5,7 @@ flask>=3.0
 langgraph>=1.0
 langchain-openai>=0.2
 langchain-core>=0.3
+langgraph-checkpoint-sqlite>=3.0  # 本地兜底路径的对话持久化
 
 # LLM 兼容接口 / 天气 / LangGraph 通信
 requests>=2.31

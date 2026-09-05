@@ -1300,6 +1300,10 @@
         .login-error { min-height: 16px; margin: 8px 0 0; font-size: 12px; color: #ef4444; }
         .login-demo { margin-top: 10px; border-top: 1px dashed var(--border); padding-top: 10px; }
         .login-demo p { margin: 0 0 8px; font-size: 12px; color: var(--text-muted); }
+        .login-switch { margin: 10px 0 0; font-size: 12px; color: var(--text-muted); text-align: center; }
+        .login-switch a { color: #3b82f6; text-decoration: none; margin: 0 6px; cursor: pointer; }
+        .login-switch a:hover { text-decoration: underline; }
+        #registerFields .login-input { margin-top: 8px; }
         .demo-account-list { display: flex; flex-direction: column; gap: 6px; }
         .demo-account-chip {
             text-align: left; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px;
@@ -1358,6 +1362,23 @@
         .my-data-table .st-pending { color: #f59e0b; }
         .my-data-table .st-ok { color: #16a34a; }
         .my-data-table .st-refund { color: #ef4444; }
+        .my-data-table .st-cancelled { color: var(--text-muted, #9ca3af); }
+
+        /* 服务通知 */
+        .notify-list { display: flex; flex-direction: column; gap: 8px; }
+        .notify-item { border: 1px solid var(--border, #e5e7eb); border-radius: 8px; padding: 8px 10px; }
+        .notify-item.unread { border-left: 3px solid #ef4444; background: rgba(239,68,68,.04); }
+        .notify-item-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+        .notify-item-title { font-weight: 600; font-size: 13px; }
+        .notify-item-time { color: var(--text-muted, #9ca3af); font-size: 12px; white-space: nowrap; }
+        .notify-item-content { margin-top: 4px; font-size: 13px; line-height: 1.5; word-break: break-all; }
+        .notify-actions { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+        .member-data-btn { position: relative; }
+        .member-data-btn .unread-dot {
+            position: absolute; top: -4px; right: -4px; min-width: 16px; height: 16px;
+            padding: 0 4px; border-radius: 8px; background: #ef4444; color: #fff;
+            font-size: 11px; line-height: 16px; text-align: center; display: none;
+        }
         .my-row-btn {
             padding: 3px 10px; margin-right: 6px; border-radius: 7px; border: 1px solid #3b82f6;
             background: #3b82f6; color: #fff; font-size: 12px; cursor: pointer; font-family: var(--font-sans);
@@ -1387,6 +1408,7 @@
             <div class="app-header-right">
                 <button type="button" class="member-data-btn" onclick="toggleMyData(true)" title="我的订单与投诉">
                     我的数据
+                    <span class="unread-dot" id="unreadDot"></span>
                 </button>
                 <div class="member-badge" id="memberBadge" style="display:none;">
                     <div class="member-avatar" id="memberAvatar">客</div>
@@ -1510,15 +1532,28 @@
     <div id="loginOverlay" class="login-overlay" hidden>
         <div class="login-backdrop"></div>
         <div class="login-panel">
-            <h2>✈️ 会员登录</h2>
+            <h2 id="loginTitle">✈️ 会员登录</h2>
             <p class="login-sub">登录后可查询订单账单、预订机票、登记投诉</p>
             <input id="loginMemberId" class="login-input" placeholder="会员号（如 M1001）" maxlength="10"
                 autocomplete="off">
             <input id="loginPhoneSuffix" class="login-input" type="password" placeholder="手机号后4位" maxlength="4"
                 autocomplete="off">
-            <button type="button" class="login-btn" onclick="doLogin()">登 录</button>
+            <div id="registerFields" hidden>
+                <input id="regName" class="login-input" placeholder="姓名" maxlength="20" autocomplete="off">
+                <input id="regPhone" class="login-input" type="tel" maxlength="11" placeholder="11位手机号（作为登录账号）"
+                    autocomplete="off">
+                <input id="regPassword" class="login-input" type="password" placeholder="设置密码（至少6位）"
+                    autocomplete="off">
+                <input id="regPassword2" class="login-input" type="password" placeholder="确认密码" autocomplete="off">
+            </div>
+            <button type="button" class="login-btn" id="loginBtn" onclick="onLoginSubmit()">登 录</button>
             <p class="login-error" id="loginError"></p>
-            <div class="login-demo">
+            <p class="login-switch">
+                <a id="regSwitchLink" onclick="setLoginMode(loginMode === 'register' ? 'suffix' : 'register')">注册新会员</a>
+                <span>·</span>
+                <a id="pwdSwitchLink" onclick="setLoginMode(loginMode === 'password' ? 'suffix' : 'password')">密码登录</a>
+            </p>
+            <div class="login-demo" id="loginDemoBox">
                 <p>演示账号（点击自动填入）：</p>
                 <div id="demoAccounts" class="demo-account-list"></div>
             </div>
@@ -1541,6 +1576,13 @@
             <div class="my-data-section">
                 <h3>我的投诉</h3>
                 <div id="myComplaintsBox"><div class="my-data-empty">加载中…</div></div>
+            </div>
+            <div class="my-data-section">
+                <h3>服务通知</h3>
+                <div class="notify-actions" id="notifyActions" style="display:none;">
+                    <button type="button" class="my-row-btn" onclick="markNotificationsRead()">全部已读</button>
+                </div>
+                <div id="myNotificationsBox"><div class="my-data-empty">加载中…</div></div>
             </div>
         </div>
     </div>
@@ -2339,6 +2381,11 @@
             }
             const who = document.getElementById('myDataWho');
             if (who) who.textContent = currentMember ? ('（' + currentMember.name + ' · ' + currentMember.member_id + '）') : '';
+            if (currentMember) { updateUnreadDot(); }
+            else {
+                const dot = document.getElementById('unreadDot');
+                if (dot) dot.style.display = 'none';
+            }
         }
 
         function showLogin() {
@@ -2376,17 +2423,84 @@
             } catch (e) { /* 演示账号加载失败不阻塞登录 */ }
         }
 
+        /** 登录浮层模式：suffix=尾号登录 / password=密码登录 / register=注册 */
+        let loginMode = 'suffix';
+
+        function setLoginMode(mode) {
+            loginMode = mode;
+            const isReg = mode === 'register';
+            const isPwd = mode === 'password';
+            document.getElementById('loginTitle').textContent = isReg ? '📝 注册新会员' : '✈️ 会员登录';
+            document.getElementById('registerFields').hidden = !isReg;
+            document.getElementById('loginMemberId').hidden = isReg;
+            document.getElementById('loginPhoneSuffix').hidden = isReg;
+            document.getElementById('loginPhoneSuffix').placeholder = isPwd ? '密码' : '手机号后4位';
+            document.getElementById('loginPhoneSuffix').maxLength = isPwd ? 30 : 4;
+            document.getElementById('loginMemberId').maxLength = isPwd ? 30 : 10;
+            document.getElementById('loginMemberId').placeholder = isPwd ? '会员号或手机号' : '会员号（如 M1001）';
+            document.getElementById('loginDemoBox').hidden = (isReg || isPwd);
+            document.getElementById('regSwitchLink').textContent = isReg ? '返回登录' : '注册新会员';
+            document.getElementById('pwdSwitchLink').style.visibility = isReg ? 'hidden' : 'visible';
+            document.getElementById('loginBtn').textContent = isReg ? '注 册' : '登 录';
+            document.getElementById('loginError').textContent = '';
+        }
+
+        function onLoginSubmit() {
+            if (loginMode === 'register') { doRegister(); } else { doLogin(); }
+        }
+
+        async function doRegister() {
+            const errEl = document.getElementById('loginError');
+            errEl.textContent = '';
+            const name = document.getElementById('regName').value.trim();
+            const phone = document.getElementById('regPhone').value.trim();
+            const p1 = document.getElementById('regPassword').value;
+            const p2 = document.getElementById('regPassword2').value;
+            if (!name || !phone || !p1) { errEl.textContent = '请填写完整信息'; return; }
+            if (p1.length < 6) { errEl.textContent = '密码至少6位'; return; }
+            if (p1 !== p2) { errEl.textContent = '两次输入的密码不一致'; return; }
+            const btn = document.getElementById('loginBtn');
+            btn.disabled = true;
+            try {
+                const r = await fetch('/api/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name, phone: phone, password: p1 })
+                });
+                const d = await r.json();
+                if (!r.ok) { errEl.textContent = d.error || '注册失败'; return; }
+                ['regName', 'regPhone', 'regPassword', 'regPassword2'].forEach(function (id) {
+                    document.getElementById(id).value = '';
+                });
+                setLoginMode('suffix');
+                setMember(d.member);
+                hideLogin();
+                addMessage('assistant', '🎉 注册成功！' + d.member.name + '，你的会员号是 **' + d.member.member_id
+                    + '**（普卡会员）。以后可用手机号 + 密码登录，也可以直接说"查一下我的账单"、"帮我订机票"，我会以你的会员身份办理。');
+                updateChatEmptyVisibility();
+            } catch (e) {
+                errEl.textContent = '网络错误，请重试';
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
         async function doLogin() {
             const memberId = document.getElementById('loginMemberId').value.trim();
             const suffix = document.getElementById('loginPhoneSuffix').value.trim();
             const errEl = document.getElementById('loginError');
             errEl.textContent = '';
-            if (!memberId || !suffix) { errEl.textContent = '请输入会员号和手机号后4位'; return; }
+            const isPwd = loginMode === 'password';
+            if (!memberId || !suffix) {
+                errEl.textContent = isPwd ? '请输入会员号/手机号和密码' : '请输入会员号和手机号后4位';
+                return;
+            }
             try {
                 const r = await fetch('/api/login', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ member_id: memberId, phone_suffix: suffix })
+                    body: JSON.stringify(isPwd ? { account: memberId, password: suffix }
+                                               : { member_id: memberId, phone_suffix: suffix })
                 });
                 const d = await r.json();
                 if (!r.ok) { errEl.textContent = d.error || '登录失败'; return; }
@@ -2697,25 +2811,88 @@
         async function refreshMyData() {
             const ordersBox = document.getElementById('myOrdersBox');
             const compBox = document.getElementById('myComplaintsBox');
+            const notifyBox = document.getElementById('myNotificationsBox');
             ordersBox.innerHTML = '<div class="my-data-empty">加载中…</div>';
             compBox.innerHTML = '<div class="my-data-empty">加载中…</div>';
+            notifyBox.innerHTML = '<div class="my-data-empty">加载中…</div>';
             try {
                 const results = await Promise.all([
                     fetch('/api/my/orders').then(function (r) { return r.json(); }),
-                    fetch('/api/my/complaints').then(function (r) { return r.json(); })
+                    fetch('/api/my/complaints').then(function (r) { return r.json(); }),
+                    fetch('/api/my/notifications').then(function (r) { return r.json(); })
                 ]);
                 renderMyOrders(ordersBox, results[0]);
                 renderMyComplaints(compBox, results[1]);
+                renderMyNotifications(notifyBox, results[2]);
+                updateUnreadDot(results[2] && results[2].unread_count);
             } catch (e) {
                 ordersBox.innerHTML = '<div class="my-data-empty">加载失败，请点刷新重试</div>';
                 compBox.innerHTML = '<div class="my-data-empty">加载失败，请点刷新重试</div>';
+                notifyBox.innerHTML = '<div class="my-data-empty">加载失败，请点刷新重试</div>';
             }
+        }
+
+        function renderMyNotifications(box, data) {
+            const actions = document.getElementById('notifyActions');
+            if (data.error) {
+                box.innerHTML = '<div class="my-data-empty">' + escHtml(data.error) + '</div>';
+                if (actions) actions.style.display = 'none';
+                return;
+            }
+            const list = data.notifications || [];
+            if (actions) actions.style.display = list.length ? 'flex' : 'none';
+            if (!list.length) { box.innerHTML = '<div class="my-data-empty">暂无通知</div>'; return; }
+            const wrap = document.createElement('div');
+            wrap.className = 'notify-list';
+            list.forEach(function (n) {
+                const item = document.createElement('div');
+                item.className = 'notify-item' + (n.is_read ? '' : ' unread');
+                const head = document.createElement('div');
+                head.className = 'notify-item-head';
+                const title = document.createElement('span');
+                title.className = 'notify-item-title';
+                title.textContent = (n.is_read ? '' : '🔴 ') + (n.title || '服务通知');
+                const time = document.createElement('span');
+                time.className = 'notify-item-time';
+                time.textContent = n.created_at || '';
+                head.appendChild(title); head.appendChild(time);
+                const body = document.createElement('div');
+                body.className = 'notify-item-content';
+                body.textContent = n.content || '';
+                item.appendChild(head); item.appendChild(body);
+                wrap.appendChild(item);
+            });
+            box.innerHTML = '';
+            box.appendChild(wrap);
+        }
+
+        async function markNotificationsRead() {
+            try {
+                await fetch('/api/my/notifications/read', { method: 'POST' });
+            } catch (e) { /* 忽略网络错误，刷新时会重新拉取 */ }
+            refreshMyData();
+        }
+
+        async function updateUnreadDot(count) {
+            const dot = document.getElementById('unreadDot');
+            if (!dot) return;
+            if (count === undefined || count === null) {
+                try {
+                    const r = await fetch('/api/my/notifications');
+                    const d = await r.json();
+                    count = (d && d.unread_count) || 0;
+                } catch (e) { count = 0; }
+            }
+            const n = Number(count) || 0;
+            dot.style.display = n > 0 ? 'block' : 'none';
+            dot.textContent = n > 99 ? '99+' : String(n);
         }
 
         function statusClass(status) {
             if (status === '待支付') return 'st-pending';
             if (status === '已出票' || status === '已改签') return 'st-ok';
             if (status === '退票中' || status === '已退款') return 'st-refund';
+            if (status === '已取消') return 'st-cancelled';
             return '';
         }
 

@@ -113,6 +113,18 @@ CREATE TABLE IF NOT EXISTS admins (
     password_hash TEXT NOT NULL,
     name          TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    member_id  TEXT NOT NULL,
+    title      TEXT NOT NULL DEFAULT '服务通知',
+    content    TEXT NOT NULL,
+    ntype      TEXT NOT NULL DEFAULT 'system',
+    is_read    INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_member ON notifications(member_id);
 """
 
 
@@ -128,6 +140,8 @@ def get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # WAL 模式：读写不互斥，避免多浏览器并发演示时报 database is locked
+    conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
 
@@ -141,6 +155,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "orders", "passengers", "passengers INTEGER DEFAULT 1")
     _ensure_column(conn, "orders", "prev_status", "prev_status TEXT")
     _ensure_column(conn, "complaints", "reply", "reply TEXT")
+    # 会员注册：口令哈希列（演示账号为 NULL，走手机尾号登录）
+    _ensure_column(conn, "customers", "password_hash", "password_hash TEXT")
     # 种子订单未记录人数（金额即单人票价），统一按1人回填
     conn.execute("UPDATE orders SET passengers = 1 WHERE passengers IS NULL")
     conn.commit()

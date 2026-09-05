@@ -8,6 +8,9 @@ import urllib.error
 import http.cookiejar
 import urllib.parse
 import random
+from datetime import date, timedelta
+
+FUTURE_DATE = (date.today() + timedelta(days=3)).isoformat()  # 订未来日期，避免生命周期扫描把过期票置为已使用
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
@@ -59,7 +62,7 @@ assert code is None, "会员登录失败"
 
 def create_pending_refund():
     d, code = req(member_op, "POST", "/api/book",
-                  {"flight_no": "CA1061", "flight_date": "2026-08-31", "cabin": "经济", "passengers": 1})
+                  {"flight_no": "CA1061", "flight_date": FUTURE_DATE, "cabin": "经济", "passengers": 1})
     order_no = d["order_no"]
     req(member_op, "POST", "/api/pay", {"order_no": order_no})
     d, _ = req(member_op, "POST", "/api/refund", {"order_no": order_no, "refund_type": "special"})
@@ -70,14 +73,21 @@ def create_pending_refund():
 order_a = create_pending_refund()
 order_b = create_pending_refund()
 
+import sqlite3 as _sq1
+_c1 = _sq1.connect("data/flight_system.db")
+_order_a_amount = _c1.execute("SELECT amount FROM orders WHERE order_no = ?", (order_a,)).fetchone()[0]
+_c1.close()
+_half_amount = _order_a_amount // 2
+
 d, _ = req(admin_op, "GET", "/admin/api/refunds")
 nos = [o["order_no"] for o in d.get("refunds", [])]
 results.append(check("5.退款队列含新退票单", order_a in nos and order_b in nos, f"| 队列={len(nos)}单"))
 
 # ---- 退款处理 ----
 d, code = req(admin_op, "POST", "/admin/api/refunds/approve",
-              {"order_no": order_a, "refund_amount": 900, "admin_note": "按九折协商退款"})
-results.append(check("6a.同意退款(部分金额)", code is None and d.get("status") == "已退款" and d.get("refund_amount") == 900))
+              {"order_no": order_a, "refund_amount": _half_amount, "admin_note": "按九折协商退款"})
+results.append(check("6a.同意退款(部分金额)", code is None and d.get("status") == "已退款" and d.get("refund_amount") == _half_amount,
+                     f"| 票面={_order_a_amount} 退款={_half_amount}"))
 d, code = req(admin_op, "POST", "/admin/api/refunds/approve", {"order_no": order_a})
 results.append(check("6b.重复审批被状态机拒绝", code == 400))
 d, _ = req(admin_op, "POST", "/admin/api/refunds/reject", {"order_no": order_b, "admin_note": "特价票不退"})
@@ -85,7 +95,7 @@ results.append(check("6c.驳回退票回到已出票", d.get("status") == "已�
 d, _ = req(member_op, "GET", "/api/my/orders")
 mine = {o["order_no"]: o for o in d.get("orders", [])}
 results.append(check("6d.会员侧可见退款结果",
-                     mine.get(order_a, {}).get("status") == "已退款" and mine[order_a].get("refund_amount") == 900
+                     mine.get(order_a, {}).get("status") == "已退款" and mine[order_a].get("refund_amount") == _half_amount
                      and mine.get(order_b, {}).get("status") == "已出票"))
 
 # ---- 投诉处理 ----
@@ -120,7 +130,13 @@ suffix = str(random.randint(1000, 9999))
 new_flight_no = "CA" + suffix
 al_code = "X" + random.choice("ABCDEFGH") + str(random.randint(0, 9))[:1]
 al_code = ("X" + random.choice("QWRTYP"))[:2] + str(random.randint(10, 99))[:2]
+import sqlite3 as _sq0
+_c0 = _sq0.connect("data/flight_system.db")
+_existing_codes = {r[0] for r in _c0.execute("SELECT code FROM airlines")}
+_c0.close()
 al_code = "".join(random.choice("ABCDEFGHJKLMNPQRSTUVWX") for _ in range(2))
+while al_code in _existing_codes:
+    al_code = "".join(random.choice("ABCDEFGHJKLMNPQRSTUVWX") for _ in range(2))
 ap_code = "".join(random.choice("QXZJNMG") for _ in range(1)) + "".join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ") for _ in range(2))
 ap_city = "测试城" + suffix
 d, _ = req(admin_op, "GET", "/admin/api/airports")
@@ -165,7 +181,7 @@ results.append(check("12.会员查询", d.get("count", 0) >= 1 and d["customers"
 
 # ---- 改签闭环（免改签费，差价多退少补） ----
 d, code = req(member_op, "POST", "/api/book",
-              {"flight_no": "CA1061", "flight_date": "2026-08-31", "cabin": "经济", "passengers": 2})
+              {"flight_no": "CA1061", "flight_date": FUTURE_DATE, "cabin": "经济", "passengers": 2})
 chg_order = d["order_no"]
 results.append(check("14a.下单passengers落库", d.get("passengers") == 2))
 req(member_op, "POST", "/api/pay", {"order_no": chg_order})
@@ -194,7 +210,7 @@ results.append(check("14e.改签他人订单被拒绝", code == 400))
 # ---- 生命周期：起飞后自动「已使用」，退票被状态机拒绝 ----
 conn = __import__("sqlite3").connect("data/flight_system.db")
 d, code = req(member_op, "POST", "/api/book",
-              {"flight_no": "CA1061", "flight_date": "2026-08-31", "cabin": "经济", "passengers": 1})
+              {"flight_no": "CA1061", "flight_date": FUTURE_DATE, "cabin": "经济", "passengers": 1})
 fly_order = d["order_no"]
 req(member_op, "POST", "/api/pay", {"order_no": fly_order})
 conn.execute("UPDATE orders SET flight_date = ?, dep_time2 = ? WHERE order_no = ?" if False else
@@ -226,6 +242,56 @@ d, code = req(member_op, "POST", "/api/refund", {"order_no": chg_order, "refund_
 results.append(check("16d.改签单自愿退票即时退款", code is None and d.get("status") == "已退款"
                      and d.get("refund_amount") == predict,
                      f"| 到账={d.get('refund_amount')} 预计={predict}"))
+
+# ---- 站内通知：审批通过/驳回/投诉回复 → 会员端可见，可一键已读 ----
+order_n1 = create_pending_refund()
+req(admin_op, "POST", "/admin/api/refunds/approve", {"order_no": order_n1})
+d, _ = req(member_op, "GET", "/api/my/notifications")
+_n1 = next((n for n in d.get("notifications", [])
+            if order_n1 in n.get("content", "") and n.get("title") == "退款审核通过" and not n.get("is_read")), None)
+results.append(check("17a.退款审批通过生成未读通知", _n1 is not None,
+                     f"| 未读数={d.get('unread_count')}"))
+
+order_n2 = create_pending_refund()
+req(admin_op, "POST", "/admin/api/refunds/reject", {"order_no": order_n2, "admin_note": "测试驳回"})
+d, _ = req(member_op, "GET", "/api/my/notifications")
+_n2 = next((n for n in d.get("notifications", [])
+            if order_n2 in n.get("content", "") and n.get("title") == "退票审核结果"), None)
+results.append(check("17b.退款驳回生成通知", _n2 is not None))
+
+d, _ = req(member_op, "GET", "/api/my/notifications")
+results.append(check("17c.投诉回复生成通知",
+                     any(n.get("title") == "投诉已回复" for n in d.get("notifications", []))))
+
+d, code = req(member_op, "POST", "/api/my/notifications/read")
+results.append(check("17d.一键全部已读", code is None and d.get("marked", 0) >= 2,
+                     f"| 标记={d.get('marked')}"))
+d, _ = req(member_op, "GET", "/api/my/notifications")
+results.append(check("17e.已读后未读数为0", d.get("unread_count") == 0,
+                     f"| 未读={d.get('unread_count')}"))
+
+# ---- 待支付超时自动取消（回拨创建时间触发扫描） ----
+d, _ = req(member_op, "POST", "/api/book",
+           {"flight_no": "CA1061", "flight_date": FUTURE_DATE, "cabin": "经济", "passengers": 1})
+_t_order = d["order_no"]
+import sqlite3 as _sq2
+import datetime as _dt2
+_conn2 = _sq2.connect("data/flight_system.db")
+_conn2.execute("UPDATE orders SET created_at = ? WHERE order_no = ?",
+               ((_dt2.datetime.now() - _dt2.timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S"), _t_order))
+_conn2.commit(); _conn2.close()
+from services.lifecycle import cancel_stale_pending_orders
+_ncanceled = cancel_stale_pending_orders()
+d, _ = req(member_op, "GET", "/api/my/orders")
+_row = next((o for o in d.get("orders", []) if o["order_no"] == _t_order), {})
+results.append(check("18a.超时待支付自动「已取消」", _row.get("status") == "已取消",
+                     f"| 本次取消={_ncanceled}"))
+d, code = req(member_op, "POST", "/api/pay", {"order_no": _t_order})
+results.append(check("18b.已取消订单不可支付", code == 400))
+d, _ = req(member_op, "GET", "/api/my/notifications")
+results.append(check("18c.自动取消生成站内通知",
+                     any(_t_order in n.get("content", "") and n.get("title") == "订单已自动取消"
+                         for n in d.get("notifications", []))))
 
 # ---- 越权：会员会话访问管理接口 ----
 d, code = req(member_op, "GET", "/admin/api/stats")

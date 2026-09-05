@@ -47,7 +47,7 @@ class BaseAgent(ABC):
             f"今天的日期是 {_date.today().isoformat()}。"
             "用户提到\"明天/后天/下周X\"等相对日期时，先据此换算为具体日期（YYYY-MM-DD）再传给工具。\n\n"
             "回答规范：\n"
-            "1. 需要数据时**主动调用工具**查询（航班/价格/趋势/延误/天气/订单/投诉），不要凭记忆编造；\n"
+            "1. 需要数据时**主动调用工具**查询（航班/价格/趋势/延误/天气/联网搜索/订单/投诉），不要凭记忆编造；\n"
             "2. 工具返回的数值（票价、概率、温度等）如实引用，不得虚构；\n"
             "3. 若信息不足（如缺少日期），先礼貌追问，不要猜测；\n"
             "4. 一条消息里包含多个需求时，逐一向用户说明清楚；\n"
@@ -71,7 +71,7 @@ class BaseAgent(ABC):
             cust = flight_repo.get_customer(member_id)
             if cust.get("error"):
                 return f"当前登录会员：{member_id}（档案校验失败，涉及该身份的写操作请谨慎）"
-            return (
+            base = (
                 f"当前登录会员：{cust['member_id']} {cust['name']}"
                 f"（{cust['level']}会员，手机尾号{str(cust['phone'])[-4:]}）。"
                 "涉及该会员的订单/账单/投诉查询与订票操作可直接使用此身份，无需向用户追问会员号；"
@@ -79,6 +79,18 @@ class BaseAgent(ABC):
                 "系统已启用越权防护：查询或操作其他会员的数据时，工具层会直接拒绝并返回无权限，"
                 "此时请如实向用户说明，并引导其操作本人数据，不要重试他人会员号。"
             )
+            try:
+                from services import notification_repo
+                unread = notification_repo.unread_count(cust["member_id"])
+            except Exception:
+                unread = 0
+            if unread > 0:
+                base += (
+                    f"\n注意：该会员有 {unread} 条未读站内通知（退款审核结果/订单超时取消/投诉回复等）。"
+                    "当通知内容与本轮话题相关，或用户询问审批进度/处理结果时，"
+                    "先调用 query_notifications 查看并如实转告，不要虚构处理结果。"
+                )
+            return base
         except Exception as e:
             print(f"{self.name} 身份注入失败: {e}")
             return ""
