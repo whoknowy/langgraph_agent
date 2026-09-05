@@ -301,6 +301,26 @@ def query_notifications(only_unread: bool = False) -> str:
         return _dump({"error": f"通知查询失败: {e}"})
 
 
+@tool
+def checkin_info(order_no: str) -> str:
+    """查询订单的值机状态：是否已值机、座位/登机口/登机时间、值机窗口是否开放。
+
+    用户询问值机、选座、登机牌、座位问题时调用；以登录身份校验订单归属。
+    仅"已出票/已改签"的订单可值机，窗口为起飞前24小时开放、45分钟截止。
+
+    Args:
+        order_no: 订单号（如 O0123456）；用户没给订单号时先用 get_order_bill 查到再调用
+    """
+    try:
+        from services import checkin_repo, security
+        member_id = security.get_current_member()
+        if not member_id:
+            return _dump({"error": "未登录：请先登录会员账号后再查询值机"})
+        return _dump(checkin_repo.checkin_info(order_no, member_id))
+    except Exception as e:  # pragma: no cover - 兜底
+        return _dump({"error": f"值机状态查询失败: {e}"})
+
+
 # ------------------------------------------------ 确认卡片伪工具（schema-only）
 # 这两个工具不执行任何写操作：Agent 的 ReAct 循环通过 _on_tool_call 钩子拦截调用，
 # 把参数交给前端确认卡片；用户点击确认后由 REST 接口（/api/book 等）真正写库。
@@ -354,6 +374,20 @@ def refund_request(order_no: str, reason: str = "", refund_type: str = "voluntar
     return _dump({"status": "awaiting_user_confirmation"})
 
 
+@tool
+def open_seat_map(order_no: str) -> str:
+    """【值机选座工具】用户要求值机/选座且订单确认可值机后调用，向用户展示座位图选座卡片。
+
+    用户在座位图上点选座位并确认后，由系统正式值机并生成电子登机牌。
+    本工具不会真正值机。调用前先用 checkin_info 确认订单在值机窗口内
+    （起飞前24小时~45分钟）且状态为"已出票/已改签"。
+
+    Args:
+        order_no: 订单号（如 O0123456），必须是"已出票/已改签"状态
+    """
+    return _dump({"status": "awaiting_user_confirmation"})
+
+
 # ---------------------------------------------------------------- 注册表
 
 def _map_airline_code(name: str) -> str:
@@ -387,6 +421,7 @@ def all_tools():
         query_complaint,
         create_complaint,
         query_notifications,
+        checkin_info,
         web_search,
     ]
 

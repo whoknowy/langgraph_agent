@@ -1788,6 +1788,64 @@
             .input-send-circle:hover,
             .login-btn:hover { transform: none; }
         }
+
+        /* ============================================================
+           值机选座 + 登机牌（功能C）
+           ============================================================ */
+        .checkin-modal { position: fixed; inset: 0; z-index: 650; display: flex; align-items: center; justify-content: center; }
+        .checkin-modal[hidden] { display: none; }
+        .checkin-modal .checkin-backdrop { position: absolute; inset: 0; background: rgba(15, 23, 42, .5); }
+        .checkin-panel { position: relative; width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 60px);
+            overflow: auto; background: #fff; border-radius: 16px; padding: 20px; box-shadow: 0 24px 64px rgba(0,0,0,.28); }
+        .checkin-panel h3 { font-size: 16px; margin-bottom: 2px; }
+        .checkin-sub { font-size: 12.5px; color: var(--text-muted); margin-bottom: 12px; }
+        .checkin-close { position: absolute; top: 12px; right: 14px; border: none; background: none;
+            font-size: 20px; color: var(--text-muted); cursor: pointer; line-height: 1; }
+
+        .cabin-label { font-size: 12.5px; font-weight: 600; color: var(--text); margin: 10px 0 6px; }
+        .seat-grid { display: flex; flex-direction: column; gap: 5px; }
+        .seat-row { display: flex; align-items: center; gap: 5px; }
+        .seat-row .rowno { width: 24px; text-align: right; margin-right: 4px; font-size: 11px; color: var(--text-muted); }
+        .seat { width: 34px; height: 30px; border-radius: 8px 8px 4px 4px; border: 1.5px solid var(--border);
+            background: #f8fafc; font-size: 10.5px; color: var(--text-muted); cursor: pointer; padding: 0; }
+        .seat:hover:not(:disabled) { border-color: var(--primary); }
+        .seat--occupied { background: #e2e8f0; border-color: #e2e8f0; color: #cbd5e1; cursor: not-allowed; }
+        .seat--aisle { margin-left: 18px; }
+        .seat--selected { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
+        .seat--mine { background: #ecfdf5; border-color: #10b981; color: #059669; font-weight: 600; }
+        .seat-legend { display: flex; gap: 14px; margin-top: 10px; font-size: 11.5px; color: var(--text-muted); flex-wrap: wrap; }
+        .seat-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 4px; margin-right: 4px; vertical-align: -2px; border: 1.5px solid var(--border); background: #f8fafc; }
+        .seat-legend .lg-sel i { background: var(--primary); border-color: var(--primary); }
+        .seat-legend .lg-occ i { background: #e2e8f0; border-color: #e2e8f0; }
+        .seat-legend .lg-mine i { background: #ecfdf5; border-color: #10b981; }
+        .checkin-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; }
+        .checkin-btn { padding: 9px 18px; border-radius: 10px; border: 1px solid var(--border); background: #fff;
+            font-size: 13.5px; cursor: pointer; }
+        .checkin-btn--primary { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
+        .checkin-btn:disabled { opacity: .55; cursor: not-allowed; }
+        .checkin-msg { min-height: 18px; margin-top: 8px; font-size: 12.5px; color: #dc2626; }
+
+        /* 登机牌 */
+        .boardpass { border-radius: 16px; overflow: hidden; border: 1px solid var(--border);
+            box-shadow: 0 8px 24px rgba(37, 99, 235, .12); background: #fff; }
+        .boardpass-top { background: linear-gradient(135deg, #1d4ed8, #3b82f6 55%, #0ea5e9);
+            color: #fff; padding: 16px 18px 14px; }
+        .boardpass-top .bp-route { font-size: 21px; font-weight: 700; letter-spacing: .5px; }
+        .boardpass-top .bp-flight { font-size: 12.5px; opacity: .92; margin-top: 3px; }
+        .boardpass-body { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px 8px; padding: 14px 18px; }
+        .boardpass-body .bp-cell .k { font-size: 10.5px; color: var(--text-muted); letter-spacing: .5px; }
+        .boardpass-body .bp-cell .v { font-size: 15px; font-weight: 700; margin-top: 2px; }
+        .boardpass-body .bp-cell .v small { font-size: 11px; font-weight: 400; color: var(--text-muted); }
+        .boardpass-tear { border-top: 2px dashed var(--border); padding: 10px 18px 14px; display: flex;
+            align-items: center; justify-content: space-between; gap: 12px; }
+        .boardpass-tear .bp-name { font-size: 13px; font-weight: 600; }
+        .boardpass-tear .bp-name small { display: block; font-weight: 400; color: var(--text-muted); font-size: 11px; }
+        .bp-barcode { display: flex; gap: 2px; align-items: stretch; height: 30px; }
+        .bp-barcode i { display: block; width: 3px; background: #1e293b; border-radius: 1px; }
+        .bp-barcode i:nth-child(2n) { width: 1.5px; }
+        .bp-barcode i:nth-child(3n) { width: 4px; }
+        .bp-barcode i:nth-child(5n) { background: #475569; }
+        .boardpass-tip { font-size: 11.5px; color: var(--text-muted); margin-top: 10px; line-height: 1.6; }
     </style>
 </head>
 
@@ -2002,6 +2060,43 @@
                 <button type="button" class="session-delete-modal__btn" id="sessionDeleteModalCancel">取消</button>
                 <button type="button" class="session-delete-modal__btn session-delete-modal__btn--danger"
                     id="sessionDeleteModalConfirm">删除</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 值机选座弹窗（功能C） -->
+    <div id="seatMapModal" class="checkin-modal" role="dialog" aria-modal="true" hidden>
+        <div class="checkin-backdrop" onclick="closeSeatMapModal()"></div>
+        <div class="checkin-panel">
+            <button type="button" class="checkin-close" onclick="closeSeatMapModal()" aria-label="关闭">×</button>
+            <h3>🪑 在线值机 · 选座</h3>
+            <div class="checkin-sub" id="seatMapSub"></div>
+            <div id="seatMapBody"><div class="my-data-empty">座位图加载中…</div></div>
+            <div class="seat-legend">
+                <span><i></i>可选</span>
+                <span class="lg-sel"><i></i>已选</span>
+                <span class="lg-occ"><i></i>已占</span>
+                <span class="lg-mine"><i></i>当前座位</span>
+            </div>
+            <div class="checkin-actions">
+                <button type="button" class="checkin-btn" onclick="closeSeatMapModal()">关闭</button>
+                <button type="button" class="checkin-btn checkin-btn--primary" id="seatMapConfirmBtn"
+                        onclick="confirmSeatPick()" disabled>确认值机</button>
+            </div>
+            <div class="checkin-msg" id="seatMapMsg"></div>
+        </div>
+    </div>
+
+    <!-- 登机牌弹窗（功能C） -->
+    <div id="boardPassModal" class="checkin-modal" role="dialog" aria-modal="true" hidden>
+        <div class="checkin-backdrop" onclick="closeBoardPassModal()"></div>
+        <div class="checkin-panel">
+            <button type="button" class="checkin-close" onclick="closeBoardPassModal()" aria-label="关闭">×</button>
+            <h3>🎫 电子登机牌</h3>
+            <div class="checkin-sub" id="boardPassSub"></div>
+            <div id="boardPassBody"><div class="my-data-empty">加载中…</div></div>
+            <div class="checkin-actions">
+                <button type="button" class="checkin-btn" onclick="closeBoardPassModal()">关闭</button>
             </div>
         </div>
     </div>
@@ -2983,6 +3078,57 @@
                 card.querySelector('[data-act="ok"]').onclick = function () { changeInCard(card, action); };
                 card.querySelector('[data-act="cancel"]').onclick = function () { cancelConfirmCard(card, '已取消本次改签。'); };
                 fillChangeQuote(card, action);
+            } else if (action.type === 'seat_map') {
+                card.innerHTML =
+                    '<div class="confirm-card-title">🪑 在线值机 · 选座</div>'
+                    + '<div class="confirm-card-body">订单号：<b>' + escHtml(action.order_no || '-') + '</b>'
+                    + '<br>请点击座位完成选座。<span style="color:var(--text-muted);">座位图加载中…</span></div>'
+                    + '<div class="seat-grid" data-slot="grid"><div class="my-data-empty">加载中…</div></div>'
+                    + '<div class="confirm-card-actions">'
+                    + '<button type="button" class="confirm-btn confirm-btn--primary" data-act="ok" disabled>确认值机</button>'
+                    + '</div>';
+                chatContainer.appendChild(card);
+                const gridSlot = card.querySelector('[data-slot="grid"]');
+                let pickedSeat = null;
+                fillSeatMapInCard(card, action, gridSlot, function (seatNo) {
+                    pickedSeat = seatNo;
+                    card.querySelector('[data-act="ok"]').disabled = false;
+                });
+                card.querySelector('[data-act="ok"]').onclick = async function () {
+                    const okBtn = card.querySelector('[data-act="ok"]');
+                    if (!pickedSeat) return;
+                    okBtn.disabled = true;
+                    okBtn.textContent = '值机中…';
+                    try {
+                        const r = await fetch('/api/checkin', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ order_no: action.order_no, seat_no: pickedSeat })
+                        });
+                        const d = await r.json();
+                        if (!r.ok || d.error) {
+                            card.querySelector('.confirm-card-body').innerHTML =
+                                '❌ 值机失败：' + escHtml(d.error || ('HTTP ' + r.status));
+                            okBtn.disabled = false;
+                            okBtn.textContent = '确认值机';
+                            return;
+                        }
+                        card.classList.add('confirm-card--done');
+                        gridSlot.innerHTML = '';
+                        okBtn.style.display = 'none';
+                        card.querySelector('.confirm-card-body').innerHTML =
+                            '✅ ' + escHtml(d.message || '值机成功') + '（'
+                            + escHtml(d.flight_no + ' · 座位 ' + d.seat_no + ' · 登机口 ' + d.gate) + '）';
+                        showBoardPass(d, '值机成功 · 座位 ' + d.seat_no);
+                        if (typeof refreshMyData === 'function'
+                            && !document.getElementById('myDataModal').hidden) {
+                            refreshMyData();
+                        }
+                    } catch (e) {
+                        okBtn.disabled = false;
+                        okBtn.textContent = '确认值机';
+                    }
+                };
             } else {
                 return;
             }
@@ -3106,8 +3252,7 @@
             }
         }
 
-        async function fillChangeQuote(card, action) {
-            const body = card.querySelector('.confirm-card-body');
+        async function fillChangeQuote(card, action) {            const body = card.querySelector('.confirm-card-body');
             try {
                 const q = '?order_no=' + encodeURIComponent(action.order_no || '')
                     + '&new_flight_no=' + encodeURIComponent(action.new_flight_no || '')
@@ -3132,6 +3277,26 @@
                 body.insertAdjacentHTML('beforeend', '<div style="color:var(--text-muted);">差价计算失败，请取消后重试</div>');
                 const okBtn = card.querySelector('[data-act="ok"]');
                 if (okBtn) okBtn.disabled = true;
+            }
+        }
+
+        async function fillSeatMapInCard(card, action, gridSlot, onPicked) {
+            try {
+                const q = '?flight_no=' + encodeURIComponent(action.flight_no || '')
+                    + '&flight_date=' + encodeURIComponent(action.flight_date || '')
+                    + '&order_no=' + encodeURIComponent(action.order_no || '');
+                const r = await fetch('/api/checkin/seats' + q);
+                const d = await r.json();
+                if (!r.ok || d.error) {
+                    gridSlot.innerHTML = '<div class="my-data-empty">' + escHtml(d.error || '座位图加载失败') + '</div>';
+                    const okBtn = card.querySelector('[data-act="ok"]');
+                    if (okBtn) okBtn.disabled = true;
+                    return;
+                }
+                gridSlot.innerHTML = renderSeatGrid(d);
+                bindSeatGrid(gridSlot, onPicked);
+            } catch (e) {
+                gridSlot.innerHTML = '<div class="my-data-empty">网络错误，请重试</div>';
             }
         }
 
@@ -3199,6 +3364,166 @@
         function cancelConfirmCard(card, text) {
             card.classList.add('confirm-card--cancelled');
             card.querySelector('.confirm-card-body').innerHTML = escHtml(text || '已取消');
+        }
+
+        // ================================================================
+        // 值机选座 / 登机牌（功能C）
+        // ================================================================
+        let seatPickState = null;   // { orderNo, flightNo, flightDate, seatNo }
+
+        function renderSeatGrid(d) {
+            let html = '';
+            ['商务', '经济'].forEach(function (cab) {
+                const rows = (d.cabins || {})[cab];
+                if (!rows || !rows.length) return;
+                html += '<div class="cabin-label">' + cab + '舱</div><div class="seat-grid">';
+                rows.forEach(function (row) {
+                    html += '<div class="seat-row"><span class="rowno">' + escHtml(row.row) + '</span>';
+                    row.seats.forEach(function (s, i) {
+                        let cls = 'seat';
+                        if (s.mine) cls += ' seat--mine';
+                        else if (s.status === 'occupied') cls += ' seat--occupied';
+                        if (i === 2) cls += ' seat--aisle';
+                        html += '<button type="button" class="' + cls + '" data-seat="' + escHtml(s.seat_no) + '"'
+                            + (s.status === 'occupied' && !s.mine ? ' disabled' : '')
+                            + '>' + escHtml(s.seat_no) + '</button>';
+                    });
+                    html += '</div>';
+                });
+                html += '</div>';
+            });
+            return html;
+        }
+
+        function bindSeatGrid(container, onPicked) {
+            container.querySelectorAll('.seat:not(.seat--occupied)').forEach(function (el) {
+                el.onclick = function () {
+                    container.querySelectorAll('.seat--selected').forEach(function (x) {
+                        x.classList.remove('seat--selected');
+                    });
+                    el.classList.add('seat--selected');
+                    onPicked(el.dataset.seat);
+                };
+            });
+        }
+
+        function renderBoardPassHTML(d) {
+            let bars = '';
+            for (let i = 0; i < 28; i++) bars += '<i></i>';
+            return '<div class="boardpass">'
+                + '<div class="boardpass-top"><div class="bp-route">' + escHtml(d.route) + '</div>'
+                + '<div class="bp-flight">' + escHtml(d.airline + ' ' + d.flight_no + ' · ' + d.flight_date
+                    + ' ' + d.dep_time + ' 起飞 · ' + d.cabin + '舱') + '</div></div>'
+                + '<div class="boardpass-body">'
+                + '<div class="bp-cell"><div class="k">SEAT 座位</div><div class="v">' + escHtml(d.seat_no) + '</div></div>'
+                + '<div class="bp-cell"><div class="k">GATE 登机口</div><div class="v">' + escHtml(d.gate) + '</div></div>'
+                + '<div class="bp-cell"><div class="k">BOARDING 登机</div><div class="v">' + escHtml(d.boarding_time) + '</div></div>'
+                + '</div>'
+                + '<div class="boardpass-tear">'
+                + '<div class="bp-name">' + escHtml(d.passenger)
+                + '<small>' + escHtml(d.member_id + ' · 订单 ' + d.order_no) + '</small></div>'
+                + '<div class="bp-barcode" aria-hidden="true">' + bars + '</div>'
+                + '</div></div>'
+                + '<div class="boardpass-tip">请提前 45 分钟到达登机口；改签或退票后本次值机自动取消，需重新选座。</div>';
+        }
+
+        function openSeatMapModal(orderNo, flightNo, flightDate, cabin) {
+            seatPickState = { orderNo: orderNo, flightNo: flightNo, flightDate: flightDate, seatNo: null };
+            document.getElementById('seatMapSub').textContent =
+                '订单 ' + orderNo + ' · ' + flightNo + ' · ' + flightDate + (cabin ? ' · ' + cabin + '舱' : '');
+            document.getElementById('seatMapMsg').textContent = '';
+            const btn = document.getElementById('seatMapConfirmBtn');
+            btn.disabled = true;
+            btn.textContent = '确认值机';
+            document.getElementById('seatMapModal').hidden = false;
+            loadSeatGridModal();
+        }
+
+        function closeSeatMapModal() {
+            document.getElementById('seatMapModal').hidden = true;
+            seatPickState = null;
+        }
+
+        async function loadSeatGridModal() {
+            const body = document.getElementById('seatMapBody');
+            body.innerHTML = '<div class="my-data-empty">座位图加载中…</div>';
+            try {
+                const q = '?flight_no=' + encodeURIComponent(seatPickState.flightNo)
+                    + '&flight_date=' + encodeURIComponent(seatPickState.flightDate)
+                    + '&order_no=' + encodeURIComponent(seatPickState.orderNo);
+                const r = await fetch('/api/checkin/seats' + q);
+                const d = await r.json();
+                if (!r.ok || d.error) {
+                    body.innerHTML = '<div class="my-data-empty">' + escHtml(d.error || '座位图加载失败') + '</div>';
+                    return;
+                }
+                body.innerHTML = renderSeatGrid(d);
+                bindSeatGrid(body, function (seatNo) {
+                    seatPickState.seatNo = seatNo;
+                    document.getElementById('seatMapConfirmBtn').disabled = false;
+                });
+            } catch (e) {
+                body.innerHTML = '<div class="my-data-empty">网络错误，请关闭后重试</div>';
+            }
+        }
+
+        async function confirmSeatPick() {
+            if (!seatPickState || !seatPickState.seatNo) return;
+            const btn = document.getElementById('seatMapConfirmBtn');
+            btn.disabled = true;
+            btn.textContent = '值机中…';
+            document.getElementById('seatMapMsg').textContent = '';
+            try {
+                const r = await fetch('/api/checkin', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ order_no: seatPickState.orderNo, seat_no: seatPickState.seatNo })
+                });
+                const d = await r.json();
+                if (!r.ok || d.error) {
+                    document.getElementById('seatMapMsg').textContent = d.error || ('HTTP ' + r.status);
+                    btn.disabled = false;
+                    btn.textContent = '确认值机';
+                    return;
+                }
+                closeSeatMapModal();
+                showBoardPass(d, d.message || ('值机成功 · 座位 ' + d.seat_no));
+                if (document.getElementById('myDataModal') && !document.getElementById('myDataModal').hidden) {
+                    refreshMyData();
+                }
+            } catch (e) {
+                document.getElementById('seatMapMsg').textContent = '网络错误，请重试';
+                btn.disabled = false;
+                btn.textContent = '确认值机';
+            }
+        }
+
+        function showBoardPass(d, sub) {
+            document.getElementById('boardPassSub').textContent = sub || '';
+            document.getElementById('boardPassBody').innerHTML = renderBoardPassHTML(d);
+            document.getElementById('boardPassModal').hidden = false;
+        }
+
+        function closeBoardPassModal() {
+            document.getElementById('boardPassModal').hidden = true;
+        }
+
+        async function openBoardPassModal(orderNo) {
+            document.getElementById('boardPassSub').textContent = '订单 ' + orderNo;
+            document.getElementById('boardPassBody').innerHTML = '<div class="my-data-empty">加载中…</div>';
+            document.getElementById('boardPassModal').hidden = false;
+            try {
+                const r = await fetch('/api/checkin/boardpass?order_no=' + encodeURIComponent(orderNo));
+                const d = await r.json();
+                if (!r.ok || d.error) {
+                    document.getElementById('boardPassBody').innerHTML =
+                        '<div class="my-data-empty">' + escHtml(d.error || '加载失败') + '</div>';
+                    return;
+                }
+                document.getElementById('boardPassBody').innerHTML = renderBoardPassHTML(d);
+            } catch (e) {
+                document.getElementById('boardPassBody').innerHTML = '<div class="my-data-empty">网络错误</div>';
+            }
         }
 
         // ================================================================
@@ -3323,6 +3648,19 @@
                     payBtn.onclick = function () { panelOrderAction(o.order_no, 'pay'); };
                     tdOps.appendChild(payBtn);
                 } else if (o.status === '已出票' || o.status === '已改签') {
+                    const ckBtn = document.createElement('button');
+                    ckBtn.type = 'button'; ckBtn.className = 'my-row-btn';
+                    ckBtn.textContent = o.checked_in ? '改座' : '值机';
+                    ckBtn.onclick = function () {
+                        openSeatMapModal(o.order_no, o.flight_no, o.flight_date, o.cabin);
+                    };
+                    tdOps.appendChild(ckBtn);
+                    if (o.checked_in) {
+                        const bpBtn = document.createElement('button');
+                        bpBtn.type = 'button'; bpBtn.className = 'my-row-btn'; bpBtn.textContent = '登机牌';
+                        bpBtn.onclick = function () { openBoardPassModal(o.order_no); };
+                        tdOps.appendChild(bpBtn);
+                    }
                     const rfBtn = document.createElement('button');
                     rfBtn.type = 'button'; rfBtn.className = 'my-row-btn my-row-btn--danger'; rfBtn.textContent = '退票';
                     rfBtn.onclick = function () { panelOrderAction(o.order_no, 'refund'); };

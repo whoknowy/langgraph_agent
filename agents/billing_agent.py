@@ -1,9 +1,9 @@
 """
-账单专家智能体：订单查询、账单明细、支付/退款/发票、退票申请。
+账单专家智能体：订单查询、账单明细、支付/退款/发票、退票申请、值机选座。
 
 订单数据来自本地 SQLite（get_order_bill 工具），由共享 ReAct 循环驱动。
-退票走确认卡片：确认订单后调用 refund_request 伪工具，由前端确认卡片
-+ REST 接口真正退票。
+退票/改签走确认卡片，值机选座走座位图卡片：伪工具被 _on_tool_call 拦截产生
+pending_action，由前端卡片 + REST 接口真正写库。
 """
 
 from typing import Any, Dict
@@ -15,14 +15,14 @@ class BillingAgent(BaseAgent):
     def __init__(self):
         super().__init__(
             name="账单专家",
-            role="订单账单与支付问题处理",
-            expertise=["订单查询", "账单明细", "支付问题", "退款处理", "退票申请", "发票"],
+            role="订单账单、支付问题、退改与值机服务",
+            expertise=["订单查询", "账单明细", "支付问题", "退款处理", "退票申请", "发票", "值机选座", "登机牌"],
         )
 
     def _react_tools(self) -> list:
-        from services.tools import all_tools, refund_request, change_request
+        from services.tools import all_tools, refund_request, change_request, open_seat_map
         return ([t for t in all_tools() if t.name != "create_complaint"]
-                + [refund_request, change_request])
+                + [refund_request, change_request, open_seat_map])
 
     def _on_tool_call(self, name: str, args: dict):
         if name == "refund_request":
@@ -42,6 +42,21 @@ class BillingAgent(BaseAgent):
                            "message": "已生成改签确认请求，卡片会显示新旧航班与差价明细。"
                                       "请复述改签方案（原航班→新航班/日期/舱位，免改签费、差价多退少补），"
                                       "提示用户点击\"确认改签\"，不要自称已改签成功。"})
+        if name == "open_seat_map":
+            from services import checkin_repo, security
+            info = checkin_repo.checkin_info((args or {}).get("order_no", ""),
+                                             security.get_current_member())
+            if info.get("error"):
+                return (True, info)
+            if not info.get("window_open"):
+                return (True, {"error": info.get("window_reason") or "当前不在值机窗口内，不能值机"})
+            self._pending_action = {"type": "seat_map",
+                                    "order_no": info["order_no"],
+                                    "flight_no": info["flight_no"],
+                                    "flight_date": info["flight_date"]}
+            return (True, {"status": "awaiting_user_confirmation",
+                           "message": "已向用户展示座位图选座卡片。请提示用户点击座位并按\"确认值机\"，"
+                                      "值机成功后系统会生成电子登机牌；不要自称已值机。"})
         return (False, None)
 
     def _react_system_prompt(self, identity: str = "") -> str:
@@ -70,7 +85,14 @@ class BillingAgent(BaseAgent):
             "refund_type=\"voluntary\"（系统按距起飞时间自动计算手续费并即时退款，卡片会显示明细）；"
             "用户说明是航班延误/取消等航空公司原因导致 → refund_type=\"special\""
             "（特殊通道，进入人工审核，可争取全额退款）；\n"
-            "c. 然后在回复中复述订单信息与退票方式，引导用户点击\"确认退票\"按钮；不要声称已退票成功。"
+            "c. 然后在回复中复述订单信息与退票方式，引导用户点击\"确认退票\"按钮；不要声称已退票成功。\n\n"
+            "值机流程（严格遵守）：\n"
+            "a. 用户要求值机/选座/看登机牌时，先用 checkin_info 查询值机状态"
+            "（用户没给订单号时先用 get_order_bill 查到订单号）；\n"
+            "b. 已值机 → 直接复述座位/登机口/登机时间；未值机且窗口开放（起飞前24小时~45分钟）→ "
+            "调用 open_seat_map 展示座位图，提示用户点座位并\"确认值机\"，不要自称已值机；\n"
+            "c. 窗口未开放或订单状态不符时，如实告知原因与开放时间；\n"
+            "d. 提醒：改签或退票会自动取消值机，之后需要重新选座。"
             + self._identity_suffix(identity)
         )
 

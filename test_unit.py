@@ -292,6 +292,75 @@ class TestConfirmCardHooks:
         assert hit and a._pending_action["type"] == "book_flight"
 
 
+class TestSeatMapHook:
+    """账单专家 open_seat_map 伪工具钩子（座位图卡片）。"""
+
+    def _add_window_order(self, order_no, hours_ahead=3.0, member_id="M1001"):
+        dep = datetime.now() + timedelta(hours=hours_ahead)
+        fdate, ftime = dep.date().isoformat(), dep.strftime("%H:%M")
+        conn = db.get_connection()
+        conn.execute(
+            "INSERT INTO flights (flight_no, airline_code, dep_iata, arr_iata, dep_time, arr_time, "
+            "duration_min, aircraft, freq_days) VALUES ('CA9001','CA','PEK','SHA',?,'23:59',120,'B737','1234567')",
+            (ftime,))
+        conn.execute(
+            "INSERT INTO orders (order_no, member_id, flight_no, flight_date, cabin, amount, "
+            "status, created_at, passengers) VALUES (?,'M1001','CA9001',?,'经济',800,'已出票',?,1)",
+            (order_no, fdate, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        conn.close()
+        return fdate
+
+    def test_open_seat_map_creates_pending_action(self):
+        from agents.billing_agent import BillingAgent
+        from services import security
+        fdate = self._add_window_order("S1")
+        a = BillingAgent()
+        security.set_current_member("M1001")
+        try:
+            hit, payload = a._on_tool_call("open_seat_map", {"order_no": "S1"})
+            assert hit and payload["status"] == "awaiting_user_confirmation"
+            assert a._pending_action["type"] == "seat_map"
+            assert a._pending_action["flight_no"] == "CA9001"
+            assert a._pending_action["flight_date"] == fdate
+        finally:
+            security.reset_current_member(security.set_current_member(None))
+
+    def test_open_seat_map_rejects_out_of_window(self):
+        from agents.billing_agent import BillingAgent
+        from services import security
+        self._add_window_order("S2", hours_ahead=40)
+        a = BillingAgent()
+        security.set_current_member("M1001")
+        try:
+            hit, payload = a._on_tool_call("open_seat_map", {"order_no": "S2"})
+            assert hit and "尚未开放" in payload["error"]
+            assert a._pending_action is None
+        finally:
+            security.reset_current_member(security.set_current_member(None))
+
+    def test_open_seat_map_rejects_other_member(self):
+        from agents.billing_agent import BillingAgent
+        from services import security
+        self._add_window_order("S3")
+        a = BillingAgent()
+        security.set_current_member("M1002")   # 登录身份与订单归属不符
+        try:
+            hit, payload = a._on_tool_call("open_seat_map", {"order_no": "S3"})
+            assert hit and "无权限" in payload["error"]
+        finally:
+            security.reset_current_member(security.set_current_member(None))
+
+    def test_open_seat_map_requires_login(self):
+        from agents.billing_agent import BillingAgent
+        from services import security
+        self._add_window_order("S4")
+        a = BillingAgent()
+        security.reset_current_member(security.set_current_member(None))
+        hit, payload = a._on_tool_call("open_seat_map", {"order_no": "S4"})
+        assert hit and "error" in payload
+
+
 # ---------------------------------------------------------------- 博查搜索解析（mock 网络）
 
 class _FakeResp:

@@ -34,6 +34,7 @@ def get_stats() -> dict:
         "flights_on_sale": one("SELECT COUNT(DISTINCT flight_no) FROM flights"),
         # created_at 是完整时间戳，按日期前缀比较才是"今日"（等值比较恒为 0）
         "today_orders": one("SELECT COUNT(*) FROM orders WHERE substr(created_at, 1, 10) = ?", (today,)),
+        "today_checkins": one("SELECT COUNT(*) FROM checkins WHERE substr(checkin_at, 1, 10) = ?", (today,)),
     }
     conn.close()
     return stats

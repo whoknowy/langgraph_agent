@@ -168,6 +168,7 @@
                     <div class="stat-card warn" onclick="switchPage('complaints')"><div class="num" id="stComplaints">-</div><div class="lbl">待处理投诉</div></div>
                     <div class="stat-card"><div class="num" id="stFlights">-</div><div class="lbl">在售航班</div></div>
                     <div class="stat-card"><div class="num" id="stToday">-</div><div class="lbl">今日新增订单</div></div>
+                    <div class="stat-card"><div class="num" id="stCheckins">-</div><div class="lbl">今日值机</div></div>
                 </div>
                 <div class="panel">
                     <h3>近 7 天订单 / 退款趋势</h3>
@@ -385,6 +386,7 @@
                 $('stComplaints').textContent = d.pending_complaints;
                 $('stFlights').textContent = d.flights_on_sale;
                 $('stToday').textContent = d.today_orders;
+                $('stCheckins').textContent = d.today_checkins;
                 setBadge('badgeRefunds', d.pending_refunds);
                 setBadge('badgeComplaints', d.pending_complaints);
             } catch (e) { }

@@ -278,12 +278,14 @@ def get_order_bill(member_id: str = None, order_no: str = None) -> dict:
     sql = (
         "SELECT o.order_no, o.member_id, o.flight_no, o.flight_date, o.cabin, o.amount, "
         "o.status, o.created_at, o.refund_amount, o.admin_note, a.name_cn AS airline, "
-        "fd.city_cn AS dep_city, fa.city_cn AS arr_city, f.dep_time "
+        "fd.city_cn AS dep_city, fa.city_cn AS arr_city, f.dep_time, "
+        "ck.seat_no AS checkin_seat, ck.gate AS checkin_gate, ck.boarding_time "
         "FROM orders o "
         "JOIN flights f ON f.flight_no = o.flight_no "
         "JOIN airlines a ON a.code = f.airline_code "
         "JOIN airports fd ON fd.iata3 = f.dep_iata "
         "JOIN airports fa ON fa.iata3 = f.arr_iata "
+        "LEFT JOIN checkins ck ON ck.order_no = o.order_no "
         "WHERE 1=1"
     )
     params = []
@@ -303,11 +305,16 @@ def get_order_bill(member_id: str = None, order_no: str = None) -> dict:
         orders.append({
             "order_no": r["order_no"], "member_id": r["member_id"],
             "flight": f"{r['airline']}{r['flight_no']}",
+            "flight_no": r["flight_no"],
             "route": f"{r['dep_city']}-{r['arr_city']}",
             "flight_date": r["flight_date"], "dep_time": r["dep_time"],
             "cabin": r["cabin"], "amount": r["amount"],
             "refund_amount": r["refund_amount"],
             "status": r["status"], "created_at": r["created_at"],
+            "checked_in": r["checkin_seat"] is not None,
+            "checkin_seat": r["checkin_seat"] or "",
+            "checkin_gate": r["checkin_gate"] or "",
+            "boarding_time": r["boarding_time"] or "",
         })
     return {"member_id": member_id, "orders": orders, "count": len(orders),
             "total_amount": sum(o["amount"] for o in orders)}

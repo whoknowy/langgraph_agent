@@ -467,6 +467,76 @@ def my_orders():
         return jsonify({'error': f'查询订单失败: {str(e)}'}), 500
 
 
+# --- 值机选座 / 登机牌（REST 写库，不经 LLM） ---
+
+@app.route('/api/checkin/seats')
+def checkin_seats():
+    """座位图（可带 order_no 标注本订单已选座位）。"""
+    try:
+        member, denied = _require_member()
+        if denied:
+            return denied
+        from services import checkin_repo
+        result = checkin_repo.seat_map(request.args.get('flight_no', ''),
+                                       request.args.get('flight_date', ''),
+                                       order_no=request.args.get('order_no', ''))
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': f'座位图查询失败: {str(e)}'}), 500
+
+
+@app.route('/api/checkin', methods=['POST'])
+def do_checkin():
+    """值机/改座：校验窗口/归属/舱位，原子占座，返回登机牌数据。"""
+    try:
+        member, denied = _require_member()
+        if denied:
+            return denied
+        data = request.get_json() or {}
+        from services import checkin_repo
+        result = checkin_repo.do_checkin(data.get('order_no', ''),
+                                         member['member_id'], data.get('seat_no', ''))
+        if result.get('error'):
+            return jsonify(result), 400
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': f'值机失败: {str(e)}'}), 500
+
+
+@app.route('/api/checkin/cancel', methods=['POST'])
+def cancel_checkin():
+    """取消值机：释放座位、删除值机记录。"""
+    try:
+        member, denied = _require_member()
+        if denied:
+            return denied
+        data = request.get_json() or {}
+        from services import checkin_repo
+        result = checkin_repo.cancel_checkin(data.get('order_no', ''), member['member_id'])
+        if result.get('error'):
+            return jsonify(result), 400
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': f'取消值机失败: {str(e)}'}), 500
+
+
+@app.route('/api/checkin/boardpass')
+def checkin_boardpass():
+    """登机牌查询（已值机订单）。"""
+    try:
+        member, denied = _require_member()
+        if denied:
+            return denied
+        from services import checkin_repo
+        result = checkin_repo.get_boarding_pass(request.args.get('order_no', ''),
+                                                member['member_id'])
+        if result.get('error'):
+            return jsonify(result), 400
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': f'登机牌查询失败: {str(e)}'}), 500
+
+
 @app.route('/api/my/complaints')
 def my_complaints():
     """当前会员的投诉列表。"""
