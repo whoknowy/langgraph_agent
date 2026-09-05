@@ -16,6 +16,7 @@ import requests
 from dotenv import load_dotenv
 
 from skills import StreamMasker, mask_sensitive
+from services import session_titles
 
 load_dotenv()
 
@@ -350,6 +351,7 @@ def fetch_sessions_list() -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]
                 "created_at": created_at,
                 "message_count": message_count,
                 "last_user_question": last_user_question,
+                "title": session_titles.get_title(thread_id),
             })
 
         return sessions, None
@@ -406,6 +408,7 @@ def delete_remote_thread(thread_id: str) -> Tuple[bool, int]:
     ok = 200 <= response.status_code < 300
     if ok:
         _session_thread_map.pop(thread_id, None)
+        session_titles.delete_title(thread_id)
     return ok, response.status_code
 
 
@@ -842,6 +845,9 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
     # 确认卡片请求（Agent 通过伪工具发起，用户点击后经 REST 执行）
     if final_state.get("pending_action"):
         yield _sse_line({"pending_action": final_state["pending_action"]})
+
+    # 会话标题：done 时后台线程生成（已有标题的线程内部直接跳过，不烧 token）
+    session_titles.generate_title_async(tid, user_message)
 
     yield _sse_line({
         "done": True,

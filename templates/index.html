@@ -2427,12 +2427,13 @@
                     typeof session.last_user_question === 'string'
                         ? session.last_user_question.trim()
                         : '';
-                const titleText = previewRaw || '新对话';
+                const titleRaw = typeof session.title === 'string' ? session.title.trim() : '';
+                const titleText = titleRaw || previewRaw || '新对话';
 
                 const previewEl = document.createElement('div');
                 previewEl.className = 'session-item-preview';
                 previewEl.textContent = titleText;
-                if (previewRaw) previewEl.title = previewRaw;
+                previewEl.title = previewRaw || titleText;
 
                 const metaEl = document.createElement('div');
                 metaEl.className = 'session-item-meta';
@@ -2667,6 +2668,8 @@
                                 renderConfirmCard(pendingAction);
                                 pendingAction = null;
                             }
+                            // 标题由后端在 done 后异步生成，稍后刷新侧栏取回
+                            setTimeout(refreshSessionList, 1500);
                             return true;
                         }
                     }

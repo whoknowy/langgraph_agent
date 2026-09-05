@@ -125,6 +125,12 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 
 CREATE INDEX IF NOT EXISTS idx_notifications_member ON notifications(member_id);
+
+CREATE TABLE IF NOT EXISTS session_titles (
+    thread_id  TEXT PRIMARY KEY,
+    title      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -157,6 +163,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "complaints", "reply", "reply TEXT")
     # 会员注册：口令哈希列（演示账号为 NULL，走手机尾号登录）
     _ensure_column(conn, "customers", "password_hash", "password_hash TEXT")
+    # 退款完成时间（趋势图表统计用；存量已退款订单为 NULL 不计入）
+    _ensure_column(conn, "orders", "refunded_at", "refunded_at TEXT")
     # 种子订单未记录人数（金额即单人票价），统一按1人回填
     conn.execute("UPDATE orders SET passengers = 1 WHERE passengers IS NULL")
     conn.commit()
