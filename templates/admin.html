@@ -544,16 +544,29 @@
                 const q = encodeURIComponent($('flightQ').value.trim());
                 const d = await api('/admin/api/flights?q=' + q);
                 if (!d.flights.length) { box.innerHTML = '<div class="empty">无航班</div>'; return; }
-                let html = '<table class="grid"><thead><tr><th>航班号</th><th>航司</th><th>航线</th><th>起-达</th><th>时长</th><th>机型</th><th>执飞日</th><th>经济舱最低价</th></tr></thead><tbody>';
+                let html = '<table class="grid"><thead><tr><th>航班号</th><th>航司</th><th>航线</th><th>起-达</th><th>时长</th><th>机型</th><th>执飞日</th><th>经济舱最低价</th><th>登机口</th></tr></thead><tbody>';
                 d.flights.forEach(f => {
                     const dur = Math.floor(f.duration_min / 60) + 'h' + String(f.duration_min % 60).padStart(2, '0');
                     html += '<tr><td><b>' + esc(f.flight_no) + '</b></td><td>' + esc(f.airline) + '</td>'
                         + '<td>' + esc(f.dep_city + ' - ' + f.arr_city) + '</td><td>' + esc(f.dep_time + '-' + f.arr_time) + '</td>'
                         + '<td>' + dur + '</td><td>' + esc(f.aircraft || '—') + '</td><td>' + esc(f.freq_days) + '</td>'
-                        + '<td>' + (f.econ_price_from ? '¥' + f.econ_price_from : '—') + '</td></tr>';
+                        + '<td>' + (f.econ_price_from ? '¥' + f.econ_price_from : '—') + '</td>'
+                        + '<td><input id="gate-' + esc(f.flight_no) + '" value="' + esc(f.gate || '') + '" placeholder="未指派" '
+                        + 'style="width:64px; padding:4px 6px; border:1px solid var(--border); border-radius:6px; font-size:12px;" '
+                        + 'onkeydown="if(event.key===\'Enter\')assignGate(\'' + esc(f.flight_no) + '\')"> '
+                        + '<button class="btn btn-sm" onclick="assignGate(\'' + esc(f.flight_no) + '\')">保存</button></td></tr>';
                 });
                 box.innerHTML = html + '</tbody></table>';
             } catch (e) { box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; }
+        }
+
+        async function assignGate(flightNo) {
+            const input = document.getElementById('gate-' + flightNo);
+            if (!input) return;
+            try {
+                const d = await post('/admin/api/flights/gate', { flight_no: flightNo, gate: input.value.trim() });
+                toast(d.message);
+            } catch (e) { toast('指派失败：' + e.message); }
         }
 
         async function createFlight() {

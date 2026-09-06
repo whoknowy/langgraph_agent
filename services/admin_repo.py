@@ -194,6 +194,56 @@ def security_normalize(v):
     return (v or "").strip().upper()
 
 
+# ---------------------------------------------------------------- 航班登机口指派
+
+def assign_gate(flight_no: str, gate: str) -> dict:
+    """指派/变更航班登机口（航班级物理资源，管理端"航班动态"职责）。
+
+    变更（含首次指派）时通知该航班所有已值机旅客，登机牌与智能体转告
+    随即展示最新登机口（checkin_repo 读取 flights.gate 实时值）。
+    """
+    import re
+    flight_no = security_normalize(flight_no)
+    gate = (gate or "").strip().upper()
+    if not re.fullmatch(r"[A-Z][0-9]{1,3}", gate):
+        return {"error": "登机口格式不正确（如 B12：1位字母+1~3位数字）"}
+
+    from services import notification_repo
+    conn = _conn()
+    row = conn.execute("SELECT gate FROM flights WHERE flight_no = ?", (flight_no,)).fetchone()
+    if not row:
+        conn.close()
+        return {"error": f"航班不存在：{flight_no}"}
+    old = (row["gate"] or "").strip().upper()
+    conn.execute("UPDATE flights SET gate = ? WHERE flight_no = ?", (gate, flight_no))
+
+    # 通知该航班已值机旅客（限定未过期航班）
+    today = date.today().isoformat()
+    affected = conn.execute(
+        "SELECT ck.order_no, ck.seat_no, o.member_id, o.flight_date, c.name AS passenger "
+        "FROM checkins ck "
+        "JOIN orders o ON o.order_no = ck.order_no "
+        "JOIN customers c ON c.member_id = o.member_id "
+        "WHERE o.flight_no = ? AND o.flight_date >= ?",
+        (flight_no, today)).fetchall()
+    for r in affected:
+        change_desc = (f"由 {old} 变更为 {gate}" if old and old != gate
+                       else f"已指派为 {gate}")
+        notification_repo.create_notification(
+            conn=conn, member_id=r["member_id"], title="登机口变更提醒", ntype="flight",
+            content=(f"{r['passenger']}您好，您乘坐的航班 {flight_no}"
+                     f"（{r['flight_date']}，订单 {r['order_no']}，座位 {r['seat_no']}）"
+                     f"登机口{change_desc}，请以最新登机牌为准。"))
+    conn.commit()
+    notified = len(affected)
+    conn.close()
+    message = f"航班 {flight_no} 登机口已设为 {gate}"
+    if notified:
+        message += f"，已通知 {notified} 位已值机旅客"
+    return {"success": True, "flight_no": flight_no, "gate": gate,
+            "notified": notified, "message": message}
+
+
 # ---------------------------------------------------------------- 投诉
 
 _COMPLAINT_SELECT = (
@@ -287,7 +337,7 @@ def reopen_complaint(ticket_no: str) -> dict:
 _FLIGHT_SELECT = (
     "SELECT f.flight_no, f.airline_code, a.name_cn AS airline, f.dep_iata, f.arr_iata, "
     "fd.city_cn AS dep_city, fa.city_cn AS arr_city, f.dep_time, f.arr_time, "
-    "f.duration_min, f.aircraft, f.freq_days "
+    "f.duration_min, f.aircraft, f.freq_days, f.gate "
     "FROM flights f JOIN airlines a ON a.code = f.airline_code "
     "JOIN airports fd ON fd.iata3 = f.dep_iata JOIN airports fa ON fa.iata3 = f.arr_iata "
 )

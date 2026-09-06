@@ -119,11 +119,12 @@ def checkin_window_status(dep: datetime, now: datetime = None) -> tuple:
 
 
 def _order_with_departure(order_no: str):
-    """查询订单 + 起飞时间；返回 (Row, depart(datetime) 或 None) 或 (None, None)。"""
+    """查询订单 + 起飞时间 + 航班指派登机口；返回 (Row, depart(datetime) 或 None) 或 (None, None)。"""
     conn = db.get_connection()
     r = conn.execute(
         "SELECT o.order_no, o.member_id, o.status, o.cabin, o.flight_no, o.flight_date, "
-        "f.dep_time FROM orders o JOIN flights f ON f.flight_no = o.flight_no "
+        "f.dep_time, f.gate AS flight_gate "
+        "FROM orders o JOIN flights f ON f.flight_no = o.flight_no "
         "WHERE o.order_no = ?", (_norm(order_no),)).fetchone()
     conn.close()
     if not r:
@@ -137,15 +138,18 @@ def _order_with_departure(order_no: str):
 
 # ---------------------------------------------------------------- 值机 / 登机牌
 
-def _gate_and_boarding(flight_no: str, flight_date: str, dep: datetime) -> tuple:
+def _gate_and_boarding(flight_no: str, flight_date: str, dep: datetime,
+                       assigned_gate: str = None) -> tuple:
     """登机口与登机时间。
 
-    登机口是机场物理资源，与航班绑定：以航班号+日期为种子确定性生成，
-    同一航班同一天的所有值机旅客得到同一登机口（零维护，且跨次一致）。
-    登机时间 = 起飞前 30 分钟，同样由航班推出。
+    登机口是机场物理资源，与航班绑定：管理端已指派（flights.gate）则直接使用；
+    未指派时以航班号+日期为种子确定性生成，同一航班同一天的所有值机旅客
+    得到同一登机口（零维护，且跨次一致）。登机时间 = 起飞前 30 分钟。
     """
-    rnd = random.Random(f"gate-{_norm(flight_no)}-{_norm(flight_date)}")
-    gate = f"{rnd.choice('ABC')}{rnd.randint(1, 32)}"
+    gate = _norm(assigned_gate)
+    if not gate:
+        rnd = random.Random(f"gate-{_norm(flight_no)}-{_norm(flight_date)}")
+        gate = f"{rnd.choice('ABC')}{rnd.randint(1, 32)}"
     boarding = (dep - timedelta(minutes=BOARDING_LEAD_MINUTES)).strftime("%H:%M")
     return gate, boarding
 
@@ -174,7 +178,8 @@ def checkin_info(order_no: str, member_id: str = None) -> dict:
         "order_status": r["status"],
         "checked_in": ck is not None,
         "seat_no": ck["seat_no"] if ck else "",
-        "gate": ck["gate"] if ck else "",
+        # 实时指派登机口优先（管理端改口后智能体转告的也是最新值）
+        "gate": ((r["flight_gate"] or "").strip().upper() or (ck["gate"] if ck else "")),
         "boarding_time": ck["boarding_time"] if ck else "",
         "depart_time": dep.strftime("%Y-%m-%d %H:%M") if dep else "",
         "window_open": can,
@@ -234,7 +239,8 @@ def do_checkin(order_no: str, member_id: str, seat_no: str) -> dict:
         if cur.rowcount != 1:
             conn.rollback()
             return {"error": f"座位 {seat_no} 刚刚被其他乘客抢占了，请换一个座位"}
-        gate, boarding = _gate_and_boarding(r["flight_no"], r["flight_date"], dep)
+        gate, boarding = _gate_and_boarding(r["flight_no"], r["flight_date"], dep,
+                                            assigned_gate=r["flight_gate"])
         conn.execute(
             "INSERT INTO checkins (order_no, seat_no, gate, boarding_time, checkin_at) "
             "VALUES (?,?,?,?,?) "
@@ -288,7 +294,8 @@ def _boardpass_payload(order_no: str, message: str, conn=None) -> dict:
         row = conn.execute(
             "SELECT o.order_no, o.flight_no, o.flight_date, o.cabin, o.member_id, "
             "c.name AS passenger, a.name_cn AS airline, "
-            "f.dep_time, fd.city_cn AS dep_city, fa.city_cn AS arr_city "
+            "f.dep_time, f.gate AS flight_gate, "
+            "fd.city_cn AS dep_city, fa.city_cn AS arr_city "
             "FROM orders o JOIN customers c ON c.member_id = o.member_id "
             "JOIN flights f ON f.flight_no = o.flight_no "
             "JOIN airlines a ON a.code = f.airline_code "
@@ -313,7 +320,8 @@ def _boardpass_payload(order_no: str, message: str, conn=None) -> dict:
         "dep_time": row["dep_time"],
         "cabin": row["cabin"],
         "seat_no": ck["seat_no"],
-        "gate": ck["gate"],
+        # 登机牌展示实时指派登机口（管理端改口后旅客查看即生效）；未指派时用值机时的兜底口
+        "gate": (row["flight_gate"] or "").strip().upper() or ck["gate"],
         "boarding_time": ck["boarding_time"],
     }
 

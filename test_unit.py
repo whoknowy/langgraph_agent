@@ -869,6 +869,42 @@ class TestCheckinFlow:
         assert r1["gate"] == r2["gate"]
         assert r1["boarding_time"] == r2["boarding_time"]
 
+    def test_assigned_gate_preferred_over_fallback(self):
+        """管理端指派的登机口优先于确定性兜底。"""
+        from services import checkin_repo, db
+        flight_no, fdate = self._add_flight_order("K16")
+        conn = db.get_connection()
+        conn.execute("UPDATE flights SET gate = 'C8' WHERE flight_no = ?", (flight_no,))
+        conn.commit()
+        conn.close()
+        r = checkin_repo.do_checkin("K16", "M1001", self._pick_seat(flight_no, fdate))
+        assert r.get("success") and r["gate"] == "C8"
+
+    def test_boarding_pass_shows_live_gate_and_notifies(self):
+        """值机后管理端变更登机口：登机牌展示实时值，旅客收到站内通知。"""
+        from services import checkin_repo, admin_repo
+        flight_no, fdate = self._add_flight_order("K17")
+        r1 = checkin_repo.do_checkin("K17", "M1001", self._pick_seat(flight_no, fdate))
+        assert r1.get("success")
+        g = admin_repo.assign_gate(flight_no, "B12")
+        assert g.get("success") and g["notified"] == 1 and g["gate"] == "B12"
+        bp = checkin_repo.get_boarding_pass("K17", "M1001")
+        assert bp["gate"] == "B12"                       # 登机牌实时生效
+        info = checkin_repo.checkin_info("K17", "M1001")
+        assert info["gate"] == "B12"                     # 智能体查询同步生效
+        conn = db.get_connection()
+        n = conn.execute("SELECT title, content FROM notifications WHERE member_id='M1001' "
+                         "ORDER BY id DESC LIMIT 1").fetchone()
+        conn.close()
+        assert n["title"] == "登机口变更提醒" and "B12" in n["content"]
+
+    def test_assign_gate_validation(self):
+        from services import admin_repo
+        assert "格式" in admin_repo.assign_gate("CA9001", "12B")["error"]      # 数字在字母前
+        assert "格式" in admin_repo.assign_gate("CA9001", "X")["error"]        # 缺数字
+        assert "格式" in admin_repo.assign_gate("CA9001", "")["error"]
+        assert "不存在" in admin_repo.assign_gate("ZZ9999", "B1")["error"]
+
     def test_unknown_order_and_seat(self):
         from services import checkin_repo
         assert "不存在" in checkin_repo.do_checkin("NOPE", "M1001", "40C")["error"]

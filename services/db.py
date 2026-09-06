@@ -186,6 +186,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "customers", "password_hash", "password_hash TEXT")
     # 退款完成时间（趋势图表统计用；存量已退款订单为 NULL 不计入）
     _ensure_column(conn, "orders", "refunded_at", "refunded_at TEXT")
+    # 航班登机口（航班级物理资源，管理端指派；NULL 时值机侧按航班+日期确定性兜底）
+    _ensure_column(conn, "flights", "gate", "gate TEXT")
     # 种子订单未记录人数（金额即单人票价），统一按1人回填
     conn.execute("UPDATE orders SET passengers = 1 WHERE passengers IS NULL")
     conn.commit()

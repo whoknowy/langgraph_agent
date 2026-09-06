@@ -777,6 +777,20 @@ def admin_flight_create():
     return jsonify(result)
 
 
+@app.route('/admin/api/flights/gate', methods=['POST'])
+def admin_flight_gate():
+    """指派/变更航班登机口（变更自动通知已值机旅客）。"""
+    admin, denied = admin_required()
+    if denied:
+        return denied
+    data = request.get_json() or {}
+    from services import admin_repo
+    result = admin_repo.assign_gate(data.get('flight_no', ''), data.get('gate', ''))
+    if result.get('error'):
+        return jsonify(result), 400
+    return jsonify(result)
+
+
 @app.route('/admin/api/airports')
 def admin_airports():
     admin, denied = admin_required()
