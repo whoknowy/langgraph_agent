@@ -152,6 +152,14 @@ CREATE TABLE IF NOT EXISTS checkins (
     boarding_time TEXT NOT NULL,
     checkin_at    TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS session_owners (
+    thread_id  TEXT PRIMARY KEY,
+    member_id  TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_owners_member ON session_owners(member_id);
 """
 
 

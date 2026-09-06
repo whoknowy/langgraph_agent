@@ -16,7 +16,7 @@ import requests
 from dotenv import load_dotenv
 
 from skills import StreamMasker, mask_sensitive
-from services import session_titles
+from services import session_owners, session_titles
 
 load_dotenv()
 
@@ -27,17 +27,13 @@ load_dotenv()
 LANGGRAPH_API_URL: str = os.getenv("LANGGRAPH_API_URL", "http://127.0.0.1:2024").rstrip("/")
 LANGGRAPH_GRAPH_NAME: str = os.getenv("LANGGRAPH_GRAPH_NAME", "customer_service")
 
-# LangGraph SDK 侧的助手与当前线程缓存（与原 web_app 行为一致）
+# 助手 ID 缓存（进程内幂等创建）。线程状态一律经参数传递/按会员查库，
+# 不再使用进程级 _current_thread_id 全局变量（多用户并发会串线）。
 _assistant_id: Optional[str] = None
-_current_thread_id: Optional[str] = None
 
 
 def get_assistant_id() -> Optional[str]:
     return _assistant_id
-
-
-def get_current_thread_id() -> Optional[str]:
-    return _current_thread_id
 
 
 # -----------------------------------------------------------------------------
@@ -221,7 +217,9 @@ def ensure_assistant_exists() -> bool:
         return False
 
 
-_session_thread_map: Dict[str, str] = {}
+# 会话映射缓存：键为 (member_id, client_session_id)，值为 LangGraph 线程 ID。
+# 事实源是 session_owners 表（SQLite，跨进程持久），本缓存只省一次查库。
+_session_thread_map: Dict[Tuple[str, str], str] = {}
 
 
 def _thread_exists(thread_id: str) -> bool:
@@ -242,48 +240,41 @@ def _create_thread() -> Optional[str]:
     return None
 
 
-def ensure_thread_exists(client_session_id: Optional[str] = None) -> bool:
+def ensure_thread_exists(client_session_id: Optional[str] = None,
+                         member_id: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+    """确保该会员有可用线程，返回 (thread_id, None) 或 (None, error)。
+
+    会话隔离规则（线程归属以 session_owners 表为准）：
+    - client_session_id 非缺省：
+        - 缓存指向有效线程且归属当前会员 → 复用；
+        - client_session_id 本身是有效线程且归属当前会员 → 复用并登记；
+        - 其余情况（线程归属他人或无主）→ 一律新建线程并登记，不暴露他人线程；
+    - 未传 sid / 'default'：直接新建线程（无任何共享状态，杜绝跨用户串线）。
+    新建线程一律绑定当前登录会员。
     """
-    确保有可用的 LangGraph 线程，返回是否成功。
+    sid = (client_session_id or "").strip()
+    mid = (member_id or "").strip().upper()
+    if not mid:
+        return None, "无法创建线程"
+    key = (mid, sid) if sid and sid != "default" else None
 
-    会话隔离规则：
-    - client_session_id 已映射到有效线程 → 复用；
-    - client_session_id 本身是有效线程 ID（前端直接传线程 ID）→ 复用并登记映射；
-    - 其余非缺省会话 ID（如前端新建会话的 uuid）→ 新建独立线程并登记，
-      避免第一条消息串到其它会话的历史；
-    - 'default'/缺省 → 沿用旧行为：优先复用当前缓存线程，否则新建。"""
-    global _current_thread_id
+    if key:
+        mapped = _session_thread_map.get(key)
+        if mapped and _thread_exists(mapped) and session_owners.owned(mapped, mid):
+            return mapped, None
+        _session_thread_map.pop(key, None)
+        if _thread_exists(sid) and session_owners.owned(sid, mid):
+            _session_thread_map[key] = sid
+            return sid, None
+        # 线程不存在 / 已失效 / 归属他人或无主 → 落到新建（不暴露他人线程）
 
-    sid = client_session_id
-    if sid and sid != 'default':
-        mapped = _session_thread_map.get(sid)
-        if mapped:
-            if _thread_exists(mapped):
-                _current_thread_id = mapped
-                return True
-            _session_thread_map.pop(sid, None)
-        if _thread_exists(sid):
-            _session_thread_map[sid] = sid
-            _current_thread_id = sid
-            return True
-        new_tid = _create_thread()
-        if new_tid:
-            _session_thread_map[sid] = new_tid
-            _current_thread_id = new_tid
-            print(f"✅ 为会话 {sid[:8]}… 创建新线程: {new_tid}")
-            return True
-        return False
-
-    if _current_thread_id and _thread_exists(_current_thread_id):
-        return True
-    _current_thread_id = None
     new_tid = _create_thread()
-    if new_tid:
-        _current_thread_id = new_tid
-        print(f"✅ 创建新线程: {new_tid}")
-        return True
-    print("❌ 无法创建线程")
-    return False
+    if not new_tid:
+        return None, "无法创建线程"
+    session_owners.bind(new_tid, mid)
+    if key:
+        _session_thread_map[key] = new_tid
+    return new_tid, None
 
 
 def _normalize_created_at(created_at: Any) -> float:
@@ -312,12 +303,14 @@ def _message_count_from_state_data(state_data: Dict[str, Any]) -> int:
     return 0
 
 
-def fetch_sessions_list() -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+def fetch_sessions_list(member_id: Optional[str] = None) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
     """
-    拉取线程列表并拼装前端会话项。
-    成功返回 (sessions, None)，失败返回 (None, error_message)。
+    拉取线程列表并拼装当前会员的会话项。
+    传入 member_id 时按 session_owners 归属过滤——只展示本人会话，
+    无主（存量）或他人线程不暴露。成功返回 (sessions, None)，失败返回 (None, error)。
     """
     try:
+        owned = session_owners.owned_by(member_id) if member_id else None
         response = requests.post(f"{LANGGRAPH_API_URL}/threads/search", json={})
 
         if response.status_code != 200:
@@ -329,6 +322,9 @@ def fetch_sessions_list() -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]
 
         for thread in threads:
             thread_id = thread.get("thread_id", "")
+            if owned is not None and thread_id not in owned:
+                continue
+
             created_at = _normalize_created_at(thread.get("created_at", time.time()))
 
             message_count = 0
@@ -363,9 +359,13 @@ def fetch_sessions_list() -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]
         return None, f'服务器错误: {str(e)}'
 
 
-def fetch_session_detail(session_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    """获取单个线程详情 + 对话历史。成功返回 (payload, None)。"""
+def fetch_session_detail(session_id: str, member_id: Optional[str] = None) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """获取单个线程详情 + 对话历史（校验线程归属当前会员）。
+    成功返回 (payload, None)；无权限返回 (None, '无权限访问该会话')。"""
     try:
+        if member_id and not session_owners.owned(session_id, member_id):
+            return None, '无权限访问该会话'
+
         response = requests.get(f"{LANGGRAPH_API_URL}/threads/{session_id}")
 
         if response.status_code != 200:
@@ -402,36 +402,42 @@ def fetch_session_detail(session_id: str) -> Tuple[Optional[Dict[str, Any]], Opt
         return None, f'服务器错误: {str(e)}'
 
 
-def delete_remote_thread(thread_id: str) -> Tuple[bool, int]:
-    """删除 LangGraph 线程。成功为任意 2xx（DELETE 常为 204 No Content）。"""
+def delete_remote_thread(thread_id: str, member_id: Optional[str] = None) -> Tuple[bool, int]:
+    """删除 LangGraph 线程。成功为任意 2xx（DELETE 常为 204 No Content）。
+    传入 member_id 时先校验线程归属，非本人线程拒绝（返回 (False, 403)）。"""
+    if member_id and not session_owners.owned(thread_id, member_id):
+        return False, 403
     response = requests.delete(f"{LANGGRAPH_API_URL}/threads/{thread_id}", timeout=10)
     ok = 200 <= response.status_code < 300
     if ok:
-        _session_thread_map.pop(thread_id, None)
+        session_owners.release(thread_id)
         session_titles.delete_title(thread_id)
+        for key in [k for k, v in _session_thread_map.items() if v == thread_id]:
+            _session_thread_map.pop(key, None)
     return ok, response.status_code
 
 
-def clear_thread_and_create_new(thread_id: str) -> Tuple[Optional[str], Optional[str]]:
+def clear_thread_and_create_new(thread_id: str, member_id: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
     """
-    删除旧线程并在服务端新建线程。
+    删除旧线程并在服务端新建线程（新线程绑定当前会员）。
     成功返回 (new_thread_id, None)，失败返回 (None, error)。
     """
-    global _current_thread_id
-    ok, status = delete_remote_thread(thread_id)
+    ok, status = delete_remote_thread(thread_id, member_id)
     if not ok:
+        if status == 403:
+            return None, '无权限操作该会话'
         return None, f'清空会话失败: {status}'
 
     new_thread_id = _create_thread()
     if not new_thread_id:
         return None, '创建新线程失败'
 
-    # 把仍指向旧线程的会话映射迁移到新线程
-    for sid, tid in list(_session_thread_map.items()):
-        if tid == thread_id:
-            _session_thread_map[sid] = new_thread_id
-    if _current_thread_id == thread_id:
-        _current_thread_id = new_thread_id
+    if member_id:
+        session_owners.bind(new_thread_id, member_id)
+        # 把该会员仍指向旧线程的会话映射迁移到新线程
+        for key in [k for k, v in _session_thread_map.items()
+                    if v == thread_id and k[0] == member_id.strip().upper()]:
+            _session_thread_map[key] = new_thread_id
     return new_thread_id, None
 
 
@@ -440,36 +446,35 @@ def clear_thread_and_create_new(thread_id: str) -> Tuple[Optional[str], Optional
 # -----------------------------------------------------------------------------
 
 def run_chat_sync(user_message: str, client_session_id: Optional[str] = None,
-                  member_id: Optional[str] = None) -> Tuple[Optional[str], Optional[str], Optional[int]]:
+                  member_id: Optional[str] = None) -> Tuple[Optional[str], Optional[str], Optional[int], Optional[str]]:
     """
-    在当前线程上提交一轮用户消息并等待完成。
+    在当前会员的线程上提交一轮用户消息并等待完成。
     client_session_id: 前端传入的会话 ID（可为 LangGraph 线程 ID）。
-    返回 (ai_text, error_text, http_status_optional)。
+    返回 (ai_text, error_text, http_status_optional, thread_id)。
     """
-    global _assistant_id, _current_thread_id
-
     if not user_message.strip():
-        return None, '消息不能为空', 400
+        return None, '消息不能为空', 400, None
 
     if not ensure_assistant_exists():
-        return None, '无法创建或找到助手', 500
+        return None, '无法创建或找到助手', 500, None
 
-    if not ensure_thread_exists(client_session_id):
-        return None, '无法创建线程', 500
+    tid, err = ensure_thread_exists(client_session_id, member_id)
+    if err:
+        return None, err, 500, None
 
-    assert _assistant_id and _current_thread_id
+    assert _assistant_id and tid
 
     try:
         graph_input: Dict[str, Any] = {
             "messages": [{"role": "user", "content": user_message.strip()}],
             "customer_query": user_message.strip(),
-            "session_id": _current_thread_id,
+            "session_id": tid,
         }
         if member_id:
             graph_input["member_id"] = member_id
 
         run_resp = requests.post(
-            f"{LANGGRAPH_API_URL}/threads/{_current_thread_id}/runs",
+            f"{LANGGRAPH_API_URL}/threads/{tid}/runs",
             json={
                 "assistant_id": _assistant_id,
                 "input": graph_input,
@@ -479,7 +484,7 @@ def run_chat_sync(user_message: str, client_session_id: Optional[str] = None,
 
         if run_resp.status_code != 200:
             print(f"❌ 创建运行失败: {run_resp.status_code}")
-            return None, f'调用失败: {run_resp.status_code}', run_resp.status_code
+            return None, f'调用失败: {run_resp.status_code}', run_resp.status_code, tid
 
         result = run_resp.json()
         run_id = result["run_id"]
@@ -491,11 +496,11 @@ def run_chat_sync(user_message: str, client_session_id: Optional[str] = None,
         while run_status in ["running", "pending"]:
             if time.time() - wait_start > max_wait_time:
                 print(f"⚠️ 运行超时，已等待 {max_wait_time} 秒")
-                return None, '运行超时', 500
+                return None, '运行超时', 500, tid
 
             time.sleep(0.5)
             status_response = requests.get(
-                f"{LANGGRAPH_API_URL}/threads/{_current_thread_id}/runs/{run_id}",
+                f"{LANGGRAPH_API_URL}/threads/{tid}/runs/{run_id}",
                 timeout=10
             )
             if status_response.status_code != 200:
@@ -507,36 +512,35 @@ def run_chat_sync(user_message: str, client_session_id: Optional[str] = None,
 
             if run_status in ["completed", "success"]:
                 thread_response = requests.get(
-                    f"{LANGGRAPH_API_URL}/threads/{_current_thread_id}/state",
+                    f"{LANGGRAPH_API_URL}/threads/{tid}/state",
                     timeout=10
                 )
                 if thread_response.status_code == 200:
                     thread_state = thread_response.json()
                     ai_response = extract_ai_response(thread_state)
-                    return ai_response, None, None
+                    return ai_response, None, None, tid
                 else:
                     print(f"❌ 获取线程状态失败: {thread_response.status_code}")
-                    return None, '无法获取线程状态', 500
+                    return None, '无法获取线程状态', 500, tid
 
             if run_status in ["failed", "cancelled"]:
                 print(f"❌ 运行失败: {run_status}")
-                return None, f'运行失败: {run_status}', 500
+                return None, f'运行失败: {run_status}', 500, tid
 
-        return None, '运行超时', 500
+        return None, '运行超时', 500, tid
 
     except Exception as e:
         print(f"❌ 聊天处理错误: {e}")
         import traceback
         traceback.print_exc()
-        return None, f'内部错误: {str(e)}', 500
+        return None, f'内部错误: {str(e)}', 500, tid
 
 
-def stream_chat_events(user_message: str, client_session_id: Optional[str] = None) -> Iterable[str]:
+def stream_chat_events(user_message: str, client_session_id: Optional[str] = None,
+                       member_id: Optional[str] = None) -> Iterable[str]:
     """
-    生成 SSE data 行（含末尾 [DONE]），供 Flask Response 逐块写出。
+    生成 SSE data 行（含末尾 [DONE]），供 Flask Response 逐块写出（轮询实现兜底）。
     """
-    global _assistant_id, _current_thread_id
-
     if not user_message.strip():
         yield f"data: {json.dumps({'error': '消息不能为空'})}\n\n"
         yield "data: [DONE]\n\n"
@@ -547,22 +551,23 @@ def stream_chat_events(user_message: str, client_session_id: Optional[str] = Non
         yield "data: [DONE]\n\n"
         return
 
-    if not ensure_thread_exists(client_session_id):
-        yield f"data: {json.dumps({'error': '无法创建线程'})}\n\n"
+    tid, err = ensure_thread_exists(client_session_id, member_id)
+    if err:
+        yield f"data: {json.dumps({'error': err})}\n\n"
         yield "data: [DONE]\n\n"
         return
 
-    assert _assistant_id is not None and _current_thread_id is not None
+    assert _assistant_id is not None and tid is not None
 
     try:
         response = requests.post(
-            f"{LANGGRAPH_API_URL}/threads/{_current_thread_id}/runs",
+            f"{LANGGRAPH_API_URL}/threads/{tid}/runs",
             json={
                 "assistant_id": _assistant_id,
                 "input": {
                     "messages": [{"role": "user", "content": user_message.strip()}],
                     "customer_query": user_message.strip(),
-                    "session_id": _current_thread_id
+                    "session_id": tid
                 }
             },
             timeout=30
@@ -581,7 +586,6 @@ def stream_chat_events(user_message: str, client_session_id: Optional[str] = Non
             yield "data: [DONE]\n\n"
             return
 
-        tid = _current_thread_id
         run_status = "running"
         while run_status in ["running", "pending"]:
             time.sleep(0.5)
@@ -679,10 +683,9 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
     通过 POST /threads/{tid}/runs/stream（stream_mode=["messages"]）拿到模型逐
     token 分片，转成 SSE data 行下发；结束时回读线程状态补发 pending_action
     （确认卡片）事件与 done 事件（含 thread_id 与完整响应）。
+    线程按会员归属解析（见 ensure_thread_exists），不依赖进程级全局状态。
     LangGraph 不可达时回退本地流程；runs/stream 端点不可用时回退轮询实现。
     """
-    global _assistant_id, _current_thread_id
-
     if not user_message.strip():
         yield _sse_line({"error": "消息不能为空"})
         yield "data: [DONE]\n\n"
@@ -692,12 +695,13 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
         yield from _local_stream_fallback(user_message, client_session_id)
         return
 
-    if not ensure_thread_exists(client_session_id):
-        yield from _local_stream_fallback(user_message, client_session_id)
+    tid, err = ensure_thread_exists(client_session_id, member_id)
+    if err:
+        yield _sse_line({"error": err})
+        yield "data: [DONE]\n\n"
         return
 
-    assert _assistant_id and _current_thread_id
-    tid = _current_thread_id
+    assert _assistant_id and tid
 
     graph_input: Dict[str, Any] = {
         "messages": [{"role": "user", "content": user_message.strip()}],
@@ -725,7 +729,7 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
 
     if response.status_code != 200:
         print(f"⚠️ runs/stream 端点不可用({response.status_code})，回退轮询流式")
-        for chunk in stream_chat_events(user_message, client_session_id):
+        for chunk in stream_chat_events(user_message, client_session_id, member_id):
             yield chunk
         return
 

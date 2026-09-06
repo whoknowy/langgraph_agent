@@ -22,7 +22,6 @@ from chat_web_service import (
     delete_remote_thread,
     clear_thread_and_create_new,
     langgraph_connectivity_test,
-    get_current_thread_id,
 )
 
 # 导入配置（与历史行为保持一致）
@@ -126,14 +125,13 @@ def chat():
         user_message = (data.get('message') or '').strip()
         client_session_id = data.get('session_id', 'default')
 
-        ai_text, err_msg, http_code = run_chat_sync(user_message, client_session_id,
-                                                    member_id=member.get('member_id'))
+        ai_text, err_msg, http_code, tid = run_chat_sync(user_message, client_session_id,
+                                                         member_id=member.get('member_id'))
         if err_msg in ('无法创建或找到助手', '无法创建线程'):
             return _local_chat_response(user_message, client_session_id)
         if err_msg:
             return jsonify({'error': err_msg}), http_code or 500
 
-        tid = get_current_thread_id()
         return jsonify({
             'response': ai_text,
             'session_id': tid,
@@ -171,8 +169,11 @@ def chat_stream():
 
 @app.route('/api/sessions', methods=['GET'])
 def get_sessions():
-    """获取会话列表"""
-    sessions, err = fetch_sessions_list()
+    """获取当前登录会员的会话列表（按线程归属过滤）。"""
+    member, denied = _require_member()
+    if denied:
+        return denied
+    sessions, err = fetch_sessions_list(member['member_id'])
     if err:
         return jsonify({'error': err}), 500
     return jsonify({'sessions': sessions or []})
@@ -180,20 +181,28 @@ def get_sessions():
 
 @app.route('/api/sessions/<session_id>', methods=['GET'])
 def get_session(session_id):
-    """获取特定会话详情"""
-    session_data, err = fetch_session_detail(session_id)
+    """获取特定会话详情（仅限本人线程）。"""
+    member, denied = _require_member()
+    if denied:
+        return denied
+    session_data, err = fetch_session_detail(session_id, member['member_id'])
     if err:
-        return jsonify({'error': err}), 500
+        return jsonify({'error': err}), 403 if err == '无权限访问该会话' else 500
     return jsonify({'session': session_data})
 
 
 @app.route('/api/sessions/<session_id>', methods=['DELETE'])
 def delete_session(session_id):
-    """删除会话"""
+    """删除会话（仅限本人线程）。"""
     try:
-        ok, status = delete_remote_thread(session_id)
+        member, denied = _require_member()
+        if denied:
+            return denied
+        ok, status = delete_remote_thread(session_id, member['member_id'])
         if ok:
             return jsonify({'message': '会话删除成功'})
+        if status == 403:
+            return jsonify({'error': '无权限删除该会话'}), 403
         return jsonify({'error': f'删除会话失败: {status}'}), 500
     except Exception as e:
         return jsonify({'error': f'服务器错误: {str(e)}'}), 500
@@ -201,11 +210,14 @@ def delete_session(session_id):
 
 @app.route('/api/sessions/<session_id>/clear', methods=['POST'])
 def clear_session(session_id):
-    """清空会话"""
+    """清空会话（仅限本人线程，重建的新线程仍归属本人）。"""
     try:
-        new_thread_id, err = clear_thread_and_create_new(session_id)
+        member, denied = _require_member()
+        if denied:
+            return denied
+        new_thread_id, err = clear_thread_and_create_new(session_id, member['member_id'])
         if err:
-            return jsonify({'error': err}), 500
+            return jsonify({'error': err}), 403 if err == '无权限操作该会话' else 500
 
         return jsonify({
             'message': '会话清空成功',

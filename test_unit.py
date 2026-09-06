@@ -954,6 +954,58 @@ class TestCheckinFlow:
         assert ck is None
 
 
+# ---------------------------------------------------------------- 会话线程归属（安全修复）
+
+class TestSessionOwners:
+    """thread_id ↔ member_id 归属仓库（会话越权修复的事实源）。"""
+
+    def test_bind_and_owner(self):
+        from services import session_owners
+        assert session_owners.owner_of("T-abc") == ""
+        session_owners.bind("T-abc", "m1001")          # 会员号归一为大写
+        assert session_owners.owner_of("T-abc") == "M1001"
+        assert session_owners.owned("T-abc", "M1001") is True
+        assert session_owners.owned("T-abc", "m1001") is True   # 会员号大小写不敏感
+        assert session_owners.owned("T-abc", "M1002") is False
+        # 线程 ID 按服务端原样精确匹配（UUID 大小写固定），改写大小写不视为同一线程
+        assert session_owners.owned("t-abc", "M1001") is False
+
+    def test_bind_idempotent_first_wins(self):
+        """首次绑定后后续 bind 不改变归属（防抢注）。"""
+        from services import session_owners
+        session_owners.bind("T-1", "M1001")
+        session_owners.bind("T-1", "M1002")
+        assert session_owners.owner_of("T-1") == "M1001"
+
+    def test_owned_by_scoped(self):
+        from services import session_owners
+        session_owners.bind("T-a", "M1001")
+        session_owners.bind("T-b", "M1001")
+        session_owners.bind("T-c", "M1002")
+        assert session_owners.owned_by("M1001") == {"T-a", "T-b"}
+        assert session_owners.owned_by("M1002") == {"T-c"}
+        assert session_owners.owned_by("") == set()
+
+    def test_owned_requires_member(self):
+        from services import session_owners
+        session_owners.bind("T-x", "M1001")
+        assert session_owners.owned("T-x", "") is False       # 未登录不通过
+        assert session_owners.owned("T-x", "M1002") is False
+
+    def test_release(self):
+        from services import session_owners
+        session_owners.bind("T-r", "M1001")
+        session_owners.release("T-r")
+        assert session_owners.owner_of("T-r") == ""
+        session_owners.release("T-r")   # 幂等
+
+    def test_unowned_thread_never_owned(self):
+        """存量无主线程对任何会员都不可通过归属校验。"""
+        from services import session_owners
+        assert session_owners.owner_of("legacy-thread") == ""
+        assert session_owners.owned("legacy-thread", "M1001") is False
+
+
 # ---------------------------------------------------------------- 直接运行入口
 
 if __name__ == "__main__":
