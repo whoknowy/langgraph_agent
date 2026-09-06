@@ -313,6 +313,22 @@
             </div>
         </div>
     </div>
+
+    <!-- 首次登录强制改密弹窗（不可关闭） -->
+    <div id="forcePwdModal" class="modal" hidden>
+        <div class="backdrop"></div>
+        <div class="box">
+            <h3>🔐 首次登录，请先修改密码</h3>
+            <div class="err" style="min-height:15px;">出于安全要求，使用初始/默认密码登录后必须先设置新密码。</div>
+            <label>当前密码</label><input id="forcePwdOld" type="password" autocomplete="current-password">
+            <label>新密码（至少 8 位，不得使用默认/常见弱口令）</label><input id="forcePwdNew" type="password" autocomplete="new-password">
+            <label>确认新密码</label><input id="forcePwdNew2" type="password" autocomplete="new-password">
+            <div class="err" id="forcePwdErr"></div>
+            <div class="row">
+                <button class="btn btn-primary" onclick="submitForcePwd()">修改密码并继续</button>
+            </div>
+        </div>
+    </div>
     <div id="toast" class="toast" hidden></div>
 
     <script>
@@ -347,9 +363,33 @@
             admin = a;
             $('adminLogin').hidden = true;
             $('adminWho').textContent = '👤 ' + a.name + '（' + a.username + '）';
+            if (a.must_change_password) { showForcePwd(); return; }   // 首次登录强制改密
             refreshStats();
             loadTrend();
             loadRefunds();
+        }
+
+        // ============ 首次登录强制改密 ============
+        function showForcePwd() {
+            $('forcePwdErr').textContent = '';
+            $('forcePwdModal').hidden = false;
+            $('forcePwdOld').focus();
+        }
+
+        async function submitForcePwd() {
+            const err = $('forcePwdErr');
+            err.textContent = '';
+            const oldPw = $('forcePwdOld').value, n1 = $('forcePwdNew').value, n2 = $('forcePwdNew2').value;
+            if (!oldPw || !n1 || !n2) { err.textContent = '请填写完整'; return; }
+            if (n1 !== n2) { err.textContent = '两次输入的新密码不一致'; return; }
+            try {
+                const d = await post('/admin/api/change_password', { old_password: oldPw, new_password: n1 });
+                $('forcePwdModal').hidden = true;
+                $('forcePwdOld').value = $('forcePwdNew').value = $('forcePwdNew2').value = '';
+                if (admin) admin.must_change_password = false;
+                toast(d.message);
+                refreshStats(); loadTrend(); loadRefunds();
+            } catch (e) { err.textContent = e.message; }
         }
 
         async function doLogin() {

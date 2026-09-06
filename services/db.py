@@ -111,7 +111,8 @@ CREATE TABLE IF NOT EXISTS city_coords (
 CREATE TABLE IF NOT EXISTS admins (
     username      TEXT PRIMARY KEY,
     password_hash TEXT NOT NULL,
-    name          TEXT NOT NULL
+    name          TEXT NOT NULL,
+    must_change_password INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS notifications (
@@ -196,6 +197,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "orders", "refunded_at", "refunded_at TEXT")
     # 航班登机口（航班级物理资源，管理端指派；NULL 时值机侧按航班+日期确定性兜底）
     _ensure_column(conn, "flights", "gate", "gate TEXT")
+    # 管理员首次登录强制改密标记（存量默认口令由启动巡检置位）
+    _ensure_column(conn, "admins", "must_change_password", "must_change_password INTEGER NOT NULL DEFAULT 0")
     # 种子订单未记录人数（金额即单人票价），统一按1人回填
     conn.execute("UPDATE orders SET passengers = 1 WHERE passengers IS NULL")
     conn.commit()

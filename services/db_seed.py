@@ -301,13 +301,63 @@ def _seed_orders_and_complaints(conn: sqlite3.Connection, rnd: random.Random) ->
 
 
 def _seed_admin(conn: sqlite3.Connection) -> None:
-    """幂等预置演示管理员 admin / admin123。"""
+    """预置管理员（幂等，仅 admins 为空时执行）。
+
+    - 生产环境（APP_ENV=production）：禁止默认口令——取 ADMIN_INITIAL_PASSWORD
+      环境变量（需满足口令策略），否则随机生成并打印一次；
+    - 开发环境：保留 admin/admin123 便于快速上手；
+    - 两种环境均置 must_change_password=1，首次登录强制修改。
+    """
+    import os
+    import secrets
     from werkzeug.security import generate_password_hash
+    from config import IS_PRODUCTION
+    from services.bootstrap_security import ADMIN_DEFAULT_PASSWORD, validate_admin_password
+    if conn.execute("SELECT 1 FROM admins LIMIT 1").fetchone():
+        return
+    if IS_PRODUCTION:
+        pw = (os.getenv("ADMIN_INITIAL_PASSWORD") or "").strip()
+        if pw:
+            err = validate_admin_password(pw)
+            if err:
+                raise SystemExit(f"⛔ ADMIN_INITIAL_PASSWORD 不满足口令策略：{err}")
+            source = "环境变量 ADMIN_INITIAL_PASSWORD"
+        else:
+            pw = secrets.token_urlsafe(12)
+            source = "本次启动随机生成"
+        print("=" * 60)
+        print(f"🔐 生产环境初始管理员账号：admin（密码：{pw}）")
+        print(f"   来源：{source}。请立即登录并修改密码，本提示不会再次显示。")
+        print("=" * 60)
+    else:
+        pw = ADMIN_DEFAULT_PASSWORD
     conn.execute(
-        "INSERT OR IGNORE INTO admins (username, password_hash, name) VALUES (?,?,?)",
-        ("admin", generate_password_hash("admin123"), "运营管理员"),
+        "INSERT OR IGNORE INTO admins (username, password_hash, name, must_change_password) "
+        "VALUES (?,?,?,1)",
+        ("admin", generate_password_hash(pw), "运营管理员"),
     )
     conn.commit()
+
+
+def enforce_admin_password_policy(conn: sqlite3.Connection) -> int:
+    """存量库口令巡检：仍在使用默认口令 admin123 的管理员强制标记首次改密。
+
+    每次启动调用（幂等、仅几行扫描）。返回本次被置位的管理员数。
+    """
+    from werkzeug.security import check_password_hash
+    from services.bootstrap_security import admin_uses_default_password
+    rows = conn.execute(
+        "SELECT username, password_hash FROM admins WHERE must_change_password = 0"
+    ).fetchall()
+    changed = 0
+    for r in rows:
+        if admin_uses_default_password(r["password_hash"], check_password_hash):
+            conn.execute("UPDATE admins SET must_change_password = 1 WHERE username = ?",
+                         (r["username"],))
+            changed += 1
+            print(f"⚠️ 管理员 {r['username']} 仍在使用默认口令，已标记首次登录强制修改")
+    conn.commit()
+    return changed
 
 
 def ensure_seeded(conn: sqlite3.Connection, force: bool = False) -> None:

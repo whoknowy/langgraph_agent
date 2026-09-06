@@ -1006,6 +1006,72 @@ class TestSessionOwners:
         assert session_owners.owned("legacy-thread", "M1001") is False
 
 
+# ---------------------------------------------------------------- 启动安全策略（默认凭据修复）
+
+class TestBootstrapSecurity:
+    """Flask 密钥解析与管理员口令策略（默认密钥/默认管理员修复）。"""
+
+    def test_production_refuses_missing_secret(self):
+        from services.bootstrap_security import resolve_flask_secret
+        with pytest.raises(SystemExit):
+            resolve_flask_secret("", True, "unused.key")
+
+    def test_production_refuses_denylisted_secret(self):
+        from services.bootstrap_security import resolve_flask_secret
+        for bad in ("your-secret-key-here", "CHANGEME", "secret"):
+            with pytest.raises(SystemExit):
+                resolve_flask_secret(bad, True, "unused.key")
+
+    def test_production_refuses_short_secret(self):
+        from services.bootstrap_security import resolve_flask_secret
+        with pytest.raises(SystemExit):
+            resolve_flask_secret("short-key", True, "unused.key")
+
+    def test_production_accepts_strong_secret(self):
+        from services.bootstrap_security import resolve_flask_secret
+        strong = "x" * 48
+        assert resolve_flask_secret(strong, True, "unused.key") == strong
+
+    def test_dev_generates_and_persists(self, tmp_path):
+        from services.bootstrap_security import resolve_flask_secret
+        kf = tmp_path / "sk.key"
+        k1 = resolve_flask_secret("", False, kf)
+        assert kf.exists() and len(k1) == 64
+        k2 = resolve_flask_secret("", False, kf)
+        assert k2 == k1                      # 持久化：重启不换钥，session 不失效
+
+    def test_dev_rejects_denylisted_value(self, tmp_path):
+        from services.bootstrap_security import resolve_flask_secret
+        kf = tmp_path / "sk.key"
+        k = resolve_flask_secret("your-secret-key-here", False, kf)
+        assert k != "your-secret-key-here" and len(k) == 64
+
+    def test_admin_password_policy(self):
+        from services.bootstrap_security import validate_admin_password
+        assert validate_admin_password("short") is not None           # 长度不足
+        assert validate_admin_password("admin123") is not None        # 默认口令
+        assert validate_admin_password("password") is not None        # 常见弱口令
+        assert validate_admin_password("") is not None
+        assert validate_admin_password("S3afe-Key-2026") is None
+
+    def test_enforce_policy_flags_default_password(self):
+        """存量 admin123 口令在启动巡检时被标记强制改密；强口令不受影响。"""
+        from werkzeug.security import generate_password_hash
+        from services import db
+        from services.db_seed import enforce_admin_password_policy
+        conn = db.get_connection()
+        conn.execute("INSERT OR REPLACE INTO admins (username, password_hash, name, must_change_password) "
+                     "VALUES ('admin', ?, '运营管理员', 0)", (generate_password_hash("admin123"),))
+        conn.execute("INSERT OR REPLACE INTO admins (username, password_hash, name, must_change_password) "
+                     "VALUES ('ops', ?, '运营二号', 0)", (generate_password_hash("S3afe-Key-2026"),))
+        conn.commit()
+        assert enforce_admin_password_policy(conn) == 1
+        flags = {r["username"]: r["must_change_password"]
+                 for r in conn.execute("SELECT username, must_change_password FROM admins").fetchall()}
+        conn.close()
+        assert flags == {"admin": 1, "ops": 0}
+
+
 # ---------------------------------------------------------------- 直接运行入口
 
 if __name__ == "__main__":

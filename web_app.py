@@ -6,6 +6,7 @@
 
 import os
 import time
+from pathlib import Path
 from typing import Dict, Any, List
 
 from dotenv import load_dotenv
@@ -26,17 +27,26 @@ from chat_web_service import (
 
 # 导入配置（与历史行为保持一致）
 from config import *  # noqa: E402,F401,F403
+from services.bootstrap_security import resolve_flask_secret
 
 app = Flask(__name__)
 
-# Flask 配置
-app.secret_key = os.getenv("FLASK_SECRET_KEY", "your-secret-key-here")
+# Flask 会话签名密钥：生产环境强制显式强密钥（弱值/缺省拒绝启动）；
+# 开发环境缺省或弱值时自动生成并持久化到 data/.flask_secret_key（重启不失效）
+app.secret_key = resolve_flask_secret(
+    os.getenv("FLASK_SECRET_KEY"),
+    IS_PRODUCTION,
+    Path(__file__).resolve().parent / "data" / ".flask_secret_key",
+)
 app.config['SESSION_TYPE'] = 'filesystem'
 
-# 启动即建表/迁移（幂等）：新表（如 notifications）在已有库上也要生效
+# 启动即建表/迁移 + 首次种子 + 口令策略巡检（全部幂等）
 from services import db as _db  # noqa: E402
 _c = _db.get_connection()
 _db.init_schema(_c)
+from services.db_seed import ensure_seeded, enforce_admin_password_policy  # noqa: E402
+ensure_seeded(_c)
+enforce_admin_password_policy(_c)
 _c.close()
 
 # 订单生命周期：起飞自动「已使用」+ 待支付超时自动「已取消」（后台线程，与客户端/管理端共享 DB）
@@ -602,10 +612,16 @@ def _current_admin() -> Dict[str, Any]:
 
 
 def admin_required():
-    """管理端接口门禁。返回 (admin, denied)。"""
+    """管理端接口门禁。返回 (admin, denied)。
+
+    除登录/改密/自身信息外，must_change_password=1（首次登录或仍在使用默认
+    口令）时拦截一切管理操作——先改密再干活。
+    """
     admin = _current_admin()
     if not admin:
         return None, (jsonify({'error': '未登录管理员账号'}), 401)
+    if _admin_must_change_password(admin.get('username')):
+        return None, (jsonify({'error': '首次登录必须先修改密码', 'must_change_password': True}), 403)
     return admin, None
 
 
@@ -628,13 +644,15 @@ def admin_login():
         from services import db
         conn = db.get_connection()
         db.init_schema(conn)
-        row = conn.execute("SELECT username, password_hash, name FROM admins WHERE username = ?",
-                           (username,)).fetchone()
+        row = conn.execute(
+            "SELECT username, password_hash, name, must_change_password FROM admins WHERE username = ?",
+            (username,)).fetchone()
         conn.close()
         if not row or not check_password_hash(row['password_hash'], password):
             return jsonify({'error': '用户名或密码错误'}), 401
 
-        session['admin'] = {'username': row['username'], 'name': row['name']}
+        session['admin'] = {'username': row['username'], 'name': row['name'],
+                            'must_change_password': bool(row['must_change_password'])}
         return jsonify({'admin': session['admin']})
     except Exception as e:
         return jsonify({'error': f'登录失败: {str(e)}'}), 500
@@ -651,7 +669,58 @@ def admin_me():
     admin = _current_admin()
     if not admin:
         return jsonify({'admin': None}), 401
-    return jsonify({'admin': admin})
+    # must_change_password 以数据库实时值为准（其他端登录改密/启动巡检置位后同步感知）
+    from services import db
+    conn = db.get_connection()
+    row = conn.execute("SELECT must_change_password FROM admins WHERE username = ?",
+                       (admin.get('username'),)).fetchone()
+    conn.close()
+    info = dict(admin)
+    info['must_change_password'] = bool(row['must_change_password']) if row else False
+    return jsonify({'admin': info})
+
+
+def _admin_must_change_password(username: str) -> bool:
+    from services import db
+    conn = db.get_connection()
+    row = conn.execute("SELECT must_change_password FROM admins WHERE username = ?",
+                       (username,)).fetchone()
+    conn.close()
+    return bool(row and row['must_change_password'])
+
+
+@app.route('/admin/api/change_password', methods=['POST'])
+def admin_change_password():
+    """管理员修改自己的密码（首次登录强制改密走这里）。"""
+    admin = _current_admin()
+    if not admin:
+        return jsonify({'error': '未登录管理员账号'}), 401
+    data = request.get_json() or {}
+    old_pw = data.get('old_password') or ''
+    new_pw = data.get('new_password') or ''
+
+    from werkzeug.security import check_password_hash, generate_password_hash
+    from services import bootstrap_security, db
+    conn = db.get_connection()
+    row = conn.execute("SELECT password_hash FROM admins WHERE username = ?",
+                       (admin['username'],)).fetchone()
+    if not row or not check_password_hash(row['password_hash'], old_pw):
+        conn.close()
+        return jsonify({'error': '原密码不正确'}), 400
+    if new_pw == old_pw:
+        conn.close()
+        return jsonify({'error': '新密码不能与原密码相同'}), 400
+    err = bootstrap_security.validate_admin_password(new_pw)
+    if err:
+        conn.close()
+        return jsonify({'error': err}), 400
+    conn.execute("UPDATE admins SET password_hash = ?, must_change_password = 0 WHERE username = ?",
+                 (generate_password_hash(new_pw), admin['username']))
+    conn.commit()
+    conn.close()
+    if 'admin' in session:
+        session['admin']['must_change_password'] = False
+    return jsonify({'success': True, 'message': '密码已更新，请妥善保管'})
 
 
 @app.route('/admin/api/stats')
@@ -886,6 +955,10 @@ def test_langgraph():
 
 def main():
     """主函数"""
+    if IS_PRODUCTION:
+        raise SystemExit(
+            "⛔ 生产环境禁止以 python web_app.py 运行（开发服务器带调试重载器）。"
+            "请使用 WSGI 服务器，如：waitress-serve --listen=0.0.0.0:5000 web_app:app")
     if os.getenv("LANGSMITH_TRACING", "").lower() == "true" and os.getenv("LANGSMITH_API_KEY"):
         print("🔭 LangSmith 轨迹观测已启用（项目:", os.getenv("LANGSMITH_PROJECT", "default"), "）")
     else:

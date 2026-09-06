@@ -14,3 +14,8 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "deepseek-chat")
 
 # HTTP 请求超时（秒），同时作为 LLM 客户端超时
 HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", "30"))
+
+# 运行环境：dev（默认）| production。生产模式禁止默认凭据、拒绝弱密钥启动，
+# 并要求通过 WSGI 服务器（如 waitress）运行，详见 services/bootstrap_security.py
+APP_ENV = os.getenv("APP_ENV", "dev").strip().lower()
+IS_PRODUCTION = APP_ENV in ("production", "prod")

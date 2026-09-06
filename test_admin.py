@@ -2,6 +2,7 @@
 """管理端回归：登录/门禁、退款处理、投诉处理、航班/机场/航司维护、订单与会员查询。"""
 import io
 import json
+import os
 import sys
 import urllib.request
 import urllib.error
@@ -11,6 +12,11 @@ import random
 from datetime import date, timedelta
 
 FUTURE_DATE = (date.today() + timedelta(days=3)).isoformat()  # 订未来日期，避免生命周期扫描把过期票置为已使用
+
+# 管理员口令：优先读环境变量（强制改密策略生效后，固定默认口令不再可用）
+ADMIN_USER = os.getenv("ADMIN_USER", "admin")
+ADMIN_PW = os.getenv("ADMIN_PASSWORD", "admin123")
+ADMIN_TEST_PW = os.getenv("ADMIN_TEST_PASSWORD", "Admin-Test-2026!")
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
@@ -48,11 +54,28 @@ d, code = req(admin_op, "GET", "/admin/api/stats")
 results.append(check("1.未登录访问管理接口应401", code == 401))
 d, code = req(admin_op, "POST", "/admin/api/login", {"username": "admin", "password": "wrong"})
 results.append(check("2.错误密码应401", code == 401))
-d, code = req(admin_op, "POST", "/admin/api/login", {"username": "admin", "password": "admin123"})
+d, code = req(admin_op, "POST", "/admin/api/login", {"username": ADMIN_USER, "password": ADMIN_PW})
+if code == 401 and ADMIN_PW != ADMIN_TEST_PW:
+    # 口令已在上一轮回归中被强制改密流程更新
+    d, code = req(admin_op, "POST", "/admin/api/login", {"username": ADMIN_USER, "password": ADMIN_TEST_PW})
 results.append(check("3.管理员登录成功", code is None and d.get("admin", {}).get("name") == "运营管理员"))
+
+# 首次登录强制改密：默认口令标记下管理接口被拦截，改密后恢复
+if (d.get("admin") or {}).get("must_change_password"):
+    d2, code2 = req(admin_op, "GET", "/admin/api/stats")
+    results.append(check("3a.默认口令未改密时管理接口被拦截(403)",
+                         code2 == 403 and d2.get("must_change_password") is True))
+    d3, code3 = req(admin_op, "POST", "/admin/api/change_password",
+                    {"old_password": ADMIN_PW, "new_password": ADMIN_TEST_PW})
+    results.append(check("3b.强制改密成功", code3 is None and d3.get("success") is True))
+    ADMIN_PW = ADMIN_TEST_PW
+    print(f"    ⚠️ 管理员口令已更新为 ADMIN_TEST_PASSWORD（{ADMIN_TEST_PW}），后续登录/回归请使用该口令"
+          "（可在 .env 配置 ADMIN_TEST_PASSWORD 固化）")
+
 d, _ = req(admin_op, "GET", "/admin/api/stats")
 results.append(check("4.工作台统计字段齐全",
-                     all(k in d for k in ("pending_refunds", "pending_complaints", "flights_on_sale", "today_orders")),
+                     all(k in d for k in ("pending_refunds", "pending_complaints", "flights_on_sale",
+                                          "today_orders", "today_checkins")),
                      f"| {d}"))
 
 # ---- 造数：会员 M1001 下单→支付→退票，产生两笔退票中 ----
