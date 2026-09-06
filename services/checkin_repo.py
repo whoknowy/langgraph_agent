@@ -137,9 +137,14 @@ def _order_with_departure(order_no: str):
 
 # ---------------------------------------------------------------- 值机 / 登机牌
 
-def _gate_and_boarding(order_no: str, dep: datetime) -> tuple:
-    """登机口与登机时间（按订单号确定性生成）。"""
-    rnd = random.Random(f"gate-{_norm(order_no)}")
+def _gate_and_boarding(flight_no: str, flight_date: str, dep: datetime) -> tuple:
+    """登机口与登机时间。
+
+    登机口是机场物理资源，与航班绑定：以航班号+日期为种子确定性生成，
+    同一航班同一天的所有值机旅客得到同一登机口（零维护，且跨次一致）。
+    登机时间 = 起飞前 30 分钟，同样由航班推出。
+    """
+    rnd = random.Random(f"gate-{_norm(flight_no)}-{_norm(flight_date)}")
     gate = f"{rnd.choice('ABC')}{rnd.randint(1, 32)}"
     boarding = (dep - timedelta(minutes=BOARDING_LEAD_MINUTES)).strftime("%H:%M")
     return gate, boarding
@@ -229,7 +234,7 @@ def do_checkin(order_no: str, member_id: str, seat_no: str) -> dict:
         if cur.rowcount != 1:
             conn.rollback()
             return {"error": f"座位 {seat_no} 刚刚被其他乘客抢占了，请换一个座位"}
-        gate, boarding = _gate_and_boarding(order_no, dep)
+        gate, boarding = _gate_and_boarding(r["flight_no"], r["flight_date"], dep)
         conn.execute(
             "INSERT INTO checkins (order_no, seat_no, gate, boarding_time, checkin_at) "
             "VALUES (?,?,?,?,?) "

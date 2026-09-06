@@ -733,13 +733,13 @@ class TestCheckinFlow:
 
     def _add_flight_order(self, order_no, member_id="M1001", status="已出票",
                           hours_ahead=3.0, cabin="经济", flight_no="CA9001"):
-        """插入一个落在值机窗口内的航班+订单，返回 (flight_no, flight_date)。"""
+        """插入一个落在值机窗口内的航班+订单（航班幂等，可多次调用加订单），返回 (flight_no, flight_date)。"""
         dep = datetime.now() + timedelta(hours=hours_ahead)
         fdate = dep.date().isoformat()
         ftime = dep.strftime("%H:%M")
         conn = db.get_connection()
         conn.execute(
-            "INSERT INTO flights (flight_no, airline_code, dep_iata, arr_iata, dep_time, arr_time, "
+            "INSERT OR IGNORE INTO flights (flight_no, airline_code, dep_iata, arr_iata, dep_time, arr_time, "
             "duration_min, aircraft, freq_days) VALUES (?,'CA','PEK','SHA',?,'23:59',120,'B737','1234567')",
             (flight_no, ftime))
         conn.execute(
@@ -857,6 +857,17 @@ class TestCheckinFlow:
         from services import checkin_repo
         self._add_flight_order("K10")
         assert "尚未值机" in checkin_repo.get_boarding_pass("K10", "M1001")["error"]
+
+    def test_gate_bound_to_flight_not_order(self):
+        """同一航班同一天的两名旅客应拿到同一登机口（登机口是航班物理资源）。"""
+        from services import checkin_repo
+        flight_no, fdate = self._add_flight_order("K14")
+        self._add_flight_order("K15", member_id="M1002")   # 同一航班第二张订单
+        r1 = checkin_repo.do_checkin("K14", "M1001", self._pick_seat(flight_no, fdate))
+        r2 = checkin_repo.do_checkin("K15", "M1002", self._pick_seat(flight_no, fdate))
+        assert r1.get("success") and r2.get("success"), (r1, r2)
+        assert r1["gate"] == r2["gate"]
+        assert r1["boarding_time"] == r2["boarding_time"]
 
     def test_unknown_order_and_seat(self):
         from services import checkin_repo
