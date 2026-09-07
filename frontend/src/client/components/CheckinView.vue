@@ -18,7 +18,7 @@
           <div class="muted" v-if="currentOrder">{{ currentOrder.flight_date }} {{ currentOrder.dep_time }} · {{ currentOrder.cabin }}舱</div>
         </div>
         <div class="seat-summary" v-if="seatData">
-          可选 {{ seatData.free }} / 共 {{ seatData.total }}
+          可选 {{ displayStats.free }} / 共 {{ displayStats.total }}（{{ currentOrder.cabin }}舱）
         </div>
       </div>
       <div v-if="seatLoading" class="empty">座位图加载中…</div>
@@ -90,6 +90,21 @@ const filteredCabins = computed(() => {
     return { [currentOrder.value.cabin]: cabins[currentOrder.value.cabin] }
   }
   return cabins
+})
+
+const displayStats = computed(() => {
+  const cabins = filteredCabins.value
+  let free = 0
+  let total = 0
+  Object.values(cabins).forEach(rows => {
+    rows.forEach(row => {
+      row.seats.forEach(seat => {
+        total += 1
+        if (seat.status === 'free') free += 1
+      })
+    })
+  })
+  return { free, total }
 })
 
 const route = useRoute()
