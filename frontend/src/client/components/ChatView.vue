@@ -52,7 +52,7 @@
               </span>
             </div>
             <!-- eslint-disable-next-line vue/no-v-html -->
-            <div class="msg-body" v-html="renderMarkdown(msg.content)"></div>
+            <div class="msg-body" :class="{ plain: msg.streaming, 'md-body': !msg.streaming }" v-html="renderMessageHtml(msg)"></div>
           </div>
         </div>
 
@@ -186,13 +186,28 @@ const actionButtonText = computed(() => {
   return '确认'
 })
 
+function escapeHtml(text) {
+  return String(text == null ? '' : text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
 function renderMarkdown(text) {
   if (!text) return ''
   try {
     return DOMPurify.sanitize(marked.parse(String(text)))
   } catch (e) {
-    return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    return escapeHtml(text)
   }
+}
+
+function renderMessageHtml(msg) {
+  // 流式过程中只渲染纯文本，避免每次 token 都跑 Markdown 解析导致卡顿；
+  // 流结束再渲染 Markdown（表格/列表可读性）。
+  if (msg.streaming) return escapeHtml(msg.content || '')
+  return renderMarkdown(msg.content || '')
 }
 
 function scrollBottom() {
@@ -334,10 +349,14 @@ async function streamChat(message) {
 
   const ensureAssistant = () => {
     if (!assistantMsg) {
-      assistantMsg = { role: 'assistant', content: '', toolChips: [] }
+      assistantMsg = { role: 'assistant', content: '', toolChips: [], streaming: true }
       messages.value.push(assistantMsg)
     }
     return assistantMsg
+  }
+
+  const finishAssistant = () => {
+    if (assistantMsg) assistantMsg.streaming = false
   }
 
   try {
@@ -352,6 +371,7 @@ async function streamChat(message) {
         if (!t.startsWith('data:')) continue
         const payload = t.slice(5).trim()
         if (payload === '[DONE]') {
+          finishAssistant()
           finishToolChips()
           return true
         }
@@ -359,6 +379,7 @@ async function streamChat(message) {
         try { data = JSON.parse(payload) } catch (e) { continue }
         if (data.error) {
           ensureAssistant().content = data.error
+          finishAssistant()
           finishToolChips()
           return true
         }
@@ -379,14 +400,17 @@ async function streamChat(message) {
           if (data.response && !streamText) {
             ensureAssistant().content = data.response
           }
+          finishAssistant()
           finishToolChips(data.tools)
           return true
         }
       }
     }
+    finishAssistant()
     finishToolChips()
     return !!assistantMsg
   } catch (e) {
+    finishAssistant()
     finishToolChips()
     return false
   }
@@ -509,6 +533,34 @@ async function confirmSeat() {
 .msg-body {
   background: #f5f7fb; border-radius: 12px; padding: 10px 14px; font-size: 14px; line-height: 1.7;
   word-break: break-word;
+}
+.msg-body.plain { white-space: pre-wrap; }
+
+/* Markdown 表格 / 常用排版（与原前端一致，增强可读性） */
+.msg-body.md-body table {
+  width: 100%; border-collapse: collapse; margin: 8px 0 12px; font-size: 13px;
+}
+.msg-body.md-body th,
+.msg-body.md-body td {
+  padding: 7px 10px; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border);
+  text-align: left; white-space: nowrap;
+}
+.msg-body.md-body th:last-child,
+.msg-body.md-body td:last-child { border-right: none; }
+.msg-body.md-body th {
+  background: #f0f4ff; color: #1e40af; font-weight: 600;
+}
+.msg-body.md-body tbody tr:nth-child(even) { background: #fafbff; }
+.msg-body.md-body tbody tr:hover { background: #eef2ff; }
+.msg-body.md-body p { margin: 0.5em 0; }
+.msg-body.md-body ul, .msg-body.md-body ol { margin: 0.5em 0; padding-left: 1.4em; }
+.msg-body.md-body li { margin: 0.2em 0; }
+.msg-body.md-body code { background: #eef2ff; color: #4338ca; padding: 1px 5px; border-radius: 4px; }
+.msg-body.md-body pre { background: #0f172a; color: #e2e8f0; border-radius: 10px; padding: 12px; overflow-x: auto; }
+.msg-body.md-body pre code { background: transparent; color: inherit; padding: 0; }
+.msg-body.md-body blockquote {
+  border-left: 3px solid #bfdbfe; background: #eff6ff; border-radius: 0 8px 8px 0;
+  margin: 0.6em 0; padding: 4px 12px; color: #1e3a8a;
 }
 .msg-row.user .msg-body { background: var(--primary); color: #fff; }
 .tool-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
