@@ -446,21 +446,22 @@ def clear_thread_and_create_new(thread_id: str, member_id: Optional[str] = None)
 # -----------------------------------------------------------------------------
 
 def run_chat_sync(user_message: str, client_session_id: Optional[str] = None,
-                  member_id: Optional[str] = None) -> Tuple[Optional[str], Optional[str], Optional[int], Optional[str]]:
+                  member_id: Optional[str] = None) -> Tuple[Optional[str], Optional[str], Optional[int], Optional[str], Optional[Dict[str, Any]]]:
     """
     在当前会员的线程上提交一轮用户消息并等待完成。
     client_session_id: 前端传入的会话 ID（可为 LangGraph 线程 ID）。
-    返回 (ai_text, error_text, http_status_optional, thread_id)。
+    返回 (ai_text, error_text, http_status_optional, thread_id, pending_action)。
+    非流式通道（/api/chat）靠第 5 元素下发确认卡片，与 SSE 的 pending_action 事件对齐。
     """
     if not user_message.strip():
-        return None, '消息不能为空', 400, None
+        return None, '消息不能为空', 400, None, None
 
     if not ensure_assistant_exists():
-        return None, '无法创建或找到助手', 500, None
+        return None, '无法创建或找到助手', 500, None, None
 
     tid, err = ensure_thread_exists(client_session_id, member_id)
     if err:
-        return None, err, 500, None
+        return None, err, 500, None, None
 
     assert _assistant_id and tid
 
@@ -484,7 +485,7 @@ def run_chat_sync(user_message: str, client_session_id: Optional[str] = None,
 
         if run_resp.status_code != 200:
             print(f"❌ 创建运行失败: {run_resp.status_code}")
-            return None, f'调用失败: {run_resp.status_code}', run_resp.status_code, tid
+            return None, f'调用失败: {run_resp.status_code}', run_resp.status_code, tid, None
 
         result = run_resp.json()
         run_id = result["run_id"]
@@ -496,7 +497,7 @@ def run_chat_sync(user_message: str, client_session_id: Optional[str] = None,
         while run_status in ["running", "pending"]:
             if time.time() - wait_start > max_wait_time:
                 print(f"⚠️ 运行超时，已等待 {max_wait_time} 秒")
-                return None, '运行超时', 500, tid
+                return None, '运行超时', 500, tid, None
 
             time.sleep(0.5)
             status_response = requests.get(
@@ -518,22 +519,23 @@ def run_chat_sync(user_message: str, client_session_id: Optional[str] = None,
                 if thread_response.status_code == 200:
                     thread_state = thread_response.json()
                     ai_response = extract_ai_response(thread_state)
-                    return ai_response, None, None, tid
+                    pa = _valid_pending_action((thread_state or {}).get("values") or {})
+                    return ai_response, None, None, tid, pa
                 else:
                     print(f"❌ 获取线程状态失败: {thread_response.status_code}")
-                    return None, '无法获取线程状态', 500, tid
+                    return None, '无法获取线程状态', 500, tid, None
 
             if run_status in ["failed", "cancelled"]:
                 print(f"❌ 运行失败: {run_status}")
-                return None, f'运行失败: {run_status}', 500, tid
+                return None, f'运行失败: {run_status}', 500, tid, None
 
-        return None, '运行超时', 500, tid
+        return None, '运行超时', 500, tid, None
 
     except Exception as e:
         print(f"❌ 聊天处理错误: {e}")
         import traceback
         traceback.print_exc()
-        return None, f'内部错误: {str(e)}', 500, tid
+        return None, f'内部错误: {str(e)}', 500, tid, None
 
 
 def stream_chat_events(user_message: str, client_session_id: Optional[str] = None,
@@ -863,6 +865,14 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
     yield "data: [DONE]\n\n"
 
 
+def _valid_pending_action(values: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """线程状态 values 中的确认卡片请求（伪工具钩子写入）；结构无效返回 None。"""
+    pa = values.get("pending_action")
+    if isinstance(pa, dict) and pa.get("type"):
+        return pa
+    return None
+
+
 def _fetch_thread_final(thread_id: str) -> Dict[str, Any]:
     """回读线程状态中的最终响应与确认卡片请求。"""
     try:
@@ -873,8 +883,8 @@ def _fetch_thread_final(thread_id: str) -> Dict[str, Any]:
             resp = values.get("response")
             if isinstance(resp, str) and resp.strip():
                 out["response"] = resp
-            pa = values.get("pending_action")
-            if isinstance(pa, dict) and pa.get("type"):
+            pa = _valid_pending_action(values)
+            if pa:
                 out["pending_action"] = pa
             return out
     except Exception as e:

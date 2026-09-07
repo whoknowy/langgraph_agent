@@ -1072,6 +1072,65 @@ class TestBootstrapSecurity:
         assert flags == {"admin": 1, "ops": 0}
 
 
+# ---------------------------------------------------------------- 非流式聊天的确认卡片回读
+
+class TestRunChatPendingAction:
+    """run_chat_sync 第 5 元素 pending_action：非流式通道的确认卡片来源。"""
+
+    CARD = {"type": "book_flight", "flight_no": "CA1061", "cabin": "经济"}
+
+    def _run(self, monkeypatch, state_values=None, run_status=200):
+        import chat_web_service as cws
+
+        class FakeResp:
+            def __init__(self, payload, status=200):
+                self._payload, self.status_code = payload, status
+
+            def json(self):
+                return self._payload
+
+        class FakeRequests:
+            def post(self, url, **kw):
+                return FakeResp({"run_id": "r1"}, run_status)
+
+            def get(self, url, **kw):
+                if "/runs/r1" in url:
+                    return FakeResp({"status": "success"})
+                if url.endswith("/state"):
+                    return FakeResp({"values": state_values or {}})
+                return FakeResp({}, 404)
+
+        monkeypatch.setattr(cws, "requests", FakeRequests())
+        monkeypatch.setattr(cws, "ensure_assistant_exists", lambda: True)
+        monkeypatch.setattr(cws, "ensure_thread_exists", lambda sid, mid: ("thread-t", None))
+        monkeypatch.setattr(cws, "_assistant_id", "fake-assistant")
+        return cws.run_chat_sync("你好", "thread-t", "M1")
+
+    def test_success_returns_card_as_fifth_element(self, monkeypatch):
+        text, err, code, tid, pa = self._run(
+            monkeypatch, {"response": "好的", "pending_action": self.CARD})
+        assert err is None and tid == "thread-t" and text == "好的"
+        assert pa == self.CARD
+
+    def test_success_without_card_returns_none(self, monkeypatch):
+        _, err, _, _, pa = self._run(monkeypatch, {"response": "仅文本"})
+        assert err is None and pa is None
+
+    def test_card_without_type_is_rejected(self, monkeypatch):
+        _, _, _, _, pa = self._run(monkeypatch, {"pending_action": {"flight_no": "CA1061"}})
+        assert pa is None
+
+    def test_run_failure_keeps_tuple_shape(self, monkeypatch):
+        _, err, code, _, pa = self._run(monkeypatch, run_status=500)
+        assert err and code == 500 and pa is None
+
+    def test_valid_pending_action_direct(self):
+        from chat_web_service import _valid_pending_action
+        assert _valid_pending_action({"pending_action": self.CARD}) == self.CARD
+        assert _valid_pending_action({"pending_action": "book_flight"}) is None
+        assert _valid_pending_action({}) is None
+
+
 # ---------------------------------------------------------------- 直接运行入口
 
 if __name__ == "__main__":

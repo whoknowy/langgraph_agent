@@ -108,6 +108,7 @@ def _local_chat_response(user_message: str, session_id: str):
             'response': result.get('response', ''),
             'session_id': session_id,
             'thread_id': session_id,
+            'pending_action': result.get('pending_action'),
             'local_fallback': True
         })
     except Exception as e:
@@ -135,8 +136,8 @@ def chat():
         user_message = (data.get('message') or '').strip()
         client_session_id = data.get('session_id', 'default')
 
-        ai_text, err_msg, http_code, tid = run_chat_sync(user_message, client_session_id,
-                                                         member_id=member.get('member_id'))
+        ai_text, err_msg, http_code, tid, pending_action = run_chat_sync(
+            user_message, client_session_id, member_id=member.get('member_id'))
         if err_msg in ('无法创建或找到助手', '无法创建线程'):
             return _local_chat_response(user_message, client_session_id)
         if err_msg:
@@ -146,6 +147,7 @@ def chat():
             'response': ai_text,
             'session_id': tid,
             'thread_id': tid,
+            'pending_action': pending_action,
         })
     except Exception as e:
         print(f"❌ 聊天处理错误: {e}")
