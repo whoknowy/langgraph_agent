@@ -103,6 +103,9 @@ python -c "import web_app; web_app.app.run(host='0.0.0.0', port=5000, debug=Fals
 
 ## 多端接入（安卓 / 微信小程序）
 
+> **给多端开发同学的完整接口文档见 [docs/API.md](docs/API.md)**（认证方式、全部接口字段、
+> 订票/值机/退改三大业务流程教程、常见踩坑），接前必读。
+
 公网只暴露 Flask（5000）一个端口，LangGraph 服务（2024）无鉴权，必须留在内网。
 内网穿透示例：NATAPP web 隧道 → `127.0.0.1:5000`（免费版限频 90 次/分钟，
 全站无轮询，3~4 人演示够用；正式发布需已备案 HTTPS 域名配置小程序合法域名）。
@@ -149,6 +152,7 @@ python -c "import web_app; web_app.app.run(host='0.0.0.0', port=5000, debug=Fals
 │   └── tools.py                  #   @tool 注册表（智能体可调用的全部工具）
 ├── templates/index.html          # 客户端（登录/流式聊天/工具动画/确认卡片/我的数据）
 ├── templates/admin.html          # 管理端
+├── docs/API.md                   # 多端接入接口文档（安卓/小程序同学必读）
 ├── test_regression.py            # 客户端回归
 ├── test_admin.py                 # 管理端回归
 └── data/flight_system.db         # 本地数据库（自动生成）
