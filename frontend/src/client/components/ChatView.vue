@@ -536,32 +536,6 @@ async function confirmSeat() {
 }
 .msg-body.plain { white-space: pre-wrap; }
 
-/* Markdown 表格 / 常用排版（与原前端一致，增强可读性） */
-.msg-body.md-body table {
-  width: 100%; border-collapse: collapse; margin: 8px 0 12px; font-size: 13px;
-}
-.msg-body.md-body th,
-.msg-body.md-body td {
-  padding: 7px 10px; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border);
-  text-align: left; white-space: nowrap;
-}
-.msg-body.md-body th:last-child,
-.msg-body.md-body td:last-child { border-right: none; }
-.msg-body.md-body th {
-  background: #f0f4ff; color: #1e40af; font-weight: 600;
-}
-.msg-body.md-body tbody tr:nth-child(even) { background: #fafbff; }
-.msg-body.md-body tbody tr:hover { background: #eef2ff; }
-.msg-body.md-body p { margin: 0.5em 0; }
-.msg-body.md-body ul, .msg-body.md-body ol { margin: 0.5em 0; padding-left: 1.4em; }
-.msg-body.md-body li { margin: 0.2em 0; }
-.msg-body.md-body code { background: #eef2ff; color: #4338ca; padding: 1px 5px; border-radius: 4px; }
-.msg-body.md-body pre { background: #0f172a; color: #e2e8f0; border-radius: 10px; padding: 12px; overflow-x: auto; }
-.msg-body.md-body pre code { background: transparent; color: inherit; padding: 0; }
-.msg-body.md-body blockquote {
-  border-left: 3px solid #bfdbfe; background: #eff6ff; border-radius: 0 8px 8px 0;
-  margin: 0.6em 0; padding: 4px 12px; color: #1e3a8a;
-}
 .msg-row.user .msg-body { background: var(--primary); color: #fff; }
 .tool-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
 .tool-chip {
@@ -621,4 +595,33 @@ async function confirmSeat() {
 .seat-legend .occupied { background: #e5e7eb; }
 .seat-legend .selected { background: var(--primary); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+</style>
+<style>
+/* Markdown 表格 / 常用排版（全局样式，作用于 v-html 注入的表格元素） */
+.chat-view .msg-body.md-body table {
+  width: 100%; border-collapse: collapse; margin: 8px 0 12px; font-size: 13px;
+}
+.chat-view .msg-body.md-body th,
+.chat-view .msg-body.md-body td {
+  padding: 7px 10px; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border);
+  text-align: left; white-space: nowrap;
+}
+.chat-view .msg-body.md-body th:last-child,
+.chat-view .msg-body.md-body td:last-child { border-right: none; }
+.chat-view .msg-body.md-body th {
+  background: #f0f4ff; color: #1e40af; font-weight: 600;
+}
+.chat-view .msg-body.md-body tbody tr:nth-child(even) { background: #fafbff; }
+.chat-view .msg-body.md-body tbody tr:hover { background: #eef2ff; }
+.chat-view .msg-body.md-body p { margin: 0.5em 0; }
+.chat-view .msg-body.md-body ul,
+.chat-view .msg-body.md-body ol { margin: 0.5em 0; padding-left: 1.4em; }
+.chat-view .msg-body.md-body li { margin: 0.2em 0; }
+.chat-view .msg-body.md-body code { background: #eef2ff; color: #4338ca; padding: 1px 5px; border-radius: 4px; }
+.chat-view .msg-body.md-body pre { background: #0f172a; color: #e2e8f0; border-radius: 10px; padding: 12px; overflow-x: auto; }
+.chat-view .msg-body.md-body pre code { background: transparent; color: inherit; padding: 0; }
+.chat-view .msg-body.md-body blockquote {
+  border-left: 3px solid #bfdbfe; background: #eff6ff; border-radius: 0 8px 8px 0;
+  margin: 0.6em 0; padding: 4px 12px; color: #1e3a8a;
+}
 </style>
