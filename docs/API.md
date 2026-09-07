@@ -30,7 +30,7 @@
 |---|---|---|
 | 本机调试 | `http://127.0.0.1:5000` | 后端跑在自己电脑上 |
 | 局域网联调 | `http://<后端同学的内网IP>:5000` | 同一 WiFi 下手机直连电脑（Windows 需放行 5000 端口防火墙） |
-| 公网联调 | `https://xxxx.natappfree.cc` 之类 | 后端同学用 NATAPP 映射 5000 端口生成的地址，**用 HTTPS** |
+| 公网联调 | `http://flightagent.nat100.top` | **固定公网地址**（NATAPP 付费隧道 → 后端 5000 端口），同一地址也支持 https；对外演示和多端联调用它 |
 
 > 本文档下面所有示例统一用 `http://127.0.0.1:5000` 占位，实际替换成你的 Base URL 即可。
 
@@ -125,7 +125,7 @@ curl http://127.0.0.1:5000/api/me -H "Authorization: Bearer 刚才的token"
 
 ```javascript
 // utils/request.js
-const BASE = 'https://xxxx.natappfree.cc';   // 换成你的 Base URL
+const BASE = 'http://flightagent.nat100.top';   // 固定公网地址（本地调试可换成 http://127.0.0.1:5000）
 const token = () => wx.getStorageSync('token') || '';
 
 function request(path, { method = 'GET', data = {} } = {}) {
@@ -701,7 +701,7 @@ POST /api/checkin {order_no, seat_no:"31A"}
 |---|---|
 | 所有接口都 401 | 请求头没带对：必须是 `Authorization: Bearer <token>`（Bearer 后有空格）；或 token 过期 → 重新登录 |
 | POST 报 400「消息不能为空」之类 | 忘了 `Content-Type: application/json`，后端根本没解析到 body |
-| 小程序真机请求全部失败 | 正式包/真机要求 HTTPS + 已配置的合法域名。开发期在开发者工具勾「不校验合法域名」，真机预览打开调试模式；NATAPP 免费域名**只能开发调试**，正式发布需已备案域名 |
+| 小程序真机请求全部失败 | 正式包/真机要求 HTTPS + 已配置的合法域名。开发期在开发者工具勾「不校验合法域名」，真机预览打开调试模式；`flightagent.nat100.top` 是 NATAPP 付费固定域名（主域已备案），正式包可在小程序后台把 `https://flightagent.nat100.top` 配为 request 合法域名（能否通过以公众平台实际校验为准） |
 | 聊天接口 10 秒就超时 | LLM 生成慢，客户端读超时设 **180 秒**以上（安卓 OkHttp `readTimeout`） |
 | 流式收到一堆 `data: {...}` 不知道怎么结束 | 收到 `data: [DONE]` 这一行才算结束；`done: true` 事件里带全文和 thread_id |
 | 聊天有回复但没弹确认卡片 | `pending_action` 为 null 是正常的（AI 只是回答了没发起操作）；有卡片时非流式看 `pending_action` 字段、流式看 `pending_action` 事件 |

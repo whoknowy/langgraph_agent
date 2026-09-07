@@ -107,8 +107,7 @@ python -c "import web_app; web_app.app.run(host='0.0.0.0', port=5000, debug=Fals
 > 订票/值机/退改三大业务流程教程、常见踩坑），接前必读。
 
 公网只暴露 Flask（5000）一个端口，LangGraph 服务（2024）无鉴权，必须留在内网。
-内网穿透示例：NATAPP web 隧道 → `127.0.0.1:5000`（免费版限频 90 次/分钟，
-全站无轮询，3~4 人演示够用；正式发布需已备案 HTTPS 域名配置小程序合法域名）。
+公网固定地址：`http://flightagent.nat100.top`（NATAPP 付费隧道 → 127.0.0.1:5000）。
 
 ### 认证：JWT Bearer Token（与 Web Cookie 并存）
 
