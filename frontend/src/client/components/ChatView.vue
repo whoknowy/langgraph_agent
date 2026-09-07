@@ -124,7 +124,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, nextTick, reactive } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { api, qs, getMemberToken } from '../../api.js'
@@ -349,7 +349,7 @@ async function streamChat(message) {
 
   const ensureAssistant = () => {
     if (!assistantMsg) {
-      assistantMsg = { role: 'assistant', content: '', toolChips: [], streaming: true }
+      assistantMsg = reactive({ role: 'assistant', content: '', toolChips: [], streaming: true })
       messages.value.push(assistantMsg)
     }
     return assistantMsg
