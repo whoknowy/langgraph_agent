@@ -304,6 +304,7 @@ async function streamChat(message) {
   const toolLabel = (name) => TOOL_LABELS[name] || name
 
   const addToolChip = (name, status = 'running') => {
+    ensureAssistant()
     let chip = toolChips.find(c => c.name === name)
     if (!chip) {
       chip = { name, label: toolLabel(name), status }
