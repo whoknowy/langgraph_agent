@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from flask import Flask, render_template, request, jsonify, session, Response, send_from_directory
+from flask import Flask, request, jsonify, session, Response, send_from_directory
 
 from chat_web_service import (
     run_chat_sync,
@@ -33,12 +33,19 @@ app = Flask(__name__)
 FRONTEND_DIST = Path(__file__).resolve().parent / 'frontend' / 'dist'
 
 
-def _serve_frontend(html_name: str, fallback_template: str):
-    """优先提供 Vue 构建产物；未构建时回退到老的原生 HTML 模板。"""
+def _serve_frontend(html_name: str):
+    """提供 Vue 构建产物；未构建时给出构建提示。"""
     target = FRONTEND_DIST / html_name
     if target.exists():
         return send_from_directory(FRONTEND_DIST, html_name)
-    return render_template(fallback_template)
+    return Response(
+        "<!DOCTYPE html><html lang=\"zh-CN\"><meta charset=\"UTF-8\">"
+        "<title>前端未构建</title><body style=\"font-family:sans-serif;padding:40px\">"
+        "<h2>Vue 前端尚未构建</h2>"
+        "<p>请先执行：<code>cd frontend && npm install && npm run build</code></p>"
+        "</body></html>",
+        mimetype='text/html'
+    )
 
 # Flask 会话签名密钥：生产环境强制显式强密钥（弱值/缺省拒绝启动）；
 # 开发环境缺省或弱值时自动生成并持久化到 data/.flask_secret_key（重启不失效）
@@ -149,7 +156,7 @@ def _local_chat_response(user_message: str, session_id: str):
 @app.route('/')
 def index():
     """主页（对话历史由 LangGraph 线程状态经 /api/sessions 系列接口提供）"""
-    return _serve_frontend('index.html', 'index.html')
+    return _serve_frontend('index.html')
 
 
 @app.route('/assets/<path:filename>')
@@ -713,7 +720,7 @@ def admin_required():
 @app.route('/admin')
 def admin_index():
     """管理平台页面（前端自行检查登录态并显示登录视图）。"""
-    return _serve_frontend('admin.html', 'admin.html')
+    return _serve_frontend('admin.html')
 
 
 @app.route('/admin/api/login', methods=['POST'])

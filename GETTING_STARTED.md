@@ -136,7 +136,7 @@ python -c "from services.db_seed import reset_database; reset_database()"
 | 前端显示「本地兜底 local_fallback」 | 同上，此时走进程内降级图，功能受限但可对话 |
 | LLM 回复报 Connection error | API Key 无效/欠费/网络问题 → 检查 `.env` 与账户余额 |
 | `502/连接拒绝` 访问 5000 | Flask 没启动，或端口被占用（`netstat -ano \| findstr :5000`） |
-| 改了代码但行为没变 | langgraph dev 需**手动重启**才加载新代码（见第四节提示）；Flask 非调试模式模板有缓存，改模板后也要重启 |
+| 改了代码但行为没变 | langgraph dev 需**手动重启**才加载新代码（见第四节提示）；Vue 前端改动后需重新执行 `npm run build` |
 | `database is locked` | SQLite 多进程并发写冲突，重试即可；避免外部工具长时间持有写事务 |
 | 管理员登录 401 | 账号 `admin/admin123` 由种子自动创建；若重置过库会重新生成 |
 

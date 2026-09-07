@@ -159,8 +159,6 @@ python -c "import web_app; web_app.app.run(host='0.0.0.0', port=5000, debug=Fals
 │   ├── src/client/              #   会员端：登录、AI客服、机票预订、值机、登机牌、我的数据
 │   ├── src/admin/               #   管理端：工作台、退款、投诉、航班、订单、会员
 │   └── dist/                    #   npm run build 产物，Flask 自动优先服务
-├── templates/index.html          # 原生 HTML 回退模板（未构建前端时使用）
-├── templates/admin.html          # 管理端回退模板
 ├── docs/API.md                   # 多端接入接口文档（安卓/小程序同学必读）
 ├── test_regression.py            # 客户端回归
 ├── test_admin.py                 # 管理端回归

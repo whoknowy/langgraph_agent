@@ -21,7 +21,7 @@
 - Web 服务（端口 5000）：`.venv/Scripts/python.exe web_app.py`
 - 均在项目根目录后台运行，日志重定向 flask.log / lg_dev.log；
   Windows 下 langgraph dev 对文件监听不稳，改图相关代码后手动重启。
-- Flask 以 debug=True 启动带重载器，改 .py 自动重启；模板即时生效。
+- Flask 以 debug=True 启动带重载器，改 .py 自动重启；前端更新需重新执行 `npm run build`。
 
 ## 终端与编码
 
@@ -29,9 +29,9 @@
 
 ## 前端（Vue 3 工程化）
 
-- 前端源码在 rontend/，Vite 多入口：index.html（会员端）、dmin.html（管理端）。
-- 开发热更新：cd frontend && npm run dev（代理 /api 与 /admin/api 到 Flask 5000）。
-- 改动前端后必须 cd frontend && npm run build，Flask 会优先服务 rontend/dist；未构建时回退老模板。
+- 前端源码在 `frontend/`，Vite 多入口：`index.html`（会员端）、`admin.html`（管理端）。
+- 开发热更新：`cd frontend && npm run dev`（代理 `/api` 与 `/admin/api` 到 Flask 5000）。
+- 改动前端后必须 `cd frontend && npm run build`，Flask 只服务 `frontend/dist`；未构建时会提示先构建。
 
 ## 开发习惯
 
