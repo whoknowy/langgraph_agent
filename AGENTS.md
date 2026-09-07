@@ -29,7 +29,7 @@
 
 ## 前端（Vue 3 工程化）
 
-- 前端源码在 `frontend/`，Vite 多入口：`index.html`（会员端）、`admin.html`（管理端）。
+- 前端源码在 `frontend/`，Vite 多入口：`index.html`（会员端）、`admin.html`（管理端）；UI 组件库为 Element Plus（按需自动导入）。
 - 开发热更新：`cd frontend && npm run dev`（代理 `/api` 与 `/admin/api` 到 Flask 5000）。
 - 改动前端后必须 `cd frontend && npm run build`，Flask 只服务 `frontend/dist`；未构建时会提示先构建。
 
