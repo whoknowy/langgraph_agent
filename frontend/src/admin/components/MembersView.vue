@@ -23,6 +23,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { api } from '../../api.js'
+import { toastError } from '../../ui.js'
 
 const members = ref([])
 const q = ref('')
@@ -35,7 +36,7 @@ async function load() {
   try {
     const d = await api('/admin/api/customers' + (q.value ? '?q=' + encodeURIComponent(q.value) : ''), { admin: true })
     members.value = d.customers || []
-  } catch (e) { alert(e.message) } finally { loading.value = false }
+  } catch (e) { toastError(e.message) } finally { loading.value = false }
 }
 </script>
 

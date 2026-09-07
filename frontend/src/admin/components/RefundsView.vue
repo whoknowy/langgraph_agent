@@ -34,6 +34,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { api } from '../../api.js'
+import { toastError, toastSuccess, promptDialog } from '../../ui.js'
 
 const refunds = ref([])
 const loading = ref(false)
@@ -46,33 +47,33 @@ async function load() {
     const d = await api('/admin/api/refunds', { admin: true })
     refunds.value = d.refunds || []
   } catch (e) {
-    alert(e.message)
+    toastError(e.message)
   } finally {
     loading.value = false
   }
 }
 
 async function approve(r) {
-  const amount = prompt('退款金额（默认全额 ' + r.amount + '）', String(r.amount))
+  const amount = await promptDialog('退款金额（默认全额 ' + r.amount + '）', String(r.amount), '退款金额')
   if (amount === null) return
   try {
     const d = await api('/admin/api/refunds/approve', {
       method: 'POST', body: { order_no: r.order_no, refund_amount: Number(amount) || undefined }, admin: true
     })
-    alert(d.message || '已退款')
+    toastSuccess(d.message || '已退款')
     await load()
-  } catch (e) { alert(e.message) }
+  } catch (e) { toastError(e.message) }
 }
 
 async function reject(r) {
-  const note = prompt('驳回原因（可留空）', '')
+  const note = await promptDialog('驳回原因（可留空）', '', '驳回原因')
   if (note === null) return
   try {
     const d = await api('/admin/api/refunds/reject', {
       method: 'POST', body: { order_no: r.order_no, admin_note: note }, admin: true
     })
-    alert(d.message || '已驳回')
+    toastSuccess(d.message || '已驳回')
     await load()
-  } catch (e) { alert(e.message) }
+  } catch (e) { toastError(e.message) }
 }
 </script>

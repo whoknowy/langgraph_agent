@@ -43,6 +43,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { api, qs } from '../../api.js'
+import { toastError, toastSuccess, promptDialog } from '../../ui.js'
 
 const complaints = ref([])
 const status = ref('')
@@ -56,32 +57,35 @@ async function load() {
   try {
     const d = await api('/admin/api/complaints' + qs({ status: status.value, q: q.value }), { admin: true })
     complaints.value = d.complaints || []
-  } catch (e) { alert(e.message) } finally { loading.value = false }
+  } catch (e) { toastError(e.message) } finally { loading.value = false }
 }
 
 async function resolve(c) {
-  const reply = prompt('处理回复', c.reply || '')
+  const reply = await promptDialog('处理回复', c.reply || '', '处理回复')
   if (reply === null) return
   try {
     await api('/admin/api/complaints/resolve', { method: 'POST', body: { ticket_no: c.ticket_no, reply }, admin: true })
+    toastSuccess('投诉已解决')
     await load()
-  } catch (e) { alert(e.message) }
+  } catch (e) { toastError(e.message) }
 }
 
 async function escalate(c) {
-  const note = prompt('升级备注', '')
+  const note = await promptDialog('升级备注', '', '升级备注')
   if (note === null) return
   try {
     await api('/admin/api/complaints/escalate', { method: 'POST', body: { ticket_no: c.ticket_no, note }, admin: true })
+    toastSuccess('投诉已升级')
     await load()
-  } catch (e) { alert(e.message) }
+  } catch (e) { toastError(e.message) }
 }
 
 async function reopen(c) {
   try {
     await api('/admin/api/complaints/reopen', { method: 'POST', body: { ticket_no: c.ticket_no }, admin: true })
+    toastSuccess('投诉已重新打开')
     await load()
-  } catch (e) { alert(e.message) }
+  } catch (e) { toastError(e.message) }
 }
 </script>
 

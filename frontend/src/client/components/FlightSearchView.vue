@@ -90,6 +90,7 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { api, qs } from '../../api.js'
+import { toastSuccess, toastError } from '../../ui.js'
 
 const form = ref({ departure: '北京', destination: '上海', date: '', cabin: '经济' })
 const flights = ref([])
@@ -173,10 +174,10 @@ async function confirmBook() {
       }})
       orderPanel.created = true
       orderPanel.orderNo = d.order_no
-      alert(`订单 ${d.order_no} 已创建（待支付），金额 ¥${d.total_amount}`)
+      toastSuccess(`订单 ${d.order_no} 已创建（待支付），金额 ¥${d.total_amount}`)
     } else {
       const d = await api('/api/pay', { method: 'POST', body: { order_no: orderPanel.orderNo } })
-      alert(d.message || '支付成功，已出票')
+      toastSuccess(d.message || '支付成功，已出票')
       orderPanel.open = false
     }
   } catch (e) {

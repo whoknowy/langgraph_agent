@@ -47,6 +47,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { api } from '../../api.js'
+import { toastError } from '../../ui.js'
 
 const airports = ref([])
 const airlines = ref([])
@@ -73,7 +74,7 @@ async function addAirport() {
     await api('/admin/api/airports', { method: 'POST', body: { ...airportForm.value }, admin: true })
     airportForm.value = { iata3: '', city_cn: '', city_en: '', lat: 0, lon: 0 }
     await loadAll()
-  } catch (e) { alert(e.message) }
+  } catch (e) { toastError(e.message) }
 }
 
 async function addAirline() {
@@ -81,7 +82,7 @@ async function addAirline() {
     await api('/admin/api/airlines', { method: 'POST', body: { ...airlineForm.value }, admin: true })
     airlineForm.value = { code: '', name_cn: '', is_lcc: false }
     await loadAll()
-  } catch (e) { alert(e.message) }
+  } catch (e) { toastError(e.message) }
 }
 </script>
 

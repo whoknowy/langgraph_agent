@@ -59,6 +59,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { api } from '../../api.js'
+import { toastError, toastSuccess, promptDialog } from '../../ui.js'
 
 const flights = ref([])
 const airlines = ref([])
@@ -90,7 +91,7 @@ async function load() {
   try {
     const d = await api('/admin/api/flights' + (q.value ? '?q=' + encodeURIComponent(q.value) : ''), { admin: true })
     flights.value = d.flights || []
-  } catch (e) { alert(e.message) } finally { loading.value = false }
+  } catch (e) { toastError(e.message) } finally { loading.value = false }
 }
 
 async function create() {
@@ -110,12 +111,12 @@ async function create() {
 }
 
 async function assignGate(f) {
-  const gate = prompt('为 ' + f.flight_no + ' 指派登机口', f.gate || '')
+  const gate = await promptDialog('为 ' + f.flight_no + ' 指派登机口', f.gate || '', '指派登机口')
   if (gate === null) return
   try {
     const d = await api('/admin/api/flights/gate', { method: 'POST', body: { flight_no: f.flight_no, gate }, admin: true })
-    alert(d.message || '已指派')
+    toastSuccess(d.message || '已指派')
     await load()
-  } catch (e) { alert(e.message) }
+  } catch (e) { toastError(e.message) }
 }
 </script>

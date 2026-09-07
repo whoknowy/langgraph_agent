@@ -42,6 +42,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, qs } from '../../api.js'
+import { toastError, toastSuccess, confirmDialog, promptDialog } from '../../ui.js'
 
 const orders = ref([])
 const router = useRouter()
@@ -57,7 +58,7 @@ async function load() {
     const d = await api('/api/my/orders')
     orders.value = d.orders || []
   } catch (e) {
-    alert(e.message)
+    toastError(e.message)
   }
 }
 
@@ -73,10 +74,10 @@ function statusClass(s) {
 async function pay(o) {
   try {
     const d = await api('/api/pay', { method: 'POST', body: { order_no: o.order_no } })
-    alert(d.message || '支付成功')
+    toastSuccess(d.message || '支付成功')
     await load()
   } catch (e) {
-    alert(e.message)
+    toastError(e.message)
   }
 }
 
@@ -88,9 +89,9 @@ function goBoardpass(o) {
 }
 
 async function changeOrder(o) {
-  const newFlight = prompt('请输入新的航班号（同航线、未来日期）', '')
+  const newFlight = await promptDialog('请输入新的航班号（同航线、未来日期）', '', '改签')
   if (!newFlight) return
-  const newDate = prompt('请输入新日期 YYYY-MM-DD', o.flight_date)
+  const newDate = await promptDialog('请输入新日期 YYYY-MM-DD', o.flight_date, '改签日期')
   if (!newDate) return
   try {
     const quote = await api('/api/change_quote' + qs({
@@ -99,33 +100,36 @@ async function changeOrder(o) {
     const diffText = quote.fare_diff > 0
       ? `需补差价 ¥${quote.fare_diff}`
       : (quote.fare_diff < 0 ? `退回差价 ¥${-quote.fare_diff}` : '无差价')
-    if (!confirm(`改签报价：${diffText}\n确认执行改签？`)) return
+    const ok = await confirmDialog(`改签报价：${diffText}`, '确认改签')
+    if (!ok) return
     const d = await api('/api/change', { method: 'POST', body: {
       order_no: o.order_no, new_flight_no: newFlight, new_date: newDate, new_cabin: o.cabin
     }})
-    alert(d.message || '改签成功')
+    toastSuccess(d.message || '改签成功')
     await load()
   } catch (e) {
-    alert(e.message)
+    toastError(e.message)
   }
 }
 
 async function refund(o) {
-  const type = confirm('选择"确定"走自愿退票（按费率即时退款）；选择"取消"走特殊退票（人工审核）。')
+  const voluntary = await confirmDialog('选择"确定"走自愿退票；选择"取消"走特殊退票（人工审核）。', '退票方式')
   try {
-    if (type) {
+    if (voluntary) {
       const quote = await api('/api/refund_quote' + qs({ order_no: o.order_no }))
-      if (!confirm(`票面金额 ¥${quote.amount}，手续费 ¥${quote.fee}，预计到账 ¥${quote.predict_amount}，确认退票？`)) return
+      const ok1 = await confirmDialog(`票面金额 ¥${quote.amount}，手续费 ¥${quote.fee}，预计到账 ¥${quote.predict_amount}`, '确认退票')
+      if (!ok1) return
     } else {
-      if (!confirm('确认提交特殊退票？将进入人工审核队列。')) return
+      const ok2 = await confirmDialog('确认提交特殊退票？将进入人工审核队列。', '特殊退票')
+      if (!ok2) return
     }
     const d = await api('/api/refund', { method: 'POST', body: {
-      order_no: o.order_no, refund_type: type ? 'voluntary' : 'special'
+      order_no: o.order_no, refund_type: voluntary ? 'voluntary' : 'special'
     }})
-    alert(d.message || '退票已提交')
+    toastSuccess(d.message || '退票已提交')
     await load()
   } catch (e) {
-    alert(e.message)
+    toastError(e.message)
   }
 }
 </script>

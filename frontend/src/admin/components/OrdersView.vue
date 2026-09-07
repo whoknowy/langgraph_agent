@@ -40,6 +40,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
+import { toastError } from '../../ui.js'
 import { api, qs } from '../../api.js'
 
 const orders = ref([])
@@ -55,7 +56,7 @@ async function load() {
   try {
     const d = await api('/admin/api/orders' + qs({ status: status.value, q: q.value }), { admin: true })
     orders.value = d.orders || []
-  } catch (e) { alert(e.message) } finally { loading.value = false }
+  } catch (e) { toastError(e.message) } finally { loading.value = false }
 }
 
 function statusType(s) {

@@ -58,6 +58,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { api } from '../../api.js'
+import { toastError } from '../../ui.js'
 
 defineProps({ member: Object })
 
@@ -83,7 +84,7 @@ async function markRead() {
     await api('/api/my/notifications/read', { method: 'POST' })
     notifications.value.unread_count = 0
     notifications.value.items = notifications.value.items.map(n => ({ ...n, is_read: true }))
-  } catch (e) { alert(e.message) }
+  } catch (e) { toastError(e.message) }
 }
 </script>
 

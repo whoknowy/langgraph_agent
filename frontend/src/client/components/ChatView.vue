@@ -128,6 +128,7 @@ import { ref, computed, onMounted, nextTick, reactive } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { api, qs, getMemberToken } from '../../api.js'
+import { toastError, toastSuccess, confirmDialog } from '../../ui.js'
 
 const props = defineProps({ member: Object })
 
@@ -252,7 +253,7 @@ async function loadSession(id) {
 }
 
 async function clearSession(id) {
-  if (!confirm('确定清空此对话？')) return
+  if (!(await confirmDialog('确定清空此对话？', '清空会话'))) return
   try {
     const d = await api(`/api/sessions/${encodeURIComponent(id)}/clear`, { method: 'POST' })
     currentSessionId.value = d.new_thread_id || ('web_' + Date.now())
@@ -260,18 +261,18 @@ async function clearSession(id) {
     pendingAction.value = null
     await loadSessions()
   } catch (e) {
-    alert(e.message)
+    toastError(e.message)
   }
 }
 
 async function deleteSession(id) {
-  if (!confirm('确定删除此会话？')) return
+  if (!(await confirmDialog('确定删除此会话？', '删除会话'))) return
   try {
     await api(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
     if (id === currentSessionId.value) newSession()
     await loadSessions()
   } catch (e) {
-    alert(e.message)
+    toastError(e.message)
   }
 }
 
@@ -438,7 +439,7 @@ async function confirmAction() {
       }})
       messages.value.push({ role: 'assistant', content: `✅ 订单 ${d.order_no} 已创建（待支付），金额 ¥${d.total_amount}`, toolChips: [] })
       pendingAction.value = null
-      if (confirm('订单已创建，是否立即支付？')) {
+      if (await confirmDialog('订单已创建，是否立即支付？', '支付')) {
         await api('/api/pay', { method: 'POST', body: { order_no: d.order_no } })
         messages.value.push({ role: 'assistant', content: `✅ 支付成功，订单 ${d.order_no} 已出票`, toolChips: [] })
       }
@@ -460,7 +461,7 @@ async function confirmAction() {
       seatModal.value = { show: true, map: d.cabins || {}, selected: '', error: '', loading: false, action: a }
     }
   } catch (e) {
-    alert(e.message)
+    toastError(e.message)
   } finally {
     actionLoading.value = false
   }
