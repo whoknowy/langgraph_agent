@@ -61,11 +61,11 @@ def _bind_security_context():
     from flask import g
     from services import security
     if request.path.startswith('/admin'):
-        admin = session.get('admin')
+        admin = _resolve_admin()
         if admin:
             g._admin_security_token = security.set_current_admin(admin.get('username'))
     else:
-        member = session.get('member')
+        member = _resolve_member()
         if member:
             g._member_security_token = security.set_current_member(member.get('member_id'))
 
@@ -84,14 +84,33 @@ def _unbind_security_context(exc):
 
 # --- Flask session 内的本地对话占位（主页模板可能使用）---
 
+def _bearer_payload(expected_typ: str):
+    """从 Authorization: Bearer 头解析 JWT claims（多端通道）；缺失/无效返回 None。"""
+    auth = request.headers.get('Authorization') or ''
+    if not auth.startswith('Bearer '):
+        return None
+    from services import token_auth
+    return token_auth.verify_token(auth[7:].strip(), app.secret_key, expected_typ)
+
+
 def _current_member() -> Dict[str, Any]:
     """当前登录会员（未登录返回空 dict）。"""
     return session.get('member') or {}
 
 
+def _resolve_member() -> Dict[str, Any]:
+    """请求身份解析：优先 Bearer token（安卓/小程序），回退 Cookie 会话（Web）。"""
+    payload = _bearer_payload('member')
+    if payload and payload.get('member_id'):
+        return {'member_id': payload['member_id'],
+                'name': payload.get('name') or '',
+                'level': payload.get('level') or ''}
+    return _current_member()
+
+
 def _require_member():
     """聊天等接口的登录门禁：未登录返回 (None, 401响应)。"""
-    member = _current_member()
+    member = _resolve_member()
     if not member:
         return None, (jsonify({'error': '未登录，请先登录会员账号'}), 401)
     return member, None
@@ -101,7 +120,7 @@ def _local_chat_response(user_message: str, session_id: str):
     """LangGraph 服务未启动时，回退到本地多智能体流程。"""
     try:
         from multi_agent_customer_service import process_customer_query
-        member = _current_member()
+        member = _resolve_member()
         result = process_customer_query(user_message, session_id,
                                         customer_info={"member_id": member.get("member_id")})
         return jsonify({
@@ -256,6 +275,27 @@ def create_new_session():
 
 # --- 会员登录与身份 ---
 
+def _issue_member_token(member: Dict[str, Any]) -> str:
+    """为登录会员签发 JWT（多端通道；Web 端 Cookie 照旧下发）。"""
+    from services import token_auth
+    return token_auth.issue_token({
+        'typ': 'member',
+        'member_id': member.get('member_id'),
+        'name': member.get('name') or '',
+        'level': member.get('level') or '',
+    }, app.secret_key)
+
+
+def _issue_admin_token(admin: Dict[str, Any]) -> str:
+    """为登录管理员签发 JWT。"""
+    from services import token_auth
+    return token_auth.issue_token({
+        'typ': 'admin',
+        'username': admin.get('username'),
+        'name': admin.get('name') or '',
+    }, app.secret_key)
+
+
 @app.route('/api/login', methods=['POST'])
 def login():
     """会员登录：member_id + 手机号后4位（演示级身份校验）。"""
@@ -271,7 +311,8 @@ def login():
             if cust.get('error'):
                 return jsonify({'error': cust['error']}), 401
             session['member'] = {'member_id': cust['member_id'], 'name': cust['name'], 'level': cust['level']}
-            return jsonify({'member': session['member'], 'message': f"欢迎回来，{cust['name']}"})
+            return jsonify({'member': session['member'], 'token': _issue_member_token(session['member']),
+                            'message': f"欢迎回来，{cust['name']}"})
 
         # 模式二：演示账号尾号登录（会员号 + 手机号后4位）
         member_id = (data.get('member_id') or '').strip().upper()
@@ -290,7 +331,8 @@ def login():
             'name': cust['name'],
             'level': cust['level'],
         }
-        return jsonify({'member': session['member'], 'message': f"欢迎回来，{cust['name']}"})
+        return jsonify({'member': session['member'], 'token': _issue_member_token(session['member']),
+                        'message': f"欢迎回来，{cust['name']}"})
     except Exception as e:
         return jsonify({'error': f'登录失败: {str(e)}'}), 500
 
@@ -307,7 +349,7 @@ def register():
         if result.get('error'):
             return jsonify({'error': result['error']}), 400
         session['member'] = {'member_id': result['member_id'], 'name': result['name'], 'level': result['level']}
-        return jsonify({'member': session['member'],
+        return jsonify({'member': session['member'], 'token': _issue_member_token(session['member']),
                         'message': f"注册成功，{result['name']}！你的会员号是 {result['member_id']}"})
     except Exception as e:
         return jsonify({'error': f'注册失败: {str(e)}'}), 500
@@ -322,8 +364,8 @@ def logout():
 
 @app.route('/api/me')
 def me():
-    """当前登录会员"""
-    member = _current_member()
+    """当前登录会员（Bearer / Cookie 双通道）"""
+    member = _resolve_member()
     if not member:
         return jsonify({'member': None}), 401
     return jsonify({'member': member})
@@ -613,13 +655,21 @@ def _current_admin() -> Dict[str, Any]:
     return session.get('admin') or {}
 
 
+def _resolve_admin() -> Dict[str, Any]:
+    """管理端请求身份解析：优先 Bearer token，回退 Cookie 会话。"""
+    payload = _bearer_payload('admin')
+    if payload and payload.get('username'):
+        return {'username': payload['username'], 'name': payload.get('name') or ''}
+    return _current_admin()
+
+
 def admin_required():
     """管理端接口门禁。返回 (admin, denied)。
 
     除登录/改密/自身信息外，must_change_password=1（首次登录或仍在使用默认
     口令）时拦截一切管理操作——先改密再干活。
     """
-    admin = _current_admin()
+    admin = _resolve_admin()
     if not admin:
         return None, (jsonify({'error': '未登录管理员账号'}), 401)
     if _admin_must_change_password(admin.get('username')):
@@ -655,7 +705,7 @@ def admin_login():
 
         session['admin'] = {'username': row['username'], 'name': row['name'],
                             'must_change_password': bool(row['must_change_password'])}
-        return jsonify({'admin': session['admin']})
+        return jsonify({'admin': session['admin'], 'token': _issue_admin_token(session['admin'])})
     except Exception as e:
         return jsonify({'error': f'登录失败: {str(e)}'}), 500
 
@@ -668,7 +718,7 @@ def admin_logout():
 
 @app.route('/admin/api/me')
 def admin_me():
-    admin = _current_admin()
+    admin = _resolve_admin()
     if not admin:
         return jsonify({'admin': None}), 401
     # must_change_password 以数据库实时值为准（其他端登录改密/启动巡检置位后同步感知）
@@ -694,7 +744,7 @@ def _admin_must_change_password(username: str) -> bool:
 @app.route('/admin/api/change_password', methods=['POST'])
 def admin_change_password():
     """管理员修改自己的密码（首次登录强制改密走这里）。"""
-    admin = _current_admin()
+    admin = _resolve_admin()
     if not admin:
         return jsonify({'error': '未登录管理员账号'}), 401
     data = request.get_json() or {}

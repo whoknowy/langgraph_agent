@@ -1,5 +1,6 @@
 # Web 层
 flask>=3.0
+PyJWT>=2.8                       # 多端 token 登录（services/token_auth.py）
 
 # LangGraph 多智能体编排
 langgraph>=1.0

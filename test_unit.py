@@ -1131,6 +1131,55 @@ class TestRunChatPendingAction:
         assert _valid_pending_action({}) is None
 
 
+# ---------------------------------------------------------------- JWT token 登录
+
+class TestTokenAuth:
+    """services/token_auth.py：签发/校验/过期/篡改/类型隔离。"""
+
+    SECRET = "unit-test-secret-key"
+    CLAIMS = {"typ": "member", "member_id": "M21", "name": "张三", "level": "金卡"}
+
+    def test_roundtrip(self):
+        from services import token_auth
+        tok = token_auth.issue_token(self.CLAIMS, self.SECRET)
+        claims = token_auth.verify_token(tok, self.SECRET, "member")
+        assert claims and claims["member_id"] == "M21" and claims["typ"] == "member"
+
+    def test_typ_isolation(self):
+        from services import token_auth
+        tok = token_auth.issue_token(self.CLAIMS, self.SECRET)
+        assert token_auth.verify_token(tok, self.SECRET, "admin") is None
+        admin_tok = token_auth.issue_token({"typ": "admin", "username": "admin", "name": "运营"}, self.SECRET)
+        assert token_auth.verify_token(admin_tok, self.SECRET, "admin")["username"] == "admin"
+        assert token_auth.verify_token(admin_tok, self.SECRET, "member") is None
+
+    def test_expired_rejected(self):
+        from services import token_auth
+        tok = token_auth.issue_token(self.CLAIMS, self.SECRET, ttl=-10)
+        assert token_auth.verify_token(tok, self.SECRET, "member") is None
+
+    def test_tampered_and_garbage_rejected(self):
+        from services import token_auth
+        tok = token_auth.issue_token(self.CLAIMS, self.SECRET)
+        assert token_auth.verify_token(tok[:-3] + "xyz", self.SECRET, "member") is None
+        assert token_auth.verify_token("not-a-jwt", self.SECRET, "member") is None
+        assert token_auth.verify_token("", self.SECRET, "member") is None
+        assert token_auth.verify_token(tok, "", "member") is None
+
+    def test_wrong_secret_rejected(self):
+        from services import token_auth
+        tok = token_auth.issue_token(self.CLAIMS, self.SECRET)
+        assert token_auth.verify_token(tok, "another-secret", "member") is None
+
+    def test_ttl_written_into_claims(self):
+        import time as _time
+        from services import token_auth
+        tok = token_auth.issue_token(self.CLAIMS, self.SECRET, ttl=3600)
+        claims = token_auth.verify_token(tok, self.SECRET, "member")
+        assert claims["exp"] - claims["iat"] == 3600
+        assert claims["iat"] <= int(_time.time())
+
+
 # ---------------------------------------------------------------- 直接运行入口
 
 if __name__ == "__main__":

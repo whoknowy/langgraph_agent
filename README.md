@@ -93,13 +93,40 @@ python -c "import web_app; web_app.app.run(host='0.0.0.0', port=5000, debug=Fals
 
 | 层级 | 命令 | 耗时 | Token | 何时跑 |
 |---|---|---|---|---|
-| 单元测试 | `python -m pytest test_unit.py -q` | ~5秒 | **0** | **每次改代码后随便跑**（费率/状态机/注册/越权/通知/搜索解析/标题/趋势聚合/值机选座等 92 用例，独立临时库） |
+| 单元测试 | `python -m pytest test_unit.py -q` | ~5秒 | **0** | **每次改代码后随便跑**（费率/状态机/注册/越权/通知/搜索解析/标题/趋势聚合/值机选座/JWT 等 121 用例，独立临时库） |
 | 管理端回归 | `python test_admin.py` | ~1分钟 | ≈0（纯 REST+DB） | 涉及管理端/订单流改动时 |
 | 客户端回归 | `python test_regression.py --go` | ~10分钟 | **高**（20+ 轮真实 LLM 对话） | 仅在演示前/里程碑，且经明确确认后 |
 
 **Token 纪律**：客户端回归默认被门禁阻止，需显式 `--go`（或 `REGRESSION_GO=1`）才会运行；
 不带参数执行只打印零 token 替代方案提示。日常迭代循环：改代码 → `pytest test_unit.py`
 秒级验证 → 手测界面 → 提交；`test_regression.py` 留到关键节点，且跑之前先问一句。
+
+## 多端接入（安卓 / 微信小程序）
+
+公网只暴露 Flask（5000）一个端口，LangGraph 服务（2024）无鉴权，必须留在内网。
+内网穿透示例：NATAPP web 隧道 → `127.0.0.1:5000`（免费版限频 90 次/分钟，
+全站无轮询，3~4 人演示够用；正式发布需已备案 HTTPS 域名配置小程序合法域名）。
+
+### 认证：JWT Bearer Token（与 Web Cookie 并存）
+
+1. 登录拿 token：`POST /api/login`（或 `/api/register`、`/admin/api/login`），响应体含 `token`；
+2. 之后每个请求带请求头 `Authorization: Bearer <token>`；
+3. Web 端 Cookie 会话照常可用，两通道等价互为回退；token 有效期 7 天，收到 401 重新登录即可。
+
+### 常用接口
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/chat` | 非流式对话（小程序推荐），响应含 `response` / `pending_action` |
+| POST | `/api/chat/stream` | SSE 流式对话（`text/event-stream`，安卓用 OkHttp 流式读） |
+| GET / DELETE | `/api/sessions`、`/api/sessions/<id>` | 会话列表 / 详情（含 `conversation_history`）/ 删除；另有 `/clear`、`/api/new_session` |
+| POST | `/api/book` `/api/pay` `/api/change` `/api/refund` | 确认卡片对应的下单 / 支付 / 退改写接口 |
+| GET / POST | `/api/checkin/seats` `/api/checkin` `/api/checkin/boardpass` | 座位图 / 值机改座 / 登机牌 |
+| GET | `/api/my/orders` `/api/my/complaints` `/api/my/notifications` | 我的数据（拉取式，无推送） |
+
+- `pending_action` 非空即表示智能体发起了确认卡片（订票/退改/选座），客户端展示卡片，
+  用户确认后调用对应写接口；SSE 通道在流结束时以同名事件下发，语义一致；
+- 微信小程序不支持流式读取，直接用非流式 `/api/chat` 即可拿全量结果。
 
 ## 项目结构
 
@@ -117,6 +144,7 @@ python -c "import web_app; web_app.app.run(host='0.0.0.0', port=5000, debug=Fals
 │   ├── flight_repo.py            #   航班/订单/退改签/投诉（含归属校验、费率规则）
 │   ├── admin_repo.py             #   管理端数据操作
 │   ├── security.py               #   受信身份通道 + 归属硬校验
+│   ├── token_auth.py             #   JWT 签发/校验（多端 Bearer 通道）
 │   ├── lifecycle.py              #   起飞→「已使用」后台任务
 │   └── tools.py                  #   @tool 注册表（智能体可调用的全部工具）
 ├── templates/index.html          # 客户端（登录/流式聊天/工具动画/确认卡片/我的数据）
