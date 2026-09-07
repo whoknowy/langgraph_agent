@@ -71,7 +71,10 @@ onMounted(async () => {
   } catch (e) { console.warn(e) }
   try {
     const d = await api('/api/my/notifications')
-    notifications.value = d
+    notifications.value = {
+      items: d.notifications || [],
+      unread_count: d.unread_count || 0
+    }
   } catch (e) { console.warn(e) }
 })
 
