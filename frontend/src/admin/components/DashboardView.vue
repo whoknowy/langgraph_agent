@@ -80,8 +80,8 @@ function routeWidth(v) {
 .stat-card .num { font-size: 28px; font-weight: 700; }
 .stat-card .num.warn { color: var(--danger); }
 .stat-card .lbl { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
-.trend-chart { display: flex; align-items: flex-end; gap: 8px; height: 170px; padding: 18px 4px 0; }
-.trend-col { flex: 1; display: flex; flex-direction: column; align-items: center; }
+.trend-chart { display: flex; align-items: stretch; gap: 8px; height: 170px; padding: 18px 4px 0; }
+.trend-col { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; }
 .trend-bars { flex: 1; display: flex; align-items: flex-end; gap: 3px; width: 100%; justify-content: center; }
 .bar { width: 14px; border-radius: 4px 4px 0 0; min-height: 2px; }
 .bar-order { background: var(--primary); }
