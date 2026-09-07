@@ -2,8 +2,8 @@
 
 设计要点：
 - 座位库存按（航班号+日期）首次访问时懒生成：商务 1-3 排（A C | D F）、
-  经济 31-55 排（A B C | D E F）；以 random.Random(航班号+日期) 确定性
-  预占约 30% 座位，模拟真实航班的已占座位；
+  经济 31-55 排（A B C | D E F）；所有座位初始为空闲，
+  只有真实值机成功后才标记为已占，不再生成模拟已占座位；
 - 值机不改动订单状态机（已出票值机后仍是已出票）：值机信息独立存 checkins 表，
   改签/退票时由 flight_repo 自动取消值机并释放座位（延迟导入避免循环依赖）；
 - 写路径全部校验登录身份与订单归属；写库不经过 LLM。
@@ -18,7 +18,7 @@ BUSINESS_ROWS = range(1, 4)        # 商务舱 1-3 排
 BUSINESS_COLS = ("A", "C", "D", "F")
 ECON_ROWS = range(31, 56)          # 经济舱 31-55 排
 ECON_COLS = ("A", "B", "C", "D", "E", "F")
-PREOCCUPY_RATIO = 0.3              # 懒生成时的确定性预占比例
+
 
 CHECKIN_OPEN_HOURS = 24            # 起飞前 24 小时开放值机
 CHECKIN_CLOSE_MINUTES = 45         # 起飞前 45 分钟截止值机
@@ -39,19 +39,24 @@ def _layout(cabin: str):
 
 
 def _ensure_seats(conn, flight_no: str, flight_date: str) -> None:
-    """座位懒生成（幂等）：首次访问该航班+日期时建满并确定性预占。"""
+    """座位懒生成（幂等）：首次访问该航班+日期时建满，全部初始为空闲。"""
     flight_no, flight_date = _norm(flight_no), _norm(flight_date)
     n = conn.execute("SELECT COUNT(*) FROM seats WHERE flight_no = ? AND flight_date = ?",
                      (flight_no, flight_date)).fetchone()[0]
     if n:
+        # 兼容已生成数据库：释放无真实订单的模拟占用
+        conn.execute(
+            "UPDATE seats SET status = 'free', order_no = NULL "
+            "WHERE flight_no = ? AND flight_date = ? AND status = 'occupied' AND order_no IS NULL",
+            (flight_no, flight_date))
         return
-    rnd = random.Random(f"{flight_no}-{flight_date}")
+
     rows = []
     for cabin in ("商务", "经济"):
         row_ids, cols = _layout(cabin)
         for r in row_ids:
             for c in cols:
-                occupied = rnd.random() < PREOCCUPY_RATIO
+                occupied = False  # 初始全部空闲，不再模拟已占
                 rows.append((flight_no, flight_date, f"{r}{c}", cabin,
                              "occupied" if occupied else "free"))
     conn.executemany(

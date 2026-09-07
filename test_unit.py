@@ -791,8 +791,12 @@ class TestCheckinFlow:
     def test_checkin_rejects_occupied_seat(self):
         from services import checkin_repo
         flight_no, fdate = self._add_flight_order("K3")
-        seat = self._pick_seat(flight_no, fdate, want="occupied")
-        assert "已被占用" in checkin_repo.do_checkin("K3", "M1001", seat)["error"]
+        seat = self._pick_seat(flight_no, fdate, want="free")
+        r1 = checkin_repo.do_checkin("K3", "M1001", seat)
+        assert r1.get("success"), r1
+        self._add_flight_order("K3B", member_id="M1002", flight_no=flight_no)
+        r2 = checkin_repo.do_checkin("K3B", "M1002", seat)
+        assert "已被占用" in r2["error"]
 
     def test_checkin_rejects_wrong_cabin(self):
         from services import checkin_repo
