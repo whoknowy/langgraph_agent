@@ -60,6 +60,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { api, qs } from '../../api.js'
 
 const orders = ref([])
@@ -70,12 +71,19 @@ const error = ref('')
 
 const boardedOrders = computed(() => orders.value.filter(o => o.checked_in && o.checkin_seat))
 
+const route = useRoute()
+
 onMounted(async () => {
   try {
     const d = await api('/api/my/orders')
     orders.value = d.orders || []
-    if (boardedOrders.value.length) {
-      selectedOrderNo.value = boardedOrders.value[0].order_no
+    const routeNo = route.query.order_no
+    const preferred = routeNo
+      ? boardedOrders.value.find(o => o.order_no === routeNo)
+      : null
+    const target = preferred || boardedOrders.value[0]
+    if (target) {
+      selectedOrderNo.value = target.order_no
       await loadBoardPass()
     } else {
       error.value = '暂无已值机订单，请先值机选座'

@@ -18,6 +18,7 @@
             <div class="session-preview">{{ s.title || s.last_user_question || '新对话' }}</div>
             <div class="session-meta">{{ s.message_count || 0 }} 条 · {{ s.created_at || '' }}</div>
           </div>
+          <button class="session-del" title="清空" @click.stop="clearSession(s.session_id)">↺</button>
           <button class="session-del" title="删除" @click.stop="deleteSession(s.session_id)">×</button>
         </div>
         <div v-if="!sessions.length" class="empty">暂无会话</div>
@@ -219,6 +220,19 @@ async function loadSession(id) {
     scrollBottom()
   } catch (e) {
     console.warn(e)
+  }
+}
+
+async function clearSession(id) {
+  if (!confirm('确定清空此对话？')) return
+  try {
+    const d = await api(`/api/sessions/${encodeURIComponent(id)}/clear`, { method: 'POST' })
+    currentSessionId.value = d.new_thread_id || ('web_' + Date.now())
+    messages.value = []
+    pendingAction.value = null
+    await loadSessions()
+  } catch (e) {
+    alert(e.message)
   }
 }
 

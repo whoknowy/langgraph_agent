@@ -64,6 +64,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { api, qs } from '../../api.js'
 
 const orders = ref([])
@@ -91,12 +92,19 @@ const filteredCabins = computed(() => {
   return cabins
 })
 
+const route = useRoute()
+
 onMounted(async () => {
   try {
     const d = await api('/api/my/orders')
     orders.value = d.orders || []
-    if (checkableOrders.value.length) {
-      selectedOrderNo.value = checkableOrders.value[0].order_no
+    const routeNo = route.query.order_no
+    const preferred = routeNo
+      ? checkableOrders.value.find(o => o.order_no === routeNo)
+      : null
+    const target = preferred || checkableOrders.value[0]
+    if (target) {
+      selectedOrderNo.value = target.order_no
       await loadSeatMap()
     }
   } catch (e) {
