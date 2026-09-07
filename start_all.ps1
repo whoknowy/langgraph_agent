@@ -23,6 +23,15 @@ function Wait-Up($url, $name, $seconds) {
     Write-Host "  [警告] $name 在 $seconds 秒内未就绪，请看它的日志窗口排查" -ForegroundColor Yellow
 }
 
+# 若 Vue 构建产物缺失，自动执行一次前端构建
+if (-not (Test-Path "$proj\frontend\dist\index.html")) {
+    Write-Host "`n[0/3] 构建 Vue 3 前端..." -ForegroundColor Cyan
+    Push-Location "$proj\frontend"
+    npm install --no-audit --no-fund
+    npm run build
+    Pop-Location
+}
+
 Write-Host "`n[1/3] LangGraph 智能体服务（端口 2024）" -ForegroundColor Cyan
 if (Test-Up "http://127.0.0.1:2024/ok") {
     Write-Host "  已在运行，跳过" -ForegroundColor DarkGray

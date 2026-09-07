@@ -3,9 +3,7 @@
 多智能体航空客服系统（LangGraph × ReAct 真实工具调用 × SQLite 真实数据）。
 接手前先读 README.md 与 GETTING_STARTED.md；本文档只讲"怎么干活"。
 
-## Token 纪律（最重要）
-
-LLM 调用消耗真实 token，一切验证优先零 token 手段：
+## Token 纪律
 
 1. **默认只跑 `python -m pytest test_unit.py -q`**（秒级、0 token、69 用例，独立临时库）。
 2. 涉及管理端/订单流改动 → `python test_admin.py`（纯 REST+DB，≈0 token）。
@@ -24,6 +22,16 @@ LLM 调用消耗真实 token，一切验证优先零 token 手段：
 - 均在项目根目录后台运行，日志重定向 flask.log / lg_dev.log；
   Windows 下 langgraph dev 对文件监听不稳，改图相关代码后手动重启。
 - Flask 以 debug=True 启动带重载器，改 .py 自动重启；模板即时生效。
+
+## 终端与编码
+
+- Windows 下 agent 优先使用 PowerShell 7（`pwsh`），文本读写统一采用 UTF-8，避免与 Windows PowerShell 5.1 默认编码混用导致中文乱码。
+
+## 前端（Vue 3 工程化）
+
+- 前端源码在 rontend/，Vite 多入口：index.html（会员端）、dmin.html（管理端）。
+- 开发热更新：cd frontend && npm run dev（代理 /api 与 /admin/api 到 Flask 5000）。
+- 改动前端后必须 cd frontend && npm run build，Flask 会优先服务 rontend/dist；未构建时回退老模板。
 
 ## 开发习惯
 

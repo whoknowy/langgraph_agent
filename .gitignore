@@ -397,3 +397,4 @@ data/
 .langgraph_api/
 _tmp_*.json
 gui-test-screenshots/
+AGENTS.md

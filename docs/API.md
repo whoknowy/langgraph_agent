@@ -207,6 +207,7 @@ token 有效期 7 天。过期后所有接口返回 **401**。统一处理方案
 | 会话 | DELETE | `/api/sessions/{id}` | 删除会话 | 是 |
 | 会话 | POST | `/api/sessions/{id}/clear` | 清空会话（返回新线程 id） | 是 |
 | 会话 | POST | `/api/new_session` | 生成一个本地会话号（可忽略，见 4.3.5） | 是 |
+| 订票 | GET | `/api/flights/search` | 客户端航班搜索（出发/到达/日期） | 是 |
 | 订票 | GET | `/api/booking_quote` | 订票报价（卡片展示） | 是 |
 | 订票 | POST | `/api/book` | 创建订单（待支付） | 是 |
 | 订票 | POST | `/api/pay` | 支付（待支付 → 已出票） | 是 |
@@ -406,6 +407,22 @@ while (source.readUtf8Line()?.also { line ->
   "flight_no": "CA1061", "airline": "中国国航", "route": "北京-上海",
   "dep_time": "06:40", "flight_date": "2026-09-08", "cabin": "经济",
   "passengers": 1, "unit_price": 600, "total_amount": 600
+}
+```
+
+#### 4.4.1.1 航班搜索 `GET /api/flights/search?departure=北京&destination=上海&date=2026-09-08`
+
+供 Vue 客户端机票预订页直查航班列表（与 AI 的 search_flights 工具同一数据源）。需登录。
+
+成功：
+
+```json
+{
+  "departure": "北京", "destination": "上海", "date": "2026-09-08", "count": 3,
+  "flights": [
+    { "flight_no": "CA1061", "airline": "中国国航", "dep_time": "06:40", "arr_time": "08:55",
+      "aircraft": "A320neo", "date": "2026-09-08", "prices": { "经济": 680, "商务": 1710 } }
+  ]
 }
 ```
 

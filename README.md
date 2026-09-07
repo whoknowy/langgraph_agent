@@ -71,13 +71,19 @@ final_response → END
 # 1. 安装依赖（建议 Python 3.10+，可用 venv）
 pip install -r requirements.txt
 
-# 2. 配置环境变量
+# 2. 构建 Vue 3 前端（一次性；开发时可用 npm run dev 热更新）
+cd frontend
+npm install
+npm run build
+cd ..
+
+# 3. 配置环境变量
 cp .env.example .env        # 填入你的 OPENAI_API_KEY（DeepSeek/SiliconFlow 均可）
 
-# 3. 启动 LangGraph 服务（智能体运行时，端口 2024）
+# 4. 启动 LangGraph 服务（智能体运行时，端口 2024）
 langgraph dev --no-browser --no-reload
 
-# 4. 启动 Web 服务（端口 5000；同时拉起订单生命周期后台任务）
+# 5. 启动 Web 服务（端口 5000；同时拉起订单生命周期后台任务）
 python -c "import web_app; web_app.app.run(host='0.0.0.0', port=5000, debug=False)"
 ```
 
@@ -149,8 +155,12 @@ python -c "import web_app; web_app.app.run(host='0.0.0.0', port=5000, debug=Fals
 │   ├── token_auth.py             #   JWT 签发/校验（多端 Bearer 通道）
 │   ├── lifecycle.py              #   起飞→「已使用」后台任务
 │   └── tools.py                  #   @tool 注册表（智能体可调用的全部工具）
-├── templates/index.html          # 客户端（登录/流式聊天/工具动画/确认卡片/我的数据）
-├── templates/admin.html          # 管理端
+├── frontend/                     # Vue 3 + Vite 工程化前端（客户端 / 管理端两个入口）
+│   ├── src/client/              #   会员端：登录、AI客服、机票预订、值机、登机牌、我的数据
+│   ├── src/admin/               #   管理端：工作台、退款、投诉、航班、订单、会员
+│   └── dist/                    #   npm run build 产物，Flask 自动优先服务
+├── templates/index.html          # 原生 HTML 回退模板（未构建前端时使用）
+├── templates/admin.html          # 管理端回退模板
 ├── docs/API.md                   # 多端接入接口文档（安卓/小程序同学必读）
 ├── test_regression.py            # 客户端回归
 ├── test_admin.py                 # 管理端回归

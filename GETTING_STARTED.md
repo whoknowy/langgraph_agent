@@ -26,6 +26,12 @@ source .venv/Scripts/activate        # Windows Git Bash
 
 # 3. 安装依赖
 pip install -r requirements.txt
+
+# 4. 构建 Vue 3 前端
+cd frontend
+npm install
+npm run build
+cd ..
 ```
 
 ## 三、配置 .env

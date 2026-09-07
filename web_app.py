@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from flask import Flask, render_template, request, jsonify, session, Response
+from flask import Flask, render_template, request, jsonify, session, Response, send_from_directory
 
 from chat_web_service import (
     run_chat_sync,
@@ -30,6 +30,15 @@ from config import *  # noqa: E402,F401,F403
 from services.bootstrap_security import resolve_flask_secret
 
 app = Flask(__name__)
+FRONTEND_DIST = Path(__file__).resolve().parent / 'frontend' / 'dist'
+
+
+def _serve_frontend(html_name: str, fallback_template: str):
+    """优先提供 Vue 构建产物；未构建时回退到老的原生 HTML 模板。"""
+    target = FRONTEND_DIST / html_name
+    if target.exists():
+        return send_from_directory(FRONTEND_DIST, html_name)
+    return render_template(fallback_template)
 
 # Flask 会话签名密钥：生产环境强制显式强密钥（弱值/缺省拒绝启动）；
 # 开发环境缺省或弱值时自动生成并持久化到 data/.flask_secret_key（重启不失效）
@@ -140,8 +149,13 @@ def _local_chat_response(user_message: str, session_id: str):
 @app.route('/')
 def index():
     """主页（对话历史由 LangGraph 线程状态经 /api/sessions 系列接口提供）"""
-    return render_template('index.html')
+    return _serve_frontend('index.html', 'index.html')
 
+
+@app.route('/assets/<path:filename>')
+def frontend_assets(filename):
+    """Vue 构建产物静态资源。"""
+    return send_from_directory(FRONTEND_DIST / 'assets', filename)
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
@@ -533,6 +547,25 @@ def my_orders():
         return jsonify({'error': f'查询订单失败: {str(e)}'}), 500
 
 
+# --- 航班搜索（客户端直查，支持机票预订页） ---
+
+@app.route('/api/flights/search')
+def api_flights_search():
+    """按出发/到达城市与日期搜索航班（机票预订页使用）。"""
+    try:
+        member, denied = _require_member()
+        if denied:
+            return denied
+        from services import flight_repo
+        dep = request.args.get('departure', '').strip()
+        arr = request.args.get('destination', '').strip()
+        date = request.args.get('date', '').strip()
+        result = flight_repo.search_flights(dep, arr, date or None)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': f'航班搜索失败: {str(e)}'}), 500
+
+
 # --- 值机选座 / 登机牌（REST 写库，不经 LLM） ---
 
 @app.route('/api/checkin/seats')
@@ -680,7 +713,7 @@ def admin_required():
 @app.route('/admin')
 def admin_index():
     """管理平台页面（前端自行检查登录态并显示登录视图）。"""
-    return render_template('admin.html')
+    return _serve_frontend('admin.html', 'admin.html')
 
 
 @app.route('/admin/api/login', methods=['POST'])
