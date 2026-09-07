@@ -41,7 +41,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { api } from '../../api.js'
+import { api, qs } from '../../api.js'
 
 const orders = ref([])
 const router = useRouter()
@@ -93,6 +93,13 @@ async function changeOrder(o) {
   const newDate = prompt('请输入新日期 YYYY-MM-DD', o.flight_date)
   if (!newDate) return
   try {
+    const quote = await api('/api/change_quote' + qs({
+      order_no: o.order_no, new_flight_no: newFlight, new_date: newDate, new_cabin: o.cabin
+    }))
+    const diffText = quote.fare_diff > 0
+      ? `需补差价 ¥${quote.fare_diff}`
+      : (quote.fare_diff < 0 ? `退回差价 ¥${-quote.fare_diff}` : '无差价')
+    if (!confirm(`改签报价：${diffText}\n确认执行改签？`)) return
     const d = await api('/api/change', { method: 'POST', body: {
       order_no: o.order_no, new_flight_no: newFlight, new_date: newDate, new_cabin: o.cabin
     }})
@@ -106,6 +113,12 @@ async function changeOrder(o) {
 async function refund(o) {
   const type = confirm('选择"确定"走自愿退票（按费率即时退款）；选择"取消"走特殊退票（人工审核）。')
   try {
+    if (type) {
+      const quote = await api('/api/refund_quote' + qs({ order_no: o.order_no }))
+      if (!confirm(`票面金额 ¥${quote.amount}，手续费 ¥${quote.fee}，预计到账 ¥${quote.predict_amount}，确认退票？`)) return
+    } else {
+      if (!confirm('确认提交特殊退票？将进入人工审核队列。')) return
+    }
     const d = await api('/api/refund', { method: 'POST', body: {
       order_no: o.order_no, refund_type: type ? 'voluntary' : 'special'
     }})
