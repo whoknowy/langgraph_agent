@@ -2,15 +2,30 @@
   <div>
     <h2 class="page-title">工作台</h2>
     <div class="stat-grid">
-      <div class="card stat-card"><div class="num warn">{{ stats.pending_refunds ?? '-' }}</div><div class="lbl">待处理退款</div></div>
-      <div class="card stat-card"><div class="num warn">{{ stats.pending_complaints ?? '-' }}</div><div class="lbl">待处理投诉</div></div>
-      <div class="card stat-card"><div class="num">{{ stats.flights_on_sale ?? '-' }}</div><div class="lbl">在售航班</div></div>
-      <div class="card stat-card"><div class="num">{{ stats.today_orders ?? '-' }}</div><div class="lbl">今日新增订单</div></div>
-      <div class="card stat-card"><div class="num">{{ stats.today_checkins ?? '-' }}</div><div class="lbl">今日值机</div></div>
+      <el-card shadow="never" class="stat-card">
+        <div class="num warn">{{ stats.pending_refunds ?? '-' }}</div>
+        <div class="lbl">待处理退款</div>
+      </el-card>
+      <el-card shadow="never" class="stat-card">
+        <div class="num warn">{{ stats.pending_complaints ?? '-' }}</div>
+        <div class="lbl">待处理投诉</div>
+      </el-card>
+      <el-card shadow="never" class="stat-card">
+        <div class="num">{{ stats.flights_on_sale ?? '-' }}</div>
+        <div class="lbl">在售航班</div>
+      </el-card>
+      <el-card shadow="never" class="stat-card">
+        <div class="num">{{ stats.today_orders ?? '-' }}</div>
+        <div class="lbl">今日新增订单</div>
+      </el-card>
+      <el-card shadow="never" class="stat-card">
+        <div class="num">{{ stats.today_checkins ?? '-' }}</div>
+        <div class="lbl">今日值机</div>
+      </el-card>
     </div>
 
-    <div class="card">
-      <div class="section-title">近 7 天订单 / 退款趋势</div>
+    <el-card shadow="never" style="margin-top:16px">
+      <template #header>近 7 天订单 / 退款趋势</template>
       <div class="trend-chart">
         <div v-for="(d, i) in trend.days" :key="d" class="trend-col">
           <div class="trend-bars">
@@ -21,10 +36,10 @@
         </div>
       </div>
       <div class="chart-legend"><span><i class="lg lg-order"></i>订单量</span><span><i class="lg lg-refund"></i>退款量</span></div>
-    </div>
+    </el-card>
 
-    <div class="card">
-      <div class="section-title">热门航线 Top5</div>
+    <el-card shadow="never" style="margin-top:16px">
+      <template #header>热门航线 Top5</template>
       <div v-if="trend.top_routes && trend.top_routes.length" class="route-list">
         <div v-for="r in trend.top_routes" :key="r.route" class="route-row">
           <span class="route-name">{{ r.route }}</span>
@@ -33,7 +48,7 @@
         </div>
       </div>
       <div v-else class="empty">暂无热门航线数据</div>
-    </div>
+    </el-card>
   </div>
 </template>
 
@@ -61,6 +76,7 @@ function routeWidth(v) {
 
 <style scoped>
 .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; margin-bottom: 16px; }
+.stat-card :deep(.el-card__body) { padding: 18px; }
 .stat-card .num { font-size: 28px; font-weight: 700; }
 .stat-card .num.warn { color: var(--danger); }
 .stat-card .lbl { font-size: 13px; color: var(--text-muted); margin-top: 4px; }

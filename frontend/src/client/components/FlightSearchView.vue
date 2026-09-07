@@ -1,35 +1,33 @@
 <template>
   <div>
     <h2 class="page-title">机票预订</h2>
-    <div class="card search-card">
-      <div class="form-row">
-        <div class="form-field">
-          <label>出发城市</label>
-          <input v-model="form.departure" placeholder="北京" />
-        </div>
-        <div class="form-field">
-          <label>到达城市</label>
-          <input v-model="form.destination" placeholder="上海" />
-        </div>
-        <div class="form-field">
-          <label>日期</label>
-          <input v-model="form.date" type="date" />
-        </div>
-        <div class="form-field">
-          <label>舱位</label>
-          <select v-model="form.cabin">
-            <option value="经济">经济舱</option>
-            <option value="商务">商务舱</option>
-          </select>
-        </div>
-        <button class="btn btn-primary" :disabled="loading" @click="search">{{ loading ? '搜索中…' : '搜索航班' }}</button>
-      </div>
-      <p v-if="error" class="error-text" style="margin-top:8px">{{ error }}</p>
-    </div>
+    <el-card shadow="never" class="search-card">
+      <el-form inline @submit.prevent>
+        <el-form-item label="出发城市">
+          <el-input v-model="form.departure" placeholder="北京" style="width: 140px" />
+        </el-form-item>
+        <el-form-item label="到达城市">
+          <el-input v-model="form.destination" placeholder="上海" style="width: 140px" />
+        </el-form-item>
+        <el-form-item label="日期">
+          <el-date-picker v-model="form.date" type="date" value-format="YYYY-MM-DD" placeholder="选择日期" style="width: 160px" />
+        </el-form-item>
+        <el-form-item label="舱位">
+          <el-select v-model="form.cabin" style="width: 120px">
+            <el-option value="经济" label="经济舱" />
+            <el-option value="商务" label="商务舱" />
+          </el-select>
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" :loading="loading" @click="search">{{ loading ? '搜索中…' : '搜索航班' }}</el-button>
+        </el-form-item>
+      </el-form>
+      <el-alert v-if="error" :title="error" type="error" :closable="false" />
+    </el-card>
 
     <div class="flight-list">
-      <div v-if="!flights.length && !loading" class="empty card">暂无航班，试试其他航线/日期</div>
-      <div v-for="f in flights" :key="f.flight_no" class="card flight-card">
+      <el-empty v-if="!flights.length && !loading" description="暂无航班，试试其他航线/日期" />
+      <el-card v-for="f in flights" :key="f.flight_no" shadow="hover" class="flight-card">
         <div class="flight-airline">{{ f.airline }} <span class="muted">{{ f.flight_no }}</span></div>
         <div class="flight-route">
           <div class="time">
@@ -49,51 +47,43 @@
         <div class="flight-price">
           <div class="price">¥{{ (f.prices && f.prices[form.cabin]) || '--' }}</div>
           <div class="cabin">{{ form.cabin }}舱</div>
-          <button class="btn btn-primary btn-sm" @click="openBooking(f)">订票</button>
+          <el-button type="primary" size="small" @click="openBooking(f)">订票</el-button>
         </div>
-      </div>
+      </el-card>
     </div>
 
-    <!-- 订单确认/支付 -->
-    <div v-if="orderPanel.open" class="modal-mask" @click.self="orderPanel.open = false">
-      <div class="modal-box order-box">
-        <div class="modal-title">订单确认</div>
-        <div v-if="orderPanel.loading" class="empty">加载报价中…</div>
-        <template v-else>
-          <div class="order-flight">
-            <div class="order-route">{{ orderPanel.flight.airline }} {{ orderPanel.flight.flight_no }}</div>
-            <div class="muted">{{ orderPanel.flight.date }} {{ orderPanel.flight.dep_time }} - {{ orderPanel.flight.arr_time }}</div>
-          </div>
-          <div class="order-prices">
-            <div class="row"><span>舱位 / 人数</span><span>{{ orderPanel.cabin }} × {{ orderPanel.passengers }}人</span></div>
-            <div class="row"><span>单价</span><span>¥{{ orderPanel.quote.unit_price }}</span></div>
-            <div class="row total"><span>总价</span><span>¥{{ orderPanel.quote.total_amount }}</span></div>
-          </div>
-          <div class="order-passenger">
-            <label>乘机人姓名</label>
-            <input v-model="orderPanel.passengerName" placeholder="乘机人姓名" />
-          </div>
-          <div class="pay-methods">
-            <label>支付方式</label>
-            <div class="pay-methods-grid">
-              <label class="pay-method" :class="{ active: orderPanel.payMethod === 'balance' }">
-                <input type="radio" value="balance" v-model="orderPanel.payMethod" /> 会员余额
-              </label>
-              <label class="pay-method" :class="{ active: orderPanel.payMethod === 'card' }">
-                <input type="radio" value="card" v-model="orderPanel.payMethod" /> 银行卡
-              </label>
-            </div>
-          </div>
-          <div v-if="orderPanel.error" class="error-text">{{ orderPanel.error }}</div>
-          <div class="modal-actions">
-            <button class="btn" @click="orderPanel.open = false">取消</button>
-            <button class="btn btn-primary" :disabled="orderPanel.submitting" @click="confirmBook">
-              {{ orderPanel.submitting ? '处理中…' : (orderPanel.created ? '去支付' : '确认下单') }}
-            </button>
-          </div>
-        </template>
-      </div>
-    </div>
+    <el-dialog v-model="orderPanel.open" title="订单确认" width="480px">
+      <div v-if="orderPanel.loading" class="empty">加载报价中…</div>
+      <template v-else>
+        <div class="order-flight">
+          <div class="order-route">{{ orderPanel.flight.airline }} {{ orderPanel.flight.flight_no }}</div>
+          <div class="muted">{{ orderPanel.flight.date }} {{ orderPanel.flight.dep_time }} - {{ orderPanel.flight.arr_time }}</div>
+        </div>
+        <el-descriptions :column="1" border style="margin: 12px 0">
+          <el-descriptions-item label="舱位 / 人数">{{ orderPanel.cabin }} × {{ orderPanel.passengers }}人</el-descriptions-item>
+          <el-descriptions-item label="单价">¥{{ orderPanel.quote.unit_price }}</el-descriptions-item>
+          <el-descriptions-item label="总价"><strong style="color:var(--primary)">¥{{ orderPanel.quote.total_amount }}</strong></el-descriptions-item>
+        </el-descriptions>
+        <div class="order-passenger">
+          <label>乘机人姓名</label>
+          <el-input v-model="orderPanel.passengerName" placeholder="乘机人姓名" />
+        </div>
+        <div class="pay-methods">
+          <label>支付方式</label>
+          <el-radio-group v-model="orderPanel.payMethod">
+            <el-radio value="balance">会员余额</el-radio>
+            <el-radio value="card">银行卡</el-radio>
+          </el-radio-group>
+        </div>
+        <el-alert v-if="orderPanel.error" :title="orderPanel.error" type="error" :closable="false" style="margin-top:12px" />
+      </template>
+      <template #footer>
+        <el-button @click="orderPanel.open = false">取消</el-button>
+        <el-button type="primary" :loading="orderPanel.submitting" @click="confirmBook">
+          {{ orderPanel.submitting ? '处理中…' : (orderPanel.created ? '去支付' : '确认下单') }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -188,7 +178,6 @@ async function confirmBook() {
       const d = await api('/api/pay', { method: 'POST', body: { order_no: orderPanel.orderNo } })
       alert(d.message || '支付成功，已出票')
       orderPanel.open = false
-      // 刷新订单页数据
     }
   } catch (e) {
     orderPanel.error = e.message
@@ -201,7 +190,7 @@ async function confirmBook() {
 <style scoped>
 .search-card { margin-bottom: 16px; }
 .flight-list { display: flex; flex-direction: column; gap: 12px; }
-.flight-card { display: flex; align-items: center; gap: 20px; }
+.flight-card :deep(.el-card__body) { display: flex; align-items: center; gap: 20px; padding: 16px 20px; }
 .flight-airline { width: 180px; font-weight: 600; }
 .flight-route { flex: 1; display: flex; align-items: center; justify-content: center; gap: 30px; }
 .time { text-align: center; }
@@ -214,22 +203,8 @@ async function confirmBook() {
 .flight-price { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 .price { font-size: 20px; color: var(--danger); font-weight: 700; }
 .cabin { font-size: 12px; color: var(--text-muted); }
-
-.order-box { width: 460px; }
 .order-flight { background: #f0f6ff; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
 .order-route { font-weight: 700; margin-bottom: 4px; }
-.order-prices { margin-bottom: 14px; }
-.order-prices .row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed var(--border); font-size: 14px; }
-.order-prices .row.total { font-weight: 700; font-size: 16px; color: var(--primary); }
-.order-passenger { margin-bottom: 14px; }
-.order-passenger label { display: block; font-size: 12.5px; color: var(--text-muted); margin-bottom: 5px; }
-.order-passenger input { width: 100%; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; }
-.pay-methods label { display: block; font-size: 12.5px; color: var(--text-muted); margin-bottom: 5px; }
-.pay-methods-grid { display: flex; gap: 10px; }
-.pay-method {
-  flex: 1; border: 1px solid var(--border); border-radius: 8px; padding: 10px; text-align: center; font-size: 13px;
-  color: var(--text); display: flex; align-items: center; justify-content: center; gap: 6px;
-}
-.pay-method.active { border-color: var(--primary); background: var(--primary-light); color: var(--primary); }
-.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+.order-passenger { margin: 12px 0; }
+.order-passenger label, .pay-methods label { display: block; font-size: 12.5px; color: var(--text-muted); margin-bottom: 5px; }
 </style>

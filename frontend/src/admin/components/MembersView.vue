@@ -1,21 +1,22 @@
 <template>
   <div>
     <h2 class="page-title">会员</h2>
-    <div class="card">
+    <el-card shadow="never">
       <div class="toolbar">
-        <input v-model="q" placeholder="搜索会员号/姓名/手机号" @keyup.enter="load" />
-        <button class="btn" @click="load">查询</button>
+        <el-input v-model="q" placeholder="搜索会员号/姓名/手机号" clearable style="width: 280px" @keyup.enter="load" />
+        <el-button @click="load">查询</el-button>
       </div>
-      <table class="data-table">
-        <thead><tr><th>会员号</th><th>姓名</th><th>手机号</th><th>邮箱</th><th>等级</th></tr></thead>
-        <tbody>
-          <tr v-for="m in members" :key="m.member_id">
-            <td>{{ m.member_id }}</td><td>{{ m.name }}</td><td>{{ m.phone }}</td><td>{{ m.email || '-' }}</td><td><span class="badge badge-info">{{ m.level }}</span></td>
-          </tr>
-          <tr v-if="!members.length"><td colspan="5" class="empty">暂无会员</td></tr>
-        </tbody>
-      </table>
-    </div>
+      <el-table :data="members" v-loading="loading" style="width: 100%">
+        <el-table-column prop="member_id" label="会员号" width="120" />
+        <el-table-column prop="name" label="姓名" width="140" />
+        <el-table-column prop="phone" label="手机号" width="150" />
+        <el-table-column prop="email" label="邮箱" min-width="180" />
+        <el-table-column label="等级" width="120">
+          <template #default="{ row }"><el-tag type="primary">{{ row.level }}</el-tag></template>
+        </el-table-column>
+        <template #empty><el-empty description="暂无会员" /></template>
+      </el-table>
+    </el-card>
   </div>
 </template>
 
@@ -25,18 +26,19 @@ import { api } from '../../api.js'
 
 const members = ref([])
 const q = ref('')
+const loading = ref(false)
 
 onMounted(load)
 
 async function load() {
+  loading.value = true
   try {
     const d = await api('/admin/api/customers' + (q.value ? '?q=' + encodeURIComponent(q.value) : ''), { admin: true })
     members.value = d.customers || []
-  } catch (e) { alert(e.message) }
+  } catch (e) { alert(e.message) } finally { loading.value = false }
 }
 </script>
 
 <style scoped>
-.toolbar { display: flex; gap: 8px; margin-bottom: 12px; }
-.toolbar input { padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; outline: none; }
+.toolbar { display: flex; gap: 10px; margin-bottom: 14px; }
 </style>

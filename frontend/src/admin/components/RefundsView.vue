@@ -1,28 +1,33 @@
 <template>
   <div>
     <h2 class="page-title">退款处理（退票中队列）</h2>
-    <div class="card">
-      <table class="data-table">
-        <thead>
-          <tr><th>订单号</th><th>会员</th><th>航班</th><th>航线</th><th>金额</th><th>状态</th><th>操作</th></tr>
-        </thead>
-        <tbody>
-          <tr v-for="r in refunds" :key="r.order_no">
-            <td>{{ r.order_no }}</td>
-            <td>{{ r.member_name }} ({{ r.member_id }})</td>
-            <td>{{ r.airline }} {{ r.flight_no }}</td>
-            <td>{{ r.dep_city }}-{{ r.arr_city }} {{ r.flight_date }}</td>
-            <td>¥{{ r.amount }}</td>
-            <td><span class="badge badge-pending">{{ r.status }}</span></td>
-            <td>
-              <button class="btn btn-success btn-sm" @click="approve(r)">同意退款</button>
-              <button class="btn btn-danger btn-sm" @click="reject(r)">驳回</button>
-            </td>
-          </tr>
-          <tr v-if="!refunds.length"><td colspan="7" class="empty">暂无待处理退款</td></tr>
-        </tbody>
-      </table>
-    </div>
+    <el-card shadow="never">
+      <el-table :data="refunds" v-loading="loading" style="width: 100%">
+        <el-table-column prop="order_no" label="订单号" min-width="140" />
+        <el-table-column label="会员" min-width="180">
+          <template #default="{ row }">{{ row.member_name }} ({{ row.member_id }})</template>
+        </el-table-column>
+        <el-table-column label="航班" min-width="170">
+          <template #default="{ row }">{{ row.airline }} {{ row.flight_no }}</template>
+        </el-table-column>
+        <el-table-column label="航线" min-width="180">
+          <template #default="{ row }">{{ row.dep_city }}-{{ row.arr_city }} {{ row.flight_date }}</template>
+        </el-table-column>
+        <el-table-column label="金额" width="100">
+          <template #default="{ row }">¥{{ row.amount }}</template>
+        </el-table-column>
+        <el-table-column label="状态" width="120">
+          <template #default="{ row }"><el-tag type="warning">{{ row.status }}</el-tag></template>
+        </el-table-column>
+        <el-table-column label="操作" width="200" fixed="right">
+          <template #default="{ row }">
+            <el-button type="success" size="small" @click="approve(row)">同意退款</el-button>
+            <el-button type="danger" size="small" plain @click="reject(row)">驳回</el-button>
+          </template>
+        </el-table-column>
+        <template #empty><el-empty description="暂无待处理退款" /></template>
+      </el-table>
+    </el-card>
   </div>
 </template>
 
@@ -31,14 +36,20 @@ import { ref, onMounted } from 'vue'
 import { api } from '../../api.js'
 
 const refunds = ref([])
+const loading = ref(false)
 
 onMounted(load)
 
 async function load() {
+  loading.value = true
   try {
     const d = await api('/admin/api/refunds', { admin: true })
     refunds.value = d.refunds || []
-  } catch (e) { alert(e.message) }
+  } catch (e) {
+    alert(e.message)
+  } finally {
+    loading.value = false
+  }
 }
 
 async function approve(r) {

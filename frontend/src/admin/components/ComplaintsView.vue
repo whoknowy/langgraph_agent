@@ -1,41 +1,42 @@
 <template>
   <div>
     <h2 class="page-title">投诉处理</h2>
-    <div class="card">
+    <el-card shadow="never">
       <div class="toolbar">
-        <select v-model="status" @change="load">
-          <option value="">全部状态</option>
-          <option value="处理中">处理中</option>
-          <option value="已升级">已升级</option>
-          <option value="已解决">已解决</option>
-        </select>
-        <input v-model="q" placeholder="搜索单号/会员号/姓名" @keyup.enter="load" />
-        <button class="btn" @click="load">查询</button>
+        <el-select v-model="status" placeholder="全部状态" style="width: 140px" @change="load">
+          <el-option value="">全部状态</el-option>
+          <el-option value="处理中">处理中</el-option>
+          <el-option value="已升级">已升级</el-option>
+          <el-option value="已解决">已解决</el-option>
+        </el-select>
+        <el-input v-model="q" placeholder="搜索单号/会员号/姓名" clearable style="width: 240px" @keyup.enter="load" />
+        <el-button @click="load">查询</el-button>
       </div>
-      <table class="data-table">
-        <thead>
-          <tr><th>单号</th><th>会员</th><th>内容</th><th>状态</th><th>创建时间</th><th>回复</th><th>操作</th></tr>
-        </thead>
-        <tbody>
-          <tr v-for="c in complaints" :key="c.ticket_no">
-            <td>{{ c.ticket_no }}</td>
-            <td>{{ c.member_name }} ({{ c.member_id }})</td>
-            <td class="wrap">{{ c.content }}</td>
-            <td><span class="badge" :class="c.status === '已解决' ? 'badge-ok' : 'badge-pending'">{{ c.status }}</span></td>
-            <td>{{ c.created_at }}</td>
-            <td class="wrap">{{ c.reply || '-' }}</td>
-            <td>
-              <template v-if="c.status === '处理中' || c.status === '已升级'">
-                <button class="btn btn-success btn-sm" @click="resolve(c)">解决</button>
-                <button v-if="c.status === '处理中'" class="btn btn-sm" @click="escalate(c)">升级</button>
-              </template>
-              <button v-if="c.status === '已解决'" class="btn btn-sm" @click="reopen(c)">重新打开</button>
-            </td>
-          </tr>
-          <tr v-if="!complaints.length"><td colspan="7" class="empty">暂无投诉</td></tr>
-        </tbody>
-      </table>
-    </div>
+      <el-table :data="complaints" v-loading="loading" style="width: 100%">
+        <el-table-column prop="ticket_no" label="单号" width="110" />
+        <el-table-column label="会员" min-width="160">
+          <template #default="{ row }">{{ row.member_name }} ({{ row.member_id }})</template>
+        </el-table-column>
+        <el-table-column prop="content" label="内容" min-width="220" show-overflow-tooltip />
+        <el-table-column label="状态" width="110">
+          <template #default="{ row }">
+            <el-tag :type="row.status === '已解决' ? 'success' : 'warning'">{{ row.status }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="created_at" label="创建时间" min-width="170" />
+        <el-table-column prop="reply" label="回复" min-width="160" show-overflow-tooltip />
+        <el-table-column label="操作" width="220" fixed="right">
+          <template #default="{ row }">
+            <template v-if="row.status === '处理中' || row.status === '已升级'">
+              <el-button type="success" size="small" @click="resolve(row)">解决</el-button>
+              <el-button v-if="row.status === '处理中'" size="small" @click="escalate(row)">升级</el-button>
+            </template>
+            <el-button v-if="row.status === '已解决'" size="small" @click="reopen(row)">重新打开</el-button>
+          </template>
+        </el-table-column>
+        <template #empty><el-empty description="暂无投诉" /></template>
+      </el-table>
+    </el-card>
   </div>
 </template>
 
@@ -46,14 +47,16 @@ import { api, qs } from '../../api.js'
 const complaints = ref([])
 const status = ref('')
 const q = ref('')
+const loading = ref(false)
 
 onMounted(load)
 
 async function load() {
+  loading.value = true
   try {
     const d = await api('/admin/api/complaints' + qs({ status: status.value, q: q.value }), { admin: true })
     complaints.value = d.complaints || []
-  } catch (e) { alert(e.message) }
+  } catch (e) { alert(e.message) } finally { loading.value = false }
 }
 
 async function resolve(c) {
@@ -83,7 +86,5 @@ async function reopen(c) {
 </script>
 
 <style scoped>
-.toolbar { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
-.toolbar select, .toolbar input { padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; outline: none; }
-.wrap { white-space: normal; max-width: 260px; }
+.toolbar { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
 </style>

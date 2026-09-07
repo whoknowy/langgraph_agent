@@ -20,66 +20,42 @@
     </div>
 
     <div class="login-card">
-      <div class="tabs">
-        <button :class="{ active: mode === 'suffix' }" @click="mode = 'suffix'">会员登录</button>
-        <button :class="{ active: mode === 'password' }" @click="mode = 'password'">账号登录</button>
-        <button :class="{ active: mode === 'register' }" @click="mode = 'register'">注册</button>
-      </div>
+      <el-tabs v-model="mode" stretch>
+        <el-tab-pane label="会员登录" name="suffix" />
+        <el-tab-pane label="账号登录" name="password" />
+        <el-tab-pane label="注册" name="register" />
+      </el-tabs>
 
-      <template v-if="mode === 'suffix'">
-        <div class="field">
-          <label>会员号</label>
-          <input v-model="memberId" placeholder="如 M1001" maxlength="10" />
-        </div>
-        <div class="field">
-          <label>手机号后4位</label>
-          <input v-model="phoneSuffix" type="password" placeholder="手机尾号" maxlength="4" />
-        </div>
-        <button class="login-btn" :disabled="loading" @click="doLogin">登 录</button>
-      </template>
+      <el-form v-if="mode === 'suffix'" label-position="top" @submit.prevent="doLogin">
+        <el-form-item label="会员号"><el-input v-model="memberId" placeholder="如 M1001" maxlength="10" /></el-form-item>
+        <el-form-item label="手机号后4位"><el-input v-model="phoneSuffix" type="password" placeholder="手机尾号" maxlength="4" show-password /></el-form-item>
+        <el-button type="primary" class="login-btn" :loading="loading" @click="doLogin">登 录</el-button>
+      </el-form>
 
-      <template v-else-if="mode === 'password'">
-        <div class="field">
-          <label>会员号 / 手机号</label>
-          <input v-model="account" placeholder="账号" />
-        </div>
-        <div class="field">
-          <label>密码</label>
-          <input v-model="password" type="password" placeholder="密码" />
-        </div>
-        <button class="login-btn" :disabled="loading" @click="doPasswordLogin">登 录</button>
-      </template>
+      <el-form v-else-if="mode === 'password'" label-position="top" @submit.prevent="doPasswordLogin">
+        <el-form-item label="会员号 / 手机号"><el-input v-model="account" placeholder="账号" /></el-form-item>
+        <el-form-item label="密码"><el-input v-model="password" type="password" placeholder="密码" show-password /></el-form-item>
+        <el-button type="primary" class="login-btn" :loading="loading" @click="doPasswordLogin">登 录</el-button>
+      </el-form>
 
-      <template v-else>
-        <div class="field">
-          <label>姓名</label>
-          <input v-model="regForm.name" placeholder="姓名" maxlength="20" />
-        </div>
-        <div class="field">
-          <label>手机号</label>
-          <input v-model="regForm.phone" placeholder="11位手机号" maxlength="11" />
-        </div>
-        <div class="field">
-          <label>密码</label>
-          <input v-model="regForm.password" type="password" placeholder="至少6位" />
-        </div>
-        <div class="field">
-          <label>确认密码</label>
-          <input v-model="regForm.password2" type="password" placeholder="确认密码" />
-        </div>
-        <button class="login-btn" :disabled="loading" @click="doRegister">注册并登录</button>
-      </template>
+      <el-form v-else label-position="top" @submit.prevent="doRegister">
+        <el-form-item label="姓名"><el-input v-model="regForm.name" placeholder="姓名" maxlength="20" /></el-form-item>
+        <el-form-item label="手机号"><el-input v-model="regForm.phone" placeholder="11位手机号" maxlength="11" /></el-form-item>
+        <el-form-item label="密码"><el-input v-model="regForm.password" type="password" placeholder="至少6位" show-password /></el-form-item>
+        <el-form-item label="确认密码"><el-input v-model="regForm.password2" type="password" placeholder="确认密码" show-password /></el-form-item>
+        <el-button type="primary" class="login-btn" :loading="loading" @click="doRegister">注册并登录</el-button>
+      </el-form>
 
-      <p v-if="error" class="error-text">{{ error }}</p>
-      <p v-if="message" class="success-text">{{ message }}</p>
+      <el-alert v-if="error" :title="error" type="error" :closable="false" style="margin-top: 12px" />
+      <el-alert v-if="message" :title="message" type="success" :closable="false" style="margin-top: 12px" />
 
       <div class="demo-box" v-if="mode !== 'register'">
         <p class="muted">演示账号（点击自动填入）：</p>
         <div class="demo-items">
-          <button v-for="acc in demoAccounts" :key="acc.member_id" class="demo-item" @click="fillDemo(acc)">
+          <el-button v-for="acc in demoAccounts" :key="acc.member_id" class="demo-item" @click="fillDemo(acc)">
             <strong>{{ acc.member_id }}</strong>
             <span>{{ acc.name }} · {{ acc.phone_suffix }}</span>
-          </button>
+          </el-button>
         </div>
       </div>
     </div>
@@ -106,9 +82,7 @@ onMounted(async () => {
   try {
     const d = await api('/api/demo_accounts')
     demoAccounts.value = d.accounts || []
-  } catch (e) {
-    console.warn(e)
-  }
+  } catch (e) { console.warn(e) }
 })
 
 function fillDemo(acc) {
@@ -133,11 +107,7 @@ async function doLogin() {
     error.value = ''
     message.value = d.message || '登录成功'
     emit('login', d)
-  } catch (e) {
-    error.value = e.message
-  } finally {
-    loading.value = false
-  }
+  } catch (e) { error.value = e.message } finally { loading.value = false }
 }
 
 async function doPasswordLogin() {
@@ -156,11 +126,7 @@ async function doPasswordLogin() {
     error.value = ''
     message.value = d.message || '登录成功'
     emit('login', d)
-  } catch (e) {
-    error.value = e.message
-  } finally {
-    loading.value = false
-  }
+  } catch (e) { error.value = e.message } finally { loading.value = false }
 }
 
 async function doRegister() {
@@ -184,11 +150,7 @@ async function doRegister() {
     error.value = ''
     message.value = d.message || '注册成功'
     emit('login', d)
-  } catch (e) {
-    error.value = e.message
-  } finally {
-    loading.value = false
-  }
+  } catch (e) { error.value = e.message } finally { loading.value = false }
 }
 </script>
 
@@ -223,33 +185,13 @@ async function doRegister() {
   background: rgba(255,255,255,.18); border-radius: 8px;
 }
 .login-card {
-  width: 380px; background: #fff; border-radius: 18px; padding: 26px 24px;
+  width: 400px; background: #fff; border-radius: 18px; padding: 20px 24px 26px;
   box-shadow: 0 30px 80px rgba(0,0,0,.3);
 }
-.tabs { display: flex; gap: 6px; margin-bottom: 20px; }
-.tabs button {
-  flex: 1; padding: 9px; border: none; background: #f3f4f6; border-radius: 9px;
-  color: var(--text-muted); font-size: 14px; font-weight: 500;
-}
-.tabs button.active { background: var(--primary); color: #fff; }
-.field { margin-bottom: 12px; }
-.field label { display: block; font-size: 12.5px; color: var(--text-muted); margin-bottom: 5px; }
-.field input {
-  width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; background: #fafafa; outline: none;
-}
-.field input:focus { border-color: var(--primary); background: #fff; }
-.login-btn {
-  width: 100%; padding: 11px; border: none; border-radius: 10px; background: var(--primary);
-  color: #fff; font-size: 15px; font-weight: 600; margin-top: 4px;
-}
-.login-btn:disabled { opacity: .6; }
+.login-btn { width: 100%; margin-top: 4px; }
 .demo-box { margin-top: 18px; border-top: 1px dashed var(--border); padding-top: 14px; }
 .demo-items { display: flex; gap: 8px; margin-top: 8px; }
-.demo-item {
-  flex: 1; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: #fff;
-  display: flex; flex-direction: column; gap: 2px; align-items: center;
-}
-.demo-item:hover { border-color: var(--primary); background: var(--primary-light); }
+.demo-item { flex: 1; flex-direction: column; height: auto; padding: 8px; }
 .demo-item strong { color: var(--primary); }
 .demo-item span { font-size: 12px; color: var(--text-muted); }
 @media (max-width: 760px) {
