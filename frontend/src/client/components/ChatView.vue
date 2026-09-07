@@ -40,14 +40,23 @@
           <div class="msg-content">
             <div class="msg-meta">{{ msg.role === 'user' ? '我' : '智能客服' }}</div>
             <div v-if="msg.toolChips && msg.toolChips.length" class="tool-chips">
-              <span v-for="chip in msg.toolChips" :key="chip" class="tool-chip">{{ chip }}</span>
+              <span
+                v-for="chip in msg.toolChips"
+                :key="chip.name"
+                class="tool-chip"
+                :class="chip.status"
+              >
+                <span v-if="chip.status === 'running'" class="tool-spinner"></span>
+                <span v-else class="tool-done">✅</span>
+                {{ chip.status === 'running' ? '正在执行【' + chip.label + '】…' : '已执行【' + chip.label + '】' }}
+              </span>
             </div>
             <!-- eslint-disable-next-line vue/no-v-html -->
             <div class="msg-body" v-html="renderMarkdown(msg.content)"></div>
           </div>
         </div>
 
-        <div v-if="isTyping" class="msg-row assistant">
+        <div v-if="isTyping && !hasActiveAssistant" class="msg-row assistant">
           <div class="msg-avatar">AI</div>
           <div class="msg-content">
             <div class="msg-meta">智能客服</div>
@@ -152,6 +161,10 @@ onMounted(() => {
   newSession()
   loadSessions()
 })
+
+const hasActiveAssistant = computed(() =>
+  messages.value.some(m => m.role === 'assistant' && (m.content || (m.toolChips && m.toolChips.length)))
+)
 
 const pendingActionDesc = computed(() => {
   const a = pendingAction.value
@@ -288,6 +301,36 @@ async function streamChat(message) {
   let assistantMsg = null
   let toolChips = []
 
+  const toolLabel = (name) => TOOL_LABELS[name] || name
+
+  const addToolChip = (name, status = 'running') => {
+    let chip = toolChips.find(c => c.name === name)
+    if (!chip) {
+      chip = { name, label: toolLabel(name), status }
+      toolChips.push(chip)
+    } else {
+      chip.status = status
+    }
+    return chip
+  }
+
+  const syncToolChips = () => {
+    if (assistantMsg) assistantMsg.toolChips = toolChips.map(c => ({ ...c }))
+  }
+
+  const finishToolChips = (names) => {
+    const finished = new Set(names || [])
+    toolChips.forEach(c => {
+      if (finished.size === 0 || finished.has(c.name)) c.status = 'done'
+    })
+    ;(names || []).forEach(name => {
+      if (!toolChips.find(c => c.name === name)) {
+        toolChips.push({ name, label: toolLabel(name), status: 'done' })
+      }
+    })
+    syncToolChips()
+  }
+
   const ensureAssistant = () => {
     if (!assistantMsg) {
       assistantMsg = { role: 'assistant', content: '', toolChips: [] }
@@ -307,17 +350,20 @@ async function streamChat(message) {
         const t = line.trim()
         if (!t.startsWith('data:')) continue
         const payload = t.slice(5).trim()
-        if (payload === '[DONE]') return true
+        if (payload === '[DONE]') {
+          finishToolChips()
+          return true
+        }
         let data
         try { data = JSON.parse(payload) } catch (e) { continue }
         if (data.error) {
           ensureAssistant().content = data.error
+          finishToolChips()
           return true
         }
         if (data.tool && data.tool.name) {
-          const label = TOOL_LABELS[data.tool.name] || data.tool.name
-          if (!toolChips.includes(label)) toolChips.push(label)
-          ensureAssistant().toolChips = [...toolChips]
+          addToolChip(data.tool.name, data.tool.status === 'done' ? 'done' : 'running')
+          syncToolChips()
         }
         if (data.content) {
           streamText += data.content
@@ -332,16 +378,15 @@ async function streamChat(message) {
           if (data.response && !streamText) {
             ensureAssistant().content = data.response
           }
-          if (data.tools) {
-            toolChips = data.tools.map(n => TOOL_LABELS[n] || n)
-            if (assistantMsg) assistantMsg.toolChips = [...toolChips]
-          }
+          finishToolChips(data.tools)
           return true
         }
       }
     }
+    finishToolChips()
     return !!assistantMsg
   } catch (e) {
+    finishToolChips()
     return false
   }
 }
@@ -466,7 +511,20 @@ async function confirmSeat() {
 }
 .msg-row.user .msg-body { background: var(--primary); color: #fff; }
 .tool-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
-.tool-chip { font-size: 11px; background: #eef2ff; color: #4338ca; padding: 3px 8px; border-radius: 999px; }
+.tool-chip {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 11px;
+  padding: 3px 9px; border-radius: 999px; background: #eef2ff; color: #4338ca;
+  transition: background .2s, color .2s;
+}
+.tool-chip.running { background: #eef2ff; color: #4338ca; }
+.tool-chip.done { background: #ecfdf5; color: #047857; }
+.tool-spinner {
+  width: 10px; height: 10px; border-radius: 50%; flex: none;
+  border: 2px solid #c7d2fe; border-top-color: #4338ca;
+  animation: tool-spin .8s linear infinite;
+}
+.tool-done { font-size: 11px; }
+@keyframes tool-spin { to { transform: rotate(360deg); } }
 .typing { color: var(--text-muted); padding: 10px 14px; background: #f5f7fb; border-radius: 12px; }
 .typing span { animation: blink 1s infinite; }
 @keyframes blink { 50% { opacity: 0; } }
