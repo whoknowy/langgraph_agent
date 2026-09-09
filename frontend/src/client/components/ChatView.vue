@@ -227,7 +227,8 @@ async function loadSessions() {
   try {
     const d = await api('/api/sessions')
     sessions.value = d.sessions || []
-    if (!currentSessionId.value && sessions.value.length) {
+    const isNewLocal = !currentSessionId.value || currentSessionId.value.startsWith('web_')
+    if (isNewLocal && sessions.value.length) {
       loadSession(sessions.value[0].session_id)
     }
   } catch (e) {
