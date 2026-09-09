@@ -36,7 +36,6 @@
       <header class="client-topbar">
         <div class="topbar-title">
           <h2>{{ pageTitle }}</h2>
-          <span class="version-badge">Vue 重构版</span>
           <span class="muted">智能航空客服系统 · 会员端</span>
         </div>
         <div class="topbar-user">
@@ -101,10 +100,6 @@ const pageTitle = computed(() => titles[route.path] || '智能航空客服')
 }
 .topbar-title h2 { font-size: 16px; }
 .topbar-title span { font-size: 12px; margin-left: 8px; }
-.version-badge {
-  display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 999px;
-  background: #dcfce7; color: #15803d; font-size: 11px; font-weight: 600;
-}
 .topbar-user { display: flex; align-items: center; gap: 10px; }
 .avatar {
   width: 34px; height: 34px; border-radius: 50%; background: var(--primary); color: #fff;
