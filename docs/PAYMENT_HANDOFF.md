@@ -4,6 +4,10 @@
 > **目标**：看完这一份，不改后端一行代码，就能把「订单 → 支付 → 出票」接上。
 > **前置**：先读 [API.md](API.md) 的第 1、2 章（服务地址、token 用法），本文档只讲支付。
 > **后端对接人**：支付相关疑问直接找后端，改接口前会先在本文档更新。
+>
+> 📱 **安卓同学请看专项文档 [PAYMENT_ANDROID.md](PAYMENT_ANDROID.md)**：
+> 本篇的通用认知（第 1、3、6、7 章）仍适用，但安卓的 WebView 配置、
+> 真机设备约束、完整 Kotlin 代码在那份里更全。
 
 ---
 
@@ -308,6 +312,10 @@ Page({
 ```
 
 ### 5.2 安卓（Kotlin + OkHttp + WebView）
+
+> **安卓同学建议直接看专项文档 [PAYMENT_ANDROID.md](PAYMENT_ANDROID.md)**——
+> 那里有完整可运行的 Kotlin 代码、WebView 五类坑的排查、真机设备约束与抓包注意。
+> 下面是精简版。
 
 ```kotlin
 // PayRepository.kt

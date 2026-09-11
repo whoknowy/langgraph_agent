@@ -140,8 +140,10 @@ python -c "import web_app; web_app.app.run(host='0.0.0.0', port=5000, debug=Fals
 **本地回调需要公网地址**（支付宝要能访问到你的机器）：用 NATAPP 之类的内网穿透，
 把 `ALIPAY_NOTIFY_URL` 配成 `http://<你的域名>/api/pay/notify/alipay`。
 
-**多端接入**：安卓 / 微信小程序同学看 [docs/PAYMENT_HANDOFF.md](docs/PAYMENT_HANDOFF.md)
-（三个必须建立的认知、完整时序、各端代码、边界情况、自测清单）；
+**多端接入**：支付接入文档按端分开——
+**安卓**看 [docs/PAYMENT_ANDROID.md](docs/PAYMENT_ANDROID.md)（Kotlin 完整代码、
+WebView 五类坑、真机设备约束），**微信小程序**与通用认知看
+[docs/PAYMENT_HANDOFF.md](docs/PAYMENT_HANDOFF.md)；
 接口字段速查在 [docs/API.md](docs/API.md) 的 4.4.3。
 
 ## 多端接入（安卓 / 微信小程序）
@@ -200,6 +202,8 @@ python -c "import web_app; web_app.app.run(host='0.0.0.0', port=5000, debug=Fals
 │   ├── src/admin/               #   管理端：工作台、退款、投诉、航班、订单、会员
 │   └── dist/                    #   npm run build 产物，Flask 自动优先服务
 ├── docs/API.md                   # 多端接入接口文档（安卓/小程序同学必读）
+├── docs/PAYMENT_ANDROID.md       # 安卓端支付接入专项（Kotlin + WebView）
+├── docs/PAYMENT_HANDOFF.md       # 支付接入通用交接（含微信小程序）
 ├── test_regression.py            # 客户端回归
 ├── test_admin.py                 # 管理端回归
 └── data/flight_system.db         # 本地数据库（自动生成）
