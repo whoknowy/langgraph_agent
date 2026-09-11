@@ -54,6 +54,7 @@ def cancel_stale_pending_orders() -> int:
     cutoff = datetime.now() - timedelta(minutes=_PAY_TIMEOUT_MINUTES)
     conn = db.get_connection()
     canceled = 0
+    canceled_orders = []
     try:
         rows = conn.execute(
             "SELECT order_no, member_id, flight_no, flight_date, created_at "
@@ -72,12 +73,22 @@ def cancel_stale_pending_orders() -> int:
                 content=(f"您的订单 {r['order_no']}（航班 {r['flight_no']}，{r['flight_date']}）"
                          f"超过{_PAY_TIMEOUT_MINUTES}分钟未支付，已自动取消。如需出行请重新预订。"),
                 ntype="order_cancel")
+            canceled_orders.append(r["order_no"])
             canceled += 1
         if canceled:
             conn.commit()
-        return canceled
     finally:
         conn.close()
+    # 订单取消后必须同步关闭支付流水，否则会出现「订单已取消、用户却仍能付款成功」的漏洞。
+    # 放在提交之后执行，避免跨连接写锁冲突（WAL 下写-写互斥）。
+    if canceled_orders:
+        try:
+            from services import payment_repo
+            for _no in canceled_orders:
+                payment_repo.close_pending_by_order(_no)
+        except Exception as e:
+            print(f"⚠️ [生命周期] 关闭支付流水失败：{e}")
+    return canceled
 
 
 def _loop():

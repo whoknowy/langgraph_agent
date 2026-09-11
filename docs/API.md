@@ -352,6 +352,7 @@ while (source.readUtf8Line()?.also { line ->
       "session_id": "550e8400-...",
       "title": "北京上海明日机票查询",
       "created_at": "2026-09-07 10:30",
+      "created_at_ts": 1757205000.0,
       "message_count": 6,
       "last_user_question": "帮我订那张最便宜的"
     }
@@ -360,6 +361,8 @@ while (source.readUtf8Line()?.also { line ->
 ```
 
 - `title`：AI 自动生成的会话标题（列表页展示用）；`last_user_question`：最后一句提问（无标题时兜底显示）。
+- `created_at`：可读时间（`YYYY-MM-DD HH:MM`）；`created_at_ts`：秒级时间戳（兼容旧前端/排序用）。
+- 重启 LangGraph 后旧线程 checkpoint 可能丢失，但线程 `values` 中的历史仍保留；后端会在用户继续对话时自动回填历史，不会覆盖旧记录。
 
 #### 4.3.2 会话详情 `GET /api/sessions/{session_id}`
 
@@ -758,5 +761,7 @@ POST /api/checkin {order_no, seat_no:"31A"}
 
 ## 10. 文档更新记录
 
+- 2026-09-09：会话列表补充 `created_at_ts`；修复 LangGraph `/state` 重启后偶发为空导致聊天记录/会话预览丢失的问题。
+- 2026-09-09：修复 LangGraph 重启后旧线程 checkpoint 丢失、继续对话时覆盖历史的问题（发送前自动回填线程 values 中的历史消息）。
 - 2026-09-09：座位图改为「初始全部可选、真实值机后才占用」，不再随机模拟预占座位；补充 `free` / `total` 为全舱位统计说明。
 - 2026-09-07：新增 `GET /api/flights/search` 客户端航班搜索接口（已写入接口总表与 4.4.1.1）。

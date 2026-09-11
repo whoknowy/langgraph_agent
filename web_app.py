@@ -4,6 +4,7 @@
 基于 LangGraph API 接口，路由与 Flask 会话；业务逻辑见 chat_web_service.py
 """
 
+import json
 import os
 import time
 from pathlib import Path
@@ -13,7 +14,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from flask import Flask, request, jsonify, session, Response, send_from_directory
+from flask import Flask, request, jsonify, session, Response, send_from_directory, redirect
 
 from chat_web_service import (
     run_chat_sync,
@@ -24,6 +25,7 @@ from chat_web_service import (
     clear_thread_and_create_new,
     langgraph_connectivity_test,
 )
+from services import session_titles
 
 # 导入配置（与历史行为保持一致）
 from config import *  # noqa: E402,F401,F403
@@ -182,6 +184,10 @@ def chat():
             return _local_chat_response(user_message, client_session_id)
         if err_msg:
             return jsonify({'error': err_msg}), http_code or 500
+
+        # 非流式通道也生成会话标题，避免仅走 /api/chat 的会话在侧栏显示“新对话”
+        if tid:
+            session_titles.generate_title_async(tid, user_message)
 
         return jsonify({
             'response': ai_text,
@@ -448,7 +454,10 @@ def book():
 
 @app.route('/api/pay', methods=['POST'])
 def pay():
-    """支付订单：待支付 → 已出票。"""
+    """一步付讫（模拟支付，兼容既有单测与多端调用）。
+
+    真实渠道请走 /api/pay/create → 收银台 → /api/pay/confirm 或异步通知。
+    """
     try:
         member, denied = _require_member()
         if denied:
@@ -461,6 +470,154 @@ def pay():
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': f'支付失败: {str(e)}'}), 500
+
+
+# --- 支付渠道抽象（mock / 支付宝沙箱）：幂等落账见 services/payment_service.py ---
+
+def _callback_base() -> str:
+    """回调基址：显式配置优先，否则按当前请求 host 自动拼（本地与内网穿透都适用）。"""
+    return (os.getenv("PUBLIC_BASE_URL") or request.host_url).rstrip('/')
+
+
+def _alipay_provider():
+    """按 ALIPAY_DEBUG 取沙箱或生产渠道实例。"""
+    from services.payment import get_provider
+    return get_provider('alipay_sandbox' if ALIPAY_DEBUG else 'alipay')
+
+
+@app.route('/api/pay/create', methods=['POST'])
+def pay_create():
+    """发起支付。
+
+    返回 mode=redirect 时前端跳转 pay_url 并轮询 /api/pay/status；
+    mode=direct 表示站内可直接确认，调 /api/pay/confirm。
+    """
+    try:
+        member, denied = _require_member()
+        if denied:
+            return denied
+        data = request.get_json() or {}
+        from services import payment_service
+        base = _callback_base()
+        result = payment_service.start_payment(
+            order_no=data.get('order_no', ''),
+            member_id=member['member_id'],
+            return_url=ALIPAY_RETURN_URL or f"{base}/#/pay/result",
+            notify_url=ALIPAY_NOTIFY_URL or f"{base}/api/pay/notify/alipay",
+        )
+        if result.get('error'):
+            return jsonify(result), 400
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': f'发起支付失败: {str(e)}'}), 500
+
+
+@app.route('/api/pay/confirm', methods=['POST'])
+def pay_confirm():
+    """站内确认支付（direct 模式，目前仅模拟渠道使用）。"""
+    try:
+        member, denied = _require_member()
+        if denied:
+            return denied
+        data = request.get_json() or {}
+        from services import payment_service
+        result = payment_service.confirm_payment(data.get('pay_no', ''),
+                                                 member_id=member['member_id'])
+        if result.get('error'):
+            return jsonify(result), 400
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': f'确认支付失败: {str(e)}'}), 500
+
+
+@app.route('/api/pay/status')
+def pay_status():
+    """轮询支付结果（前端支付中弹窗用，零副作用）。"""
+    try:
+        member, denied = _require_member()
+        if denied:
+            return denied
+        from services import payment_service
+        result = payment_service.get_payment_status(request.args.get('order_no', ''),
+                                                    member_id=member['member_id'])
+        if result.get('error'):
+            return jsonify(result), 400
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': f'查询支付状态失败: {str(e)}'}), 500
+
+
+@app.route('/api/pay/notify/alipay', methods=['POST'])
+def pay_notify_alipay():
+    """支付宝异步通知（无登录态，安全性完全依赖验签）。
+
+    验签 → 校验金额 → 幂等改单 → 返回 success。
+    支付宝会间隔重投 8 次，重复通知由 mark_paid 去重，必须原样返回 success 才会停止重试。
+    """
+    try:
+        from services import payment_service
+        data = request.form.to_dict()
+        provider = _alipay_provider()
+        ok, fields = provider.verify_notify(data)
+        if not ok:
+            print(f"⚠️ [支付] 异步通知验签失败：{fields.get('error') or data.get('out_trade_no')}")
+            return 'failure', 400
+        if fields.get('trade_status') not in ('TRADE_SUCCESS', 'TRADE_FINISHED'):
+            # 非终态（如 WAIT_BUYER_PAY）不处理，但必须回 success，否则会被判定为通知失败
+            return 'success'
+        result = payment_service.settle_payment(
+            out_trade_no=fields.get('out_trade_no'),
+            expect_amount=fields.get('amount'),
+            trade_no=fields.get('trade_no'),
+            buyer_id=fields.get('buyer_id'),
+            notify_raw=json.dumps(data, ensure_ascii=False),
+            provider_name=provider.name,
+        )
+        if result.get('error'):
+            print(f"⚠️ [支付] 异步通知落账失败：{result['error']}")
+            return 'failure', 400
+        if result.get('warning'):
+            print(f"⚠️ [支付] {result['warning']}")
+        return 'success'
+    except Exception as e:
+        print(f"❌ [支付] 异步通知处理异常: {e}")
+        return 'failure', 500
+
+
+@app.route('/api/pay/return/alipay')
+def pay_return_alipay():
+    """同步回调：仅用于跳回结果页，不据此改单。
+
+    本地收不到异步通知时，这里主动查单兜底完成闭环；改单仍然走幂等的
+    settle_payment，重复执行不会重复出票。
+    """
+    try:
+        from services import payment_service
+        data = request.args.to_dict()
+        provider = _alipay_provider()
+        pay_no = data.get('out_trade_no', '')
+        ok, fields = provider.verify_notify(data)
+        if ok:
+            # 同步参数可被篡改，只信任查询接口返回的真实状态
+            q = provider.query_payment(pay_no)
+            if q.get('paid'):
+                payment_service.settle_payment(
+                    out_trade_no=pay_no, expect_amount=q.get('amount'),
+                    trade_no=q.get('trade_no'), buyer_id=q.get('buyer_id'),
+                    notify_raw='sync-return', provider_name=provider.name)
+        # 带上 order_no，结果页据此查状态（回调只回传 out_trade_no）
+        order_no = ''
+        try:
+            from services import payment_repo
+            _pay = payment_repo.get_by_out_trade_no(pay_no)
+            if _pay:
+                order_no = _pay["order_no"]
+        except Exception:
+            pass
+        return redirect(f"/#/pay/result?pay_no={pay_no}&order_no={order_no}")
+    except Exception as e:
+        print(f"❌ [支付] 同步回调处理异常: {e}")
+        return redirect("/#/orders")
 
 
 @app.route('/api/change_quote')

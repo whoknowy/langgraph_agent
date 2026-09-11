@@ -11,4 +11,4 @@
 | ads.txt | 广告类型.txt |
 
 情绪类 L1/L2 业务信号词不在此列（见 agents/sensitive_words.py 手工维护）。
-更新方式：重跑下载脚本或手动替换后重启服务（启动时加载并构建 AC 自动机）。
+更新方式：直接编辑本目录 `*.txt` 即可，运行时会按文件 mtime/size 自动热加载并重建 AC 自动机，无需重启服务；`agents/sensitive_words.py` 中的业务词表仍需重启服务才会生效。

@@ -455,6 +455,25 @@ class TestSseParsers:
         assert conversation_history_from_state_data("not a dict") == []
         assert conversation_history_from_state_data(42) == []
 
+    def test_thread_values_fallback(self):
+        """/threads/search 与 /threads/{id} 自带 values；/state 空时不能丢历史。"""
+        from chat_web_service import (
+            _has_state_values,
+            _state_data_from_thread_values,
+            conversation_history_from_state_data,
+        )
+        thread = {"values": {"messages": [
+            {"role": "user", "content": "你好"},
+            {"role": "assistant", "content": "您好"},
+        ]}}
+        state_data = _state_data_from_thread_values(thread)
+        assert _has_state_values(state_data) is True
+        history = conversation_history_from_state_data(state_data)
+        assert [(m["is_user"], m["content"]) for m in history] == [(True, "你好"), (False, "您好")]
+
+        assert _state_data_from_thread_values({}) == {}
+        assert _has_state_values({"values": {"customer_query": "只有路由字段"}}) is False
+
 
 # ---------------------------------------------------------------- 敏感词守卫与打码
 
@@ -484,6 +503,24 @@ class TestSensitiveFilter:
             assert g["blocked"] and g["level"] == 3, f"{f.stem} 首词条未拦截: {first}"
             tested += 1
         assert tested >= 4
+
+    def test_lexicon_hot_reload(self, tmp_path):
+        """编辑 skills/lexicons/*.txt 后无需重启，下一次匹配自动生效。"""
+        import skills.sensitive_word_filter as swf
+        original = swf.LEXICON_DIR
+        try:
+            swf.LEXICON_DIR = tmp_path
+            custom = tmp_path / "custom.txt"
+            custom.write_text("客服\n", encoding="utf-8")
+            swf._ensure_words_loaded(force=True)
+            assert swf.run_sensitive_guard("人工客服")["blocked"] is True
+
+            custom.write_text("", encoding="utf-8")
+            swf._ensure_words_loaded(force=True)
+            assert swf.run_sensitive_guard("人工客服")["blocked"] is False
+        finally:
+            swf.LEXICON_DIR = original
+            swf._ensure_words_loaded(force=True)
 
     def test_mask_sensitive(self):
         from skills import mask_sensitive
@@ -1135,6 +1172,78 @@ class TestRunChatPendingAction:
         assert _valid_pending_action({}) is None
 
 
+# ---------------------------------------------------------------- checkpoint 丢失后的历史回填
+
+class TestThreadHistorySeeding:
+    """LangGraph 重启后旧线程 checkpoint 丢失，新一轮 run 必须回填历史，否则覆盖旧记录。"""
+
+    class FakeResp:
+        def __init__(self, payload, status=200):
+            self._payload, self.status_code = payload, status
+
+        def json(self):
+            return self._payload
+
+    def test_seeds_history_when_checkpoint_missing(self, monkeypatch):
+        import chat_web_service as cws
+        calls = []
+
+        class FakeRequests:
+            def get(self, url, **kw):
+                calls.append(url)
+                if 'history' in url:
+                    return TestThreadHistorySeeding.FakeResp([])
+                if url.endswith('/state'):
+                    return TestThreadHistorySeeding.FakeResp(
+                        {"values": {}, "checkpoint": None})
+                if '/threads/' in url:
+                    return TestThreadHistorySeeding.FakeResp({
+                        "values": {"messages": [
+                            {"role": "user", "content": "旧问题"},
+                            {"role": "assistant", "content": "旧回答"},
+                        ]}
+                    })
+                return TestThreadHistorySeeding.FakeResp({}, 404)
+
+        monkeypatch.setattr(cws, "requests", FakeRequests())
+        graph_input = cws._build_chat_input("thread-1", "新问题", "M1")
+        assert [m["content"] for m in graph_input["messages"]] == ["旧问题", "旧回答", "新问题"]
+        assert graph_input["customer_query"] == "新问题"
+        assert graph_input["session_id"] == "thread-1"
+        assert graph_input["member_id"] == "M1"
+        assert any('history' in url for url in calls)
+        assert any(url.endswith('/threads/thread-1') for url in calls)
+
+    def test_does_not_seed_when_checkpoint_exists(self, monkeypatch):
+        import chat_web_service as cws
+
+        class FakeRequests:
+            def get(self, url, **kw):
+                if 'history' in url:
+                    return TestThreadHistorySeeding.FakeResp([{"checkpoint_id": "cp-1"}])
+                if url.endswith('/state'):
+                    return TestThreadHistorySeeding.FakeResp({
+                        "values": {"messages": [{"role": "user", "content": "旧问题"}]},
+                        "checkpoint": {"checkpoint_id": "cp-1"},
+                    })
+                raise AssertionError("checkpoint 存在时不应读取线程详情")
+
+        monkeypatch.setattr(cws, "requests", FakeRequests())
+        graph_input = cws._build_chat_input("thread-2", "新问题")
+        assert [m["content"] for m in graph_input["messages"]] == ["新问题"]
+
+    def test_unknown_state_does_not_seed(self, monkeypatch):
+        import chat_web_service as cws
+
+        class FakeRequests:
+            def get(self, url, **kw):
+                return TestThreadHistorySeeding.FakeResp({}, 500)
+
+        monkeypatch.setattr(cws, "requests", FakeRequests())
+        graph_input = cws._build_chat_input("thread-3", "新问题")
+        assert [m["content"] for m in graph_input["messages"]] == ["新问题"]
+
+
 # ---------------------------------------------------------------- JWT token 登录
 
 class TestTokenAuth:
@@ -1182,6 +1291,147 @@ class TestTokenAuth:
         claims = token_auth.verify_token(tok, self.SECRET, "member")
         assert claims["exp"] - claims["iat"] == 3600
         assert claims["iat"] <= int(_time.time())
+
+
+class TestPayment:
+    """支付渠道抽象与幂等落账（零 LLM、零 HTTP、零外部网关）。
+
+    重点是「不重复出票」：异步通知会重投多次，只有首次翻转才允许推进订单。
+    """
+
+    @staticmethod
+    def _new_order(order_no="PA1", member="M1001", amount=600, status="待支付"):
+        from services import db
+        conn = db.get_connection()
+        conn.execute(
+            "INSERT INTO orders (order_no, member_id, flight_no, flight_date, cabin, amount, "
+            "status, created_at, passengers) VALUES (?,?,?,?,?,?,?,?,?)",
+            (order_no, member, "CA1061", FUTURE, "经济", amount, status,
+             datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 1))
+        conn.commit()
+        conn.close()
+        return order_no
+
+    @staticmethod
+    def _order(order_no):
+        from services import db
+        conn = db.get_connection()
+        row = conn.execute("SELECT * FROM orders WHERE order_no = ?", (order_no,)).fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def test_payments_table_created(self):
+        from services import db
+        conn = db.get_connection()
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(payments)")]
+        conn.close()
+        assert "pay_no" in cols and "out_trade_no" in cols and "trade_no" in cols
+
+    def test_start_payment_mock_returns_direct(self):
+        from services import payment_service
+        self._new_order("PA1")
+        r = payment_service.start_payment("PA1", member_id="M1001", provider_name="mock")
+        assert r.get("success") and r["mode"] == "direct"
+        assert r["pay_no"].startswith("P") and r["amount"] == 600.0
+        assert r["pay_url"] is None
+
+    def test_start_payment_rejects_non_pending_order(self):
+        from services import payment_service
+        self._new_order("PA2", status="已出票")
+        r = payment_service.start_payment("PA2", member_id="M1001", provider_name="mock")
+        assert "error" in r and "无需支付" in r["error"]
+
+    def test_start_payment_rejects_other_member(self):
+        from services import payment_service
+        self._new_order("PA3", member="M1001")
+        r = payment_service.start_payment("PA3", member_id="M1002", provider_name="mock")
+        assert "error" in r and "不属于" in r["error"]
+
+    def test_pending_payment_is_reused(self):
+        """反复点「去支付」不应堆出一串悬挂流水。"""
+        from services import db, payment_service
+        self._new_order("PA4")
+        r1 = payment_service.start_payment("PA4", member_id="M1001", provider_name="mock")
+        r2 = payment_service.start_payment("PA4", member_id="M1001", provider_name="mock")
+        assert r1["pay_no"] == r2["pay_no"]
+        conn = db.get_connection()
+        n = conn.execute("SELECT COUNT(*) FROM payments WHERE order_no = 'PA4'").fetchone()[0]
+        conn.close()
+        assert n == 1
+
+    def test_confirm_payment_completes_order(self):
+        from services import payment_service
+        self._new_order("PA5")
+        started = payment_service.start_payment("PA5", member_id="M1001", provider_name="mock")
+        r = payment_service.confirm_payment(started["pay_no"], member_id="M1001")
+        assert r.get("success") and r.get("settled")
+        order = self._order("PA5")
+        assert order["status"] == "已出票"
+        assert order["pay_channel"] == "mock" and order["paid_at"]
+
+    def test_settle_is_idempotent(self):
+        """重复通知只出票一次。"""
+        from services import payment_service
+        self._new_order("PA6")
+        started = payment_service.start_payment("PA6", member_id="M1001", provider_name="mock")
+        pay_no = started["pay_no"]
+        first = payment_service.settle_payment(pay_no=pay_no, expect_amount=600,
+                                               trade_no="ALI001", provider_name="mock")
+        assert first.get("settled") and not first.get("already")
+        for _ in range(5):   # 模拟支付宝重投 5 次
+            again = payment_service.settle_payment(pay_no=pay_no, expect_amount=600,
+                                                   trade_no="ALI001", provider_name="mock")
+            assert again.get("already") is True
+        assert self._order("PA6")["status"] == "已出票"
+
+    def test_settle_rejects_amount_mismatch(self):
+        from services import payment_service
+        self._new_order("PA7", amount=600)
+        started = payment_service.start_payment("PA7", member_id="M1001", provider_name="mock")
+        r = payment_service.settle_payment(pay_no=started["pay_no"], expect_amount=0.01)
+        assert "error" in r and "金额不符" in r["error"]
+        assert self._order("PA7")["status"] == "待支付"
+
+    def test_settle_rejects_closed_payment(self):
+        from services import payment_repo, payment_service
+        self._new_order("PA8")
+        started = payment_service.start_payment("PA8", member_id="M1001", provider_name="mock")
+        payment_repo.mark_closed(started["pay_no"])
+        r = payment_service.settle_payment(pay_no=started["pay_no"], expect_amount=600)
+        assert "error" in r and "已关闭" in r["error"]
+
+    def test_settle_warns_when_order_already_cancelled(self):
+        """钱收了但订单已被超时任务取消：不能静默吞掉，必须告警。"""
+        from services import payment_service
+        self._new_order("PA9", status="已取消")
+        started = payment_service.start_payment("PA9", member_id="M1001", provider_name="mock")
+        assert "error" in started    # 已取消的订单根本不该发起支付
+        self._new_order("PA10")
+        s = payment_service.start_payment("PA10", member_id="M1001", provider_name="mock")
+        from services import db
+        conn = db.get_connection()
+        conn.execute("UPDATE orders SET status = '已取消' WHERE order_no = 'PA10'")
+        conn.commit()
+        conn.close()
+        r = payment_service.settle_payment(pay_no=s["pay_no"], expect_amount=600, provider_name="mock")
+        assert r.get("success") and r.get("settled") is False
+        assert "人工处理" in r.get("warning", "")
+
+    def test_payment_status_reflects_paid(self):
+        from services import payment_service
+        self._new_order("PB1")
+        started = payment_service.start_payment("PB1", member_id="M1001", provider_name="mock")
+        before = payment_service.get_payment_status("PB1", member_id="M1001")
+        assert before["paid"] is False and before["pay_status"] == "待支付"
+        payment_service.confirm_payment(started["pay_no"], member_id="M1001")
+        after = payment_service.get_payment_status("PB1", member_id="M1001")
+        assert after["paid"] is True and after["pay_status"] == "支付成功"
+
+    def test_mock_provider_rejects_forged_notify(self):
+        """模拟渠道不得开放伪造回调——否则等于留了个免付款后门。"""
+        from services.payment import get_provider
+        ok, _ = get_provider("mock").verify_notify({"out_trade_no": "P1", "trade_status": "TRADE_SUCCESS"})
+        assert ok is False
 
 
 # ---------------------------------------------------------------- 直接运行入口

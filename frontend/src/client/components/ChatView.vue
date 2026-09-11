@@ -16,7 +16,7 @@
         >
           <div class="session-main">
             <div class="session-preview">{{ s.title || s.last_user_question || '新对话' }}</div>
-            <div class="session-meta">{{ s.message_count || 0 }} 条 · {{ s.created_at || '' }}</div>
+            <div class="session-meta">{{ s.message_count || 0 }} 条 · {{ formatSessionTime(s.created_at) }}</div>
           </div>
           <button class="session-del" title="清空" @click.stop="clearSession(s.session_id)">↺</button>
           <button class="session-del" title="删除" @click.stop="deleteSession(s.session_id)">×</button>
@@ -193,6 +193,20 @@ function escapeHtml(text) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
+}
+
+function formatSessionTime(value) {
+  if (!value) return ''
+  // 后端列表接口优先返回可读字符串，同时兼容旧前端的秒级时间戳 / ISO 字符串
+  if (typeof value === 'string') {
+    if (/^\d{4}-\d{2}-\d{2}/.test(value)) return value
+    const t = Date.parse(value.replace('Z', '+00:00'))
+    if (!isNaN(t)) return new Date(t).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+    return value
+  }
+  const d = new Date(Number(value) * 1000)
+  if (isNaN(d.getTime())) return String(value)
+  return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
 function renderMarkdown(text) {

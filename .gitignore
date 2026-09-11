@@ -398,3 +398,17 @@ data/
 _tmp_*.json
 gui-test-screenshots/
 AGENTS.md
+
+# 支付密钥：私钥/证书一律不入库（keys/README.md 需要保留，故不忽略整个目录）
+# *.txt 也排除——密钥工具导出的常见扩展名就是 .txt
+keys/*.key
+keys/*.pem
+keys/*.crt
+keys/*.p12
+keys/*.txt
+
+# 工作区数据（会话记忆等本地状态，非代码，不入库）
+.workbuddy/
+
+# Vite 构建残留
+frontend/vite.config.js.timestamp-*

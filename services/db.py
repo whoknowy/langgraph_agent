@@ -161,6 +161,26 @@ CREATE TABLE IF NOT EXISTS session_owners (
 );
 
 CREATE INDEX IF NOT EXISTS idx_session_owners_member ON session_owners(member_id);
+
+-- 支付流水：一次业务订单可发起多笔支付（失败重试），每笔独立 pay_no 作为幂等键
+CREATE TABLE IF NOT EXISTS payments (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    pay_no       TEXT UNIQUE NOT NULL,
+    order_no     TEXT NOT NULL,
+    provider     TEXT NOT NULL DEFAULT 'mock',
+    out_trade_no TEXT NOT NULL,
+    trade_no     TEXT,
+    amount       REAL NOT NULL,
+    status       TEXT NOT NULL DEFAULT '待支付',
+    buyer_id     TEXT,
+    notify_raw   TEXT,
+    created_at   TEXT NOT NULL,
+    paid_at      TEXT,
+    expire_at    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_payments_order  ON payments(order_no);
+CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
 """
 
 
@@ -195,6 +215,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "customers", "password_hash", "password_hash TEXT")
     # 退款完成时间（趋势图表统计用；存量已退款订单为 NULL 不计入）
     _ensure_column(conn, "orders", "refunded_at", "refunded_at TEXT")
+    # 支付接入：支付渠道（mock/alipay_sandbox/alipay/wechat）与支付完成时间
+    _ensure_column(conn, "orders", "pay_channel", "pay_channel TEXT")
+    _ensure_column(conn, "orders", "paid_at", "paid_at TEXT")
     # 航班登机口（航班级物理资源，管理端指派；NULL 时值机侧按航班+日期确定性兜底）
     _ensure_column(conn, "flights", "gate", "gate TEXT")
     # 管理员首次登录强制改密标记（存量默认口令由启动巡检置位）

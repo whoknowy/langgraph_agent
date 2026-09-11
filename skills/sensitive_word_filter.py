@@ -16,6 +16,7 @@
    支持跨 token 的流式场景（词被拆在多个 token 里也能完整打码）。
 """
 
+import threading
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -29,6 +30,14 @@ except ImportError:  # pragma: no cover - 演示环境缺包时降级
 
 LEXICON_DIR = Path(__file__).parent / "lexicons"
 MASK_CHAR = "*"
+
+# 词库热加载：启动时构建，之后每次匹配前按文件 mtime/大小变化自动重建。
+# 这样编辑 skills/lexicons/*.txt 无需重启 LangGraph / Flask。
+_WORDS_LOCK = threading.RLock()
+_LEVEL_BY_WORD: Dict[str, int] = {}
+_MASK_HOLDBACK = 1
+_automaton = None
+_WORDS_SIGNATURE = None
 
 
 # ---------------------------------------------------------------- 词库装载
@@ -50,35 +59,72 @@ def _load_compliance_words() -> Dict[str, str]:
     return words
 
 
-_COMPLIANCE_WORDS = _load_compliance_words()
+def _lexicon_signature():
+    """词库文件指纹（文件名 + mtime_ns + size），用于判断是否需要热加载。"""
+    if not LEXICON_DIR.exists():
+        return ()
+    sig = []
+    for f in sorted(LEXICON_DIR.glob("*.txt")):
+        try:
+            st = f.stat()
+            sig.append((f.name, st.st_mtime_ns, st.st_size))
+        except OSError:
+            continue
+    return tuple(sig)
 
-# word -> 等级（1/2/3）；合规词一律 L3，且覆盖同形情绪词
-_LEVEL_BY_WORD: Dict[str, int] = dict(sensitivity_knowledge_base.word_to_level)
-_LEVEL_BY_WORD.update({w: 3 for w in _COMPLIANCE_WORDS})
 
-# 打码只针对 L3 及以上；缓冲保留长度 = 最长 L3 词长 - 1
-_MASK_HOLDBACK = max((len(w) for w, lvl in _LEVEL_BY_WORD.items() if lvl >= 3), default=1) - 1
+def _build_word_data():
+    """根据当前词库文件与业务词表构建匹配所需的数据结构。"""
+    compliance_words = _load_compliance_words()
+    # word -> 等级（1/2/3）；合规词一律 L3，且覆盖同形情绪词
+    level_by_word: Dict[str, int] = dict(sensitivity_knowledge_base.word_to_level)
+    level_by_word.update({w: 3 for w in compliance_words})
+
+    # 打码只针对 L3 及以上；缓冲保留长度 = 最长 L3 词长 - 1
+    mask_holdback = max((len(w) for w, lvl in level_by_word.items() if lvl >= 3), default=1) - 1
+
+    automaton = None
+    if _HAS_AHOCORASICK:
+        automaton = ahocorasick.Automaton()
+        for word, level in level_by_word.items():
+            automaton.add_word(word, (word, level))
+        automaton.make_automaton()
+    return level_by_word, mask_holdback, automaton, compliance_words
+
+
+def _ensure_words_loaded(force: bool = False) -> None:
+    """按词库文件指纹热加载；文件没变时零开销直接返回。"""
+    global _LEVEL_BY_WORD, _MASK_HOLDBACK, _automaton, _WORDS_SIGNATURE
+
+    signature = _lexicon_signature()
+    with _WORDS_LOCK:
+        if not force and signature == _WORDS_SIGNATURE:
+            return
+        _LEVEL_BY_WORD, _MASK_HOLDBACK, _automaton, compliance_words = _build_word_data()
+        _WORDS_SIGNATURE = signature
+        print(f"✅ 敏感词库已加载: {len(_LEVEL_BY_WORD)} 词"
+              f"（合规库 {len(compliance_words)} 词，热加载={'强制' if force else '检测到变更'}）")
 
 
 # ---------------------------------------------------------------- 匹配引擎
 
-if _HAS_AHOCORASICK:
-    _automaton = ahocorasick.Automaton()
-    for _w, _lvl in _LEVEL_BY_WORD.items():
-        _automaton.add_word(_w, (_w, _lvl))
-    _automaton.make_automaton()
+_ensure_words_loaded(force=True)
 
 
 def _find_spans(text: str) -> List[Tuple[int, int, int]]:
     """返回全部命中 [(start, end_exclusive, level), ...]。"""
     if not text:
         return []
+    _ensure_words_loaded()
+    with _WORDS_LOCK:
+        automaton = _automaton
+        level_by_word = _LEVEL_BY_WORD
     spans: List[Tuple[int, int, int]] = []
-    if _HAS_AHOCORASICK:
-        for end, (w, lvl) in _automaton.iter(text):
+    if _HAS_AHOCORASICK and automaton is not None:
+        for end, (w, lvl) in automaton.iter(text):
             spans.append((end - len(w) + 1, end + 1, lvl))
     else:  # 降级：逐词 str.find，O(词数×文本长)，演示规模可接受
-        for w, lvl in _LEVEL_BY_WORD.items():
+        for w, lvl in level_by_word.items():
             start = 0
             while True:
                 i = text.find(w, start)
@@ -162,16 +208,19 @@ class StreamMasker:
     def feed(self, chunk: str) -> str:
         if not chunk:
             return ""
+        _ensure_words_loaded()
+        with _WORDS_LOCK:
+            holdback = _MASK_HOLDBACK
         buf = self._tail + chunk
         flags = self._tail_flags + [False] * len(chunk)
         for s, e, lvl in _find_spans(buf):
             if lvl >= 3:
                 for i in range(max(s, 0), min(e, len(flags))):
                     flags[i] = True
-        if len(buf) <= _MASK_HOLDBACK:
+        if len(buf) <= holdback:
             self._tail, self._tail_flags = buf, flags
             return ""
-        cut = len(buf) - _MASK_HOLDBACK
+        cut = len(buf) - holdback
         out = "".join(MASK_CHAR if m else c for c, m in zip(buf[:cut], flags[:cut]))
         self._tail = buf[cut:]
         self._tail_flags = flags[cut:]

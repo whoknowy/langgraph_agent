@@ -289,6 +289,14 @@ def _normalize_created_at(created_at: Any) -> float:
     return time.time()
 
 
+def _format_created_at(ts: float) -> str:
+    """秒级时间戳 → 列表展示用字符串（与 docs/API.md 会话列表示例一致）。"""
+    try:
+        return _dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return ""
+
+
 def _message_count_from_state_data(state_data: Dict[str, Any]) -> int:
     if "values" in state_data and isinstance(state_data["values"], dict):
         values = state_data["values"]
@@ -301,6 +309,31 @@ def _message_count_from_state_data(state_data: Dict[str, Any]) -> int:
     if "messages" in state_data:
         return len(state_data["messages"])
     return 0
+
+
+def _state_data_from_thread_values(thread_data: Dict[str, Any]) -> Dict[str, Any]:
+    """LangGraph 平台的部分线程在 /threads/{id}/state 返回空 values，
+    但 /threads/search、/threads/{id} 的 values 字段携带完整状态。
+    这里把线程对象自带的 values 包装成 conversation_history_from_state_data 需要的形态。"""
+    values = thread_data.get("values")
+    if isinstance(values, dict) and values:
+        return {"values": values}
+    return {}
+
+
+def _has_state_values(state_data: Dict[str, Any]) -> bool:
+    if not isinstance(state_data, dict):
+        return False
+    values = state_data.get("values")
+    if isinstance(values, dict):
+        # 只认含有对话内容的 state，避免 /state 返回只有 customer_query 等
+        # 非对话字段时误判为可用，导致漏掉线程对象 values 中的真实消息。
+        if (values.get("messages") or values.get("conversation_history")
+                or values.get("persisted_dialogue") or values.get("response")):
+            return True
+    if state_data.get("messages"):
+        return True
+    return False
 
 
 def fetch_sessions_list(member_id: Optional[str] = None) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
@@ -327,24 +360,30 @@ def fetch_sessions_list(member_id: Optional[str] = None) -> Tuple[Optional[List[
 
             created_at = _normalize_created_at(thread.get("created_at", time.time()))
 
-            message_count = 0
-            last_user_question = ""
-            try:
-                state_response = requests.get(
-                    f"{LANGGRAPH_API_URL}/threads/{thread_id}/state",
-                    timeout=5
-                )
-                if state_response.status_code == 200:
-                    state_data = state_response.json()
-                    parsed_hist = conversation_history_from_state_data(state_data)
-                    last_user_question = last_user_question_from_history(parsed_hist)
-                    message_count = _message_count_from_state_data(state_data)
-            except Exception:
-                message_count = 0
+            # /threads/search 返回的 values 携带完整线程状态，且本环境 /state 偶发空，
+            # 优先使用线程对象自带 values；没有时再回退 /state。
+            state_data = _state_data_from_thread_values(thread)
+            if not _has_state_values(state_data):
+                try:
+                    state_response = requests.get(
+                        f"{LANGGRAPH_API_URL}/threads/{thread_id}/state",
+                        timeout=5
+                    )
+                    if state_response.status_code == 200:
+                        candidate = state_response.json()
+                        if isinstance(candidate, dict) and _has_state_values(candidate):
+                            state_data = candidate
+                except Exception:
+                    pass
+
+            parsed_hist = conversation_history_from_state_data(state_data)
+            last_user_question = last_user_question_from_history(parsed_hist)
+            message_count = _message_count_from_state_data(state_data)
 
             sessions.append({
                 "session_id": thread_id,
-                "created_at": created_at,
+                "created_at": _format_created_at(created_at),
+                "created_at_ts": created_at,
                 "message_count": message_count,
                 "last_user_question": last_user_question,
                 "title": session_titles.get_title(thread_id),
@@ -375,20 +414,28 @@ def fetch_session_detail(session_id: str, member_id: Optional[str] = None) -> Tu
         thread_data = response.json()
         conversation_history: List[Dict[str, Any]] = []
 
-        try:
-            state_response = requests.get(
-                f"{LANGGRAPH_API_URL}/threads/{session_id}/state",
-                timeout=5
-            )
-            if state_response.status_code == 200:
-                state_data = state_response.json()
-                conversation_history = conversation_history_from_state_data(state_data)
-            else:
-                print(f"⚠️ 获取线程状态失败: {state_response.status_code}")
-        except Exception as e:
-            print(f"⚠️ 获取线程状态时出错: {e}")
-            import traceback
-            traceback.print_exc()
+        # 优先使用 /threads/{id} 本身携带的 values；/state 在该环境下偶发返回空。
+        state_data = _state_data_from_thread_values(thread_data)
+        if not _has_state_values(state_data):
+            try:
+                state_response = requests.get(
+                    f"{LANGGRAPH_API_URL}/threads/{session_id}/state",
+                    timeout=5
+                )
+                if state_response.status_code == 200:
+                    candidate = state_response.json()
+                    if isinstance(candidate, dict) and _has_state_values(candidate):
+                        state_data = candidate
+                    else:
+                        print(f"⚠️ 线程状态为空，且未从线程对象取得对话内容")
+                else:
+                    print(f"⚠️ 获取线程状态失败: {state_response.status_code}")
+            except Exception as e:
+                print(f"⚠️ 获取线程状态时出错: {e}")
+                import traceback
+                traceback.print_exc()
+
+        conversation_history = conversation_history_from_state_data(state_data)
 
         session_data = {
             "session_id": session_id,
@@ -441,6 +488,100 @@ def clear_thread_and_create_new(thread_id: str, member_id: Optional[str] = None)
     return new_thread_id, None
 
 
+def _thread_has_checkpoint(thread_id: str) -> Optional[bool]:
+    """判断线程当前是否有可用 checkpoint。
+
+    返回 True/False；接口不可用时返回 None（调用方应保守处理，避免误回填导致重复历史）。
+    LangGraph 重启后旧线程的 values 仍在 /threads/{id}，但 checkpoint 可能丢失；
+    此时必须由调用方把旧消息回填进本轮输入，否则新一轮 run 会从空状态开始覆盖历史。
+
+    优先用 /threads/{id}/history?limit=1 判断（最直接、不受 /state 偶发空值影响），
+    老版本 LangGraph 没有 history 接口时回退 /state。
+    """
+    try:
+        history_response = requests.get(
+            f"{LANGGRAPH_API_URL}/threads/{thread_id}/history?limit=1", timeout=5)
+        if history_response.status_code == 200:
+            history = history_response.json()
+            if isinstance(history, list):
+                return bool(history)
+            if isinstance(history, dict) and isinstance(history.get("history"), list):
+                return bool(history["history"])
+    except Exception as e:
+        print(f"⚠️ 检查线程 checkpoint 历史失败({thread_id[:8]}…): {e}")
+
+    try:
+        response = requests.get(f"{LANGGRAPH_API_URL}/threads/{thread_id}/state", timeout=5)
+    except Exception as e:
+        print(f"⚠️ 检查线程 checkpoint 失败({thread_id[:8]}…): {e}")
+        return None
+    if response.status_code != 200:
+        print(f"⚠️ 检查线程 checkpoint 失败({thread_id[:8]}…): HTTP {response.status_code}")
+        return None
+    try:
+        data = response.json()
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("checkpoint"):
+        return True
+    values = data.get("values")
+    if isinstance(values, dict) and (
+            values.get("messages") or values.get("conversation_history") or values.get("response")):
+        return True
+    return False
+
+
+def _fetch_thread_messages(thread_id: str) -> List[Dict[str, str]]:
+    """读取线程对象 values 中的历史消息，用于 checkpoint 丢失后的回填。"""
+    try:
+        response = requests.get(f"{LANGGRAPH_API_URL}/threads/{thread_id}", timeout=5)
+        if response.status_code != 200:
+            return []
+        state_data = _state_data_from_thread_values(response.json())
+        history = conversation_history_from_state_data(state_data)
+    except Exception as e:
+        print(f"⚠️ 读取线程历史失败({thread_id[:8]}…): {e}")
+        return []
+
+    messages: List[Dict[str, str]] = []
+    for item in history:
+        content = item.get("content")
+        if not isinstance(content, str) or not content:
+            continue
+        role = item.get("role") or ("user" if item.get("is_user") else "assistant")
+        if role not in ("user", "assistant"):
+            role = "assistant"
+        messages.append({"role": role, "content": content})
+    return messages
+
+
+def _build_chat_input(thread_id: str, user_message: str,
+                      member_id: Optional[str] = None) -> Dict[str, Any]:
+    """构造本轮 run 的 input。
+
+    正常情况只传本轮用户消息；若线程 checkpoint 丢失（常见于 LangGraph 重启后），
+    先回填 /threads/{id} 中保存的历史消息，避免本轮从空状态开始把旧记录覆盖掉。
+    """
+    text = user_message.strip()
+    graph_input: Dict[str, Any] = {
+        "messages": [{"role": "user", "content": text}],
+        "customer_query": text,
+        "session_id": thread_id,
+    }
+    if member_id:
+        graph_input["member_id"] = member_id
+
+    has_checkpoint = _thread_has_checkpoint(thread_id)
+    if has_checkpoint is False:
+        history = _fetch_thread_messages(thread_id)
+        if history:
+            graph_input["messages"] = history + graph_input["messages"]
+            print(f"♻️ 线程 {thread_id[:8]}… 无 checkpoint，已回填 {len(history)} 条历史消息")
+    return graph_input
+
+
 # -----------------------------------------------------------------------------
 # 一次聊天运行（阻塞轮询）
 # -----------------------------------------------------------------------------
@@ -466,13 +607,7 @@ def run_chat_sync(user_message: str, client_session_id: Optional[str] = None,
     assert _assistant_id and tid
 
     try:
-        graph_input: Dict[str, Any] = {
-            "messages": [{"role": "user", "content": user_message.strip()}],
-            "customer_query": user_message.strip(),
-            "session_id": tid,
-        }
-        if member_id:
-            graph_input["member_id"] = member_id
+        graph_input = _build_chat_input(tid, user_message, member_id)
 
         run_resp = requests.post(
             f"{LANGGRAPH_API_URL}/threads/{tid}/runs",
@@ -566,11 +701,7 @@ def stream_chat_events(user_message: str, client_session_id: Optional[str] = Non
             f"{LANGGRAPH_API_URL}/threads/{tid}/runs",
             json={
                 "assistant_id": _assistant_id,
-                "input": {
-                    "messages": [{"role": "user", "content": user_message.strip()}],
-                    "customer_query": user_message.strip(),
-                    "session_id": tid
-                }
+                "input": _build_chat_input(tid, user_message, member_id)
             },
             timeout=30
         )
@@ -705,13 +836,7 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
 
     assert _assistant_id and tid
 
-    graph_input: Dict[str, Any] = {
-        "messages": [{"role": "user", "content": user_message.strip()}],
-        "customer_query": user_message.strip(),
-        "session_id": tid,
-    }
-    if member_id:
-        graph_input["member_id"] = member_id
+    graph_input = _build_chat_input(tid, user_message, member_id)
 
     try:
         response = requests.post(

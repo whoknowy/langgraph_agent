@@ -6,6 +6,7 @@ import CheckinView from './components/CheckinView.vue'
 import BoardingPassView from './components/BoardingPassView.vue'
 import ProfileView from './components/ProfileView.vue'
 import MyOrdersView from './components/MyOrdersView.vue'
+import PayResultView from './components/PayResultView.vue'
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -20,7 +21,8 @@ const router = createRouter({
         { path: 'checkin', component: CheckinView },
         { path: 'boardpass', component: BoardingPassView },
         { path: 'profile', component: ProfileView },
-        { path: 'orders', component: MyOrdersView }
+        { path: 'orders', component: MyOrdersView },
+        { path: 'pay/result', component: PayResultView }
       ]
     }
   ]
