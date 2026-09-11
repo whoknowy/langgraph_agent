@@ -475,8 +475,19 @@ def pay():
 # --- 支付渠道抽象（mock / 支付宝沙箱）：幂等落账见 services/payment_service.py ---
 
 def _callback_base() -> str:
-    """回调基址：显式配置优先，否则按当前请求 host 自动拼（本地与内网穿透都适用）。"""
+    """回调用公网基址：必须公网可达（支付宝服务器要来打异步通知）。"""
     return (os.getenv("PUBLIC_BASE_URL") or request.host_url).rstrip('/')
+
+
+def _checkout_base() -> str:
+    """收银台中转页基址：用浏览器当前访问的 host。
+
+    沙箱对收银台的 Referer 有白名单校验，实测只放行本机地址
+    （http://127.0.0.1:5000/）与支付宝自身域名，公网隧道域名
+    （flightagent.nat100.top）会被拒为 RefererCheckFailed。
+    所以中转页链接必须用「用户实际访问的地址」拼，而不是公网回拨地址。
+    """
+    return (os.getenv("CHECKOUT_BASE_URL") or request.host_url).rstrip('/')
 
 
 def _alipay_provider():
@@ -498,12 +509,13 @@ def pay_create():
             return denied
         data = request.get_json() or {}
         from services import payment_service
-        base = _callback_base()
+        cb_base = _callback_base()       # 给支付宝服务器回调用（须公网可达）
+        co_base = _checkout_base()       # 给用户浏览器跳转用（沙箱 Referer 白名单）
         result = payment_service.start_payment(
             order_no=data.get('order_no', ''),
             member_id=member['member_id'],
-            return_url=ALIPAY_RETURN_URL or f"{base}/#/pay/result",
-            notify_url=ALIPAY_NOTIFY_URL or f"{base}/api/pay/notify/alipay",
+            return_url=ALIPAY_RETURN_URL or f"{co_base}/#/pay/result",
+            notify_url=ALIPAY_NOTIFY_URL or f"{cb_base}/api/pay/notify/alipay",
         )
         if result.get('error'):
             return jsonify(result), 400
@@ -511,7 +523,7 @@ def pay_create():
         # 直接 GET 跳转在沙箱环境常因缺少 Referer 被拦（RefererCheckFailed），
         # 经本站中转可保证 Referer 恒为本站点。
         if result.get('mode') == 'redirect':
-            result['pay_url'] = f"{base}/api/pay/gateway/{result['pay_no']}"
+            result['pay_url'] = f"{co_base}/api/pay/gateway/{result['pay_no']}"
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': f'发起支付失败: {str(e)}'}), 500
@@ -534,14 +546,15 @@ def pay_gateway(pay_no):
             return Response("该笔支付已处理，请勿重复支付",
                             mimetype='text/html; charset=utf-8'), 400
 
-        base = _callback_base()
+        cb_base = _callback_base()
+        co_base = _checkout_base()
         provider = _alipay_provider()
         form = provider.build_checkout_form(
             pay_no=payment["pay_no"],
             subject=f"机票订单 {payment['order_no']}",
             amount=float(payment["amount"]),
-            return_url=ALIPAY_RETURN_URL or f"{base}/#/pay/result",
-            notify_url=ALIPAY_NOTIFY_URL or f"{base}/api/pay/notify/alipay",
+            return_url=ALIPAY_RETURN_URL or f"{co_base}/#/pay/result",
+            notify_url=ALIPAY_NOTIFY_URL or f"{cb_base}/api/pay/notify/alipay",
         )
         if not form:
             return Response("当前支付渠道不支持表单方式，请返回重试",
