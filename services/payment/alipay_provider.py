@@ -63,20 +63,37 @@ def _load_key(path_value: str, env_var: str, header: str, footer: str) -> str:
 
 
 class AlipayProvider(PaymentProvider):
+    """支付宝渠道。
+
+    支付场景（scene）决定下单接口：
+    - "page"：电脑网站支付 alipay.trade.page.pay，PC 浏览器收银台；
+    - "wap"：手机网站支付 alipay.trade.wap.pay，手机浏览器唤起支付宝 App，
+      推荐给移动端使用——沙箱对 wap 的支持比 page 完整，
+      且不走 PC 收银台那套引用内网资源（stable.alipay.net）的页面。
+
+    两者的验签、查单、关单完全一样，只是下单接口与 product_code 不同。
+    """
+
     name = PROVIDER_ALIPAY_SANDBOX
     label = "支付宝沙箱"
     mode = MODE_REDIRECT
 
+    # 场景 → SDK 方法名（SDK 内部已带好各自 product_code）
+    _SCENES = {"page": "api_alipay_trade_page_pay", "wap": "api_alipay_trade_wap_pay"}
+
     def __init__(self, *, app_id: str, private_key_path: str, public_key_path: str,
-                 sign_type: str = "RSA2", debug: bool = True, timeout: int = 15):
+                 sign_type: str = "RSA2", debug: bool = True, timeout: int = 15,
+                 scene: str = "page"):
         self.app_id = (app_id or "").strip()
         self.private_key_path = private_key_path
         self.public_key_path = public_key_path
         self.sign_type = sign_type or "RSA2"
         self.debug = bool(debug)
         self.timeout = timeout
+        self.scene = scene if scene in self._SCENES else "page"
         self.name = PROVIDER_ALIPAY_SANDBOX if self.debug else PROVIDER_ALIPAY
-        self.label = "支付宝沙箱" if self.debug else "支付宝"
+        base = "支付宝沙箱" if self.debug else "支付宝"
+        self.label = base if self.scene == "page" else f"{base}（手机网站支付）"
         self._client = None
 
     # ------------------------------------------------------------ 内部
@@ -111,7 +128,8 @@ class AlipayProvider(PaymentProvider):
                      return_url: str, notify_url: str):
         """下单，并同时给出两种可用形态：拼接好的 URL 与拆好的表单字段。"""
         client = self._ensure_client()
-        order_string = client.api_alipay_trade_page_pay(
+        method = getattr(client, self._SCENES[self.scene])
+        order_string = method(
             out_trade_no=pay_no,
             total_amount=self.fmt_amount(amount),
             subject=subject,

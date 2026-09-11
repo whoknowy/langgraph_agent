@@ -30,6 +30,10 @@ ALIPAY_APP_ID = os.getenv("ALIPAY_APP_ID", "").strip()
 # True → 沙箱网关 openapi-sandbox.dl.alipaydev.com；False → 生产网关 openapi.alipay.com
 ALIPAY_DEBUG = os.getenv("ALIPAY_DEBUG", "true").strip().lower() in ("1", "true", "yes", "on")
 ALIPAY_SIGN_TYPE = os.getenv("ALIPAY_SIGN_TYPE", "RSA2").strip()
+# 支付场景：page=电脑网站支付（PC 收银台）；wap=手机网站支付（手机浏览器唤起支付宝 App）
+# 移动端（安卓/小程序）务必用 wap：沙箱对 page 的收银台页面引用了内网资源
+# （stable.alipay.net），公网加载不全导致"能进收银台但点付款请求失败"。
+ALIPAY_SCENE = os.getenv("ALIPAY_SCENE", "page").strip().lower()
 # 密钥：环境变量 ALIPAY_PRIVATE_KEY / ALIPAY_PUBLIC_KEY 优先（生产推荐，不落盘），
 # 未设置时回退到下面这两个密钥文件（本地开发方便）。详见 keys/README.md
 ALIPAY_PRIVATE_KEY_PATH = os.getenv("ALIPAY_PRIVATE_KEY_PATH", "keys/app_private.txt").strip()

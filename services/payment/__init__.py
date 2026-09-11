@@ -20,13 +20,16 @@ def _build(key: str) -> PaymentProvider:
         return MockProvider()
     if key in (PROVIDER_ALIPAY_SANDBOX, PROVIDER_ALIPAY):
         from config import (ALIPAY_APP_ID, ALIPAY_PRIVATE_KEY_PATH,
-                            ALIPAY_PUBLIC_KEY_PATH, ALIPAY_SIGN_TYPE)
+                            ALIPAY_PUBLIC_KEY_PATH, ALIPAY_SCENE,
+                            ALIPAY_SIGN_TYPE)
         from .alipay_provider import AlipayProvider
         return AlipayProvider(
             app_id=ALIPAY_APP_ID,
             private_key_path=ALIPAY_PRIVATE_KEY_PATH,
             public_key_path=ALIPAY_PUBLIC_KEY_PATH,
             sign_type=ALIPAY_SIGN_TYPE,
+            # page=电脑网站支付（PC 收银台）；wap=手机网站支付（唤起 App）
+            scene=ALIPAY_SCENE,
             # 沙箱/生产由渠道名决定；ALIPAY_DEBUG 用于上层选择用哪个渠道名
             debug=(key == PROVIDER_ALIPAY_SANDBOX),
         )

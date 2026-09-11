@@ -125,6 +125,14 @@ python -c "import web_app; web_app.app.run(host='0.0.0.0', port=5000, debug=Fals
 只有首次翻转返回 True，调用方据此才推进订单——重投多少次都只出票一次。
 金额与 `app_id` 在验签通过后还要再比对一次，防止他人商户号伪造"已支付"。
 
+**支付场景**：支付宝侧用 `ALIPAY_SCENE` 切换两个接口，无需改代码——
+`page`（默认，`alipay.trade.page.pay` / `FAST_INSTANT_TRADE_PAY`）走 PC 浏览器收银台；
+`wap`（`alipay.trade.wap.pay` / `QUICK_WAP_PAY`）走手机网站支付，
+手机浏览器 / 安卓 WebView / 小程序 web-view 用这个。
+沙箱环境目前设为 `wap`——沙箱的 `page` 收银台页面引用了蚂蚁内网资源
+（`stable.alipay.net`），公网 DNS 解析失败会导致「能进收银台但点付款请求失败」。
+联调时可看启动日志里渠道的 `label`（`wap` 会显示「支付宝沙箱（手机网站支付）」）确认。
+
 **密钥**：环境变量 `ALIPAY_PRIVATE_KEY` / `ALIPAY_PUBLIC_KEY` 优先（生产推荐，不落盘），
 未设置时回退到 `keys/*.txt`。`keys/` 只有 README 入库，密钥文件已被 `.gitignore` 排除。
 详见 [keys/README.md](keys/README.md)。

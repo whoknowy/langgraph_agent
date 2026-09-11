@@ -1433,6 +1433,127 @@ class TestPayment:
         ok, _ = get_provider("mock").verify_notify({"out_trade_no": "P1", "trade_status": "TRADE_SUCCESS"})
         assert ok is False
 
+    # --- 支付宝验签链路（真实 RSA，不联网）---
+
+    @staticmethod
+    def _sign(params):
+        """按支付宝规则对参数签名（用应用私钥）。"""
+        import base64
+
+        from Cryptodome.Hash import SHA256
+        from Cryptodome.PublicKey import RSA
+        from Cryptodome.Signature import pkcs1_15
+
+        from config import ALIPAY_PRIVATE_KEY_PATH
+        from services.payment.alipay_provider import (_PRIV_FOOTER, _PRIV_HEADER,
+                                                      _load_key)
+        items = sorted((k, v) for k, v in params.items()
+                       if k not in ("sign", "sign_type") and v not in (None, ""))
+        content = "&".join(f"{k}={v}" for k, v in items)
+        pem = _load_key(ALIPAY_PRIVATE_KEY_PATH, "ALIPAY_PRIVATE_KEY",
+                        _PRIV_HEADER, _PRIV_FOOTER)
+        sig = pkcs1_15.new(RSA.importKey(pem)).sign(SHA256.new(content.encode("utf-8")))
+        return base64.b64encode(sig).decode()
+
+    @classmethod
+    def _alipay_provider_with_app_pubkey(cls):
+        """构造一个「用应用公钥验签」的支付宝渠道实例（仅测试用）。
+
+        真实环境下支付宝是用它自己的私钥签回调、我们拿支付宝公钥验；
+        测试里拿不到支付宝私钥，所以换成应用密钥对自签自验，
+        目的只是覆盖「验签 → 校验 → 落账」这段代码路径本身。
+        """
+        from config import (ALIPAY_APP_ID, ALIPAY_PRIVATE_KEY_PATH,
+                            ALIPAY_PUBLIC_KEY_PATH)
+        from services.payment.alipay_provider import AlipayProvider
+        p = AlipayProvider(app_id=ALIPAY_APP_ID,
+                           private_key_path=ALIPAY_PRIVATE_KEY_PATH,
+                           public_key_path=ALIPAY_PUBLIC_KEY_PATH, debug=True)
+        # 把验签公钥换成应用公钥，使自签数据可被验通
+        p.public_key_path = "keys/app_public.txt"
+        return p
+
+    @staticmethod
+    def _notify_params(pay_no, amount, *, app_id, trade_status="TRADE_SUCCESS",
+                       trade_no="2026091122001447550512345678"):
+        return {
+            "gmt_create": "2026-09-11 13:00:00", "charset": "utf-8",
+            "seller_email": "sandbox@alipay.com", "subject": "机票订单 TEST",
+            "sign_type": "RSA2", "trade_no": trade_no, "buyer_id": "2088622000000001",
+            "notify_type": "trade_status_sync", "out_trade_no": pay_no,
+            "notify_time": "2026-09-11 13:00:05", "trade_status": trade_status,
+            "total_amount": f"{float(amount):.2f}", "app_id": app_id,
+            "notify_id": "test-notify-001",
+        }
+
+    def test_alipay_verify_notify_accepts_valid_signature(self):
+        """正确签名的通知应通过验签，并解析出标准化字段。"""
+        from config import ALIPAY_APP_ID
+        p = self._alipay_provider_with_app_pubkey()
+        params = self._notify_params("PB2", 600, app_id=ALIPAY_APP_ID)
+        params["sign"] = self._sign(params)
+        ok, fields = p.verify_notify(params)
+        assert ok is True, fields
+        assert fields["out_trade_no"] == "PB2"
+        assert fields["trade_status"] == "TRADE_SUCCESS"
+        assert fields["trade_no"] == "2026091122001447550512345678"
+
+    def test_alipay_verify_notify_rejects_tampered_amount(self):
+        """签名后篡改金额 → 验签必须失败（否则可改单骗过金额校验）。"""
+        from config import ALIPAY_APP_ID
+        p = self._alipay_provider_with_app_pubkey()
+        params = self._notify_params("PB3", 600, app_id=ALIPAY_APP_ID)
+        params["sign"] = self._sign(params)
+        params["total_amount"] = "0.01"      # 篡改
+        ok, info = p.verify_notify(params)
+        assert ok is False and "签名" in info.get("error", "")
+
+    def test_alipay_verify_notify_rejects_wrong_app_id(self):
+        """验签通过但 app_id 不是发给我们的 → 拒绝（防他人商户号伪造）。"""
+        from config import ALIPAY_APP_ID
+        p = self._alipay_provider_with_app_pubkey()
+        params = self._notify_params("PB4", 600, app_id="9999999999999999")
+        params["sign"] = self._sign(params)
+        ok, info = p.verify_notify(params)
+        assert ok is False and "app_id" in info.get("error", "")
+
+    def test_alipay_verify_notify_rejects_missing_sign(self):
+        from config import ALIPAY_APP_ID
+        p = self._alipay_provider_with_app_pubkey()
+        params = self._notify_params("PB5", 600, app_id=ALIPAY_APP_ID)
+        ok, info = p.verify_notify(params)     # 不带 sign
+        assert ok is False and "sign" in info.get("error", "")
+
+    def test_alipay_notify_end_to_end_marks_order_paid_once(self):
+        """验签通过后走完整落账：出票，且重投 5 次仍只出票一次。"""
+        from config import ALIPAY_APP_ID
+        from services import payment_repo, payment_service
+        p = self._alipay_provider_with_app_pubkey()
+        self._new_order("PB6", amount=600)
+        started = payment_service.start_payment("PB6", member_id="M1001",
+                                                provider_name="alipay_sandbox")
+        pay_no = started["pay_no"]
+
+        for i in range(5):   # 模拟支付宝重投
+            params = self._notify_params(pay_no, 600, app_id=ALIPAY_APP_ID)
+            params["sign"] = self._sign(params)
+            ok, fields = p.verify_notify(params)
+            assert ok is True, fields
+            r = payment_service.settle_payment(
+                out_trade_no=fields["out_trade_no"], expect_amount=fields["amount"],
+                trade_no=fields["trade_no"], buyer_id=fields["buyer_id"],
+                provider_name=p.name)
+            assert r.get("success")
+            if i > 0:
+                assert r.get("already") is True   # 第 2 次起都是重复通知
+
+        order = self._order("PB6")
+        assert order["status"] == "已出票"
+        assert order["pay_channel"] == "alipay_sandbox"
+        payment = payment_repo.get_by_out_trade_no(pay_no)
+        assert payment["status"] == "支付成功"
+        assert payment["trade_no"] == "2026091122001447550512345678"
+
 
 # ---------------------------------------------------------------- 直接运行入口
 
