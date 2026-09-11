@@ -9,12 +9,17 @@
 3. **回调不可信**：验签只是第一道，还必须校验 app_id 与金额，
    否则攻击者可用自己的商户号伪造一笔"已支付"。
 
+密钥来源：环境变量 ALIPAY_PRIVATE_KEY / ALIPAY_PUBLIC_KEY 优先，
+未设置时回退到 config 指定的密钥文件（见 _load_key）。
+
 SDK 与网络调用均为延迟加载/延迟构造：未配置凭据时本模块可正常导入，
 只在真正发起支付时才报错，不影响 mock 通道与其他功能。
 """
 
+import os
 from pathlib import Path
 from typing import Any, Dict, Tuple
+from urllib.parse import parse_qsl
 
 from .base import (MODE_REDIRECT, PROVIDER_ALIPAY, PROVIDER_ALIPAY_SANDBOX,
                    PaymentProvider)
@@ -30,19 +35,31 @@ _PUB_FOOTER = "-----END PUBLIC KEY-----"
 _PAID_STATUSES = ("TRADE_SUCCESS", "TRADE_FINISHED")
 
 
-def _read_pem(path_value: str, header: str, footer: str) -> str:
-    """读取密钥文件并规范化成 PEM。
-
-    已经是 PEM（含 BEGIN 标记）的原样返回；裸 Base64 则补头尾并压成单行主体。
-    """
-    path = Path(path_value)
-    if not path.is_absolute():
-        path = _PROJECT_ROOT / path
-    raw = (path.read_text(encoding="utf-8") or "").strip()
+def _normalize_pem(raw: str, header: str, footer: str) -> str:
+    """规范化成 PEM：已是 PEM 则原样返回，裸 Base64 则补头尾。"""
+    raw = (raw or "").strip()
     if "BEGIN" in raw:
         return raw
     body = "".join(raw.split())
     return f"{header}\n{body}\n{footer}\n"
+
+
+def _load_key(path_value: str, env_var: str, header: str, footer: str) -> str:
+    """读取密钥：环境变量优先，回退到密钥文件。
+
+    优先环境变量是生产环境的最佳实践——密钥不必落盘，可交由容器/KMS 注入；
+    本地开发用文件更方便，两者兼容。文件不存在或格式不对会给出明确提示。
+    """
+    from_env = os.getenv(env_var, "").strip()
+    if from_env:
+        return _normalize_pem(from_env, header, footer)
+    path = Path(path_value)
+    if not path.is_absolute():
+        path = _PROJECT_ROOT / path
+    if not path.exists():
+        raise RuntimeError(
+            f"密钥文件不存在：{path}（可改用环境变量 {env_var} 直接提供密钥内容）")
+    return _normalize_pem(path.read_text(encoding="utf-8"), header, footer)
 
 
 class AlipayProvider(PaymentProvider):
@@ -75,8 +92,10 @@ class AlipayProvider(PaymentProvider):
         self._client = AliPay(
             appid=self.app_id,
             app_notify_url=None,
-            app_private_key_string=_read_pem(self.private_key_path, _PRIV_HEADER, _PRIV_FOOTER),
-            alipay_public_key_string=_read_pem(self.public_key_path, _PUB_HEADER, _PUB_FOOTER),
+            app_private_key_string=_load_key(
+                self.private_key_path, "ALIPAY_PRIVATE_KEY", _PRIV_HEADER, _PRIV_FOOTER),
+            alipay_public_key_string=_load_key(
+                self.public_key_path, "ALIPAY_PUBLIC_KEY", _PUB_HEADER, _PUB_FOOTER),
             sign_type=self.sign_type,
             debug=self.debug,
             config=AliPayConfig(timeout=self.timeout),
@@ -88,27 +107,44 @@ class AlipayProvider(PaymentProvider):
 
     # ------------------------------------------------------------ 接口实现
 
+    def _build_order(self, pay_no: str, subject: str, amount: float,
+                     return_url: str, notify_url: str):
+        """下单，并同时给出两种可用形态：拼接好的 URL 与拆好的表单字段。"""
+        client = self._ensure_client()
+        order_string = client.api_alipay_trade_page_pay(
+            out_trade_no=pay_no,
+            total_amount=self.fmt_amount(amount),
+            subject=subject,
+            return_url=return_url,
+            notify_url=notify_url,
+        )
+        fields = dict(parse_qsl(order_string, keep_blank_values=True))
+        return client._gateway, order_string, fields
+
     def create_payment(self, *, pay_no: str, subject: str, amount: float,
                        return_url: str, notify_url: str) -> Dict[str, Any]:
         try:
-            client = self._ensure_client()
-            order_string = client.api_alipay_trade_page_pay(
-                out_trade_no=pay_no,
-                total_amount=self.fmt_amount(amount),
-                subject=subject,
-                return_url=return_url,
-                notify_url=notify_url,
-            )
+            gateway, order_string, _ = self._build_order(
+                pay_no, subject, amount, return_url, notify_url)
             return {
                 "ok": True,
                 "mode": MODE_REDIRECT,
-                "pay_url": f"{client._gateway}?{order_string}",
+                "pay_url": f"{gateway}?{order_string}",
                 "pay_no": pay_no,
                 "amount": self.fmt_amount(amount),
                 "message": "请在支付宝收银台完成付款",
             }
         except Exception as e:
             return {"ok": False, "error": f"支付宝下单失败：{e}"}
+
+    def build_checkout_form(self, *, pay_no: str, subject: str, amount: float,
+                            return_url: str, notify_url: str):
+        try:
+            gateway, _, fields = self._build_order(
+                pay_no, subject, amount, return_url, notify_url)
+            return {"gateway": gateway, "fields": fields}
+        except Exception:
+            return None
 
     def verify_notify(self, data: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
         raw = dict(data or {})

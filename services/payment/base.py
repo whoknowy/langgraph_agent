@@ -65,6 +65,18 @@ class PaymentProvider(ABC):
         """关闭未支付交易（订单超时取消时调用）。渠道不支持时返回 False。"""
         return False
 
+    def build_checkout_form(self, *, pay_no: str, subject: str, amount: float,
+                            return_url: str, notify_url: str):
+        """可选能力：构造自动提交到网关的表单字段。
+
+        返回 {"gateway": "https://...", "fields": {k: v}}；渠道不支持则返回 None，
+        调用方回退到 create_payment 给出的 pay_url 跳转。
+
+        电脑网站支付的官方接入方式就是表单 POST。相比直接 GET 跳转，表单方式下
+        Referer 恒为本站，可规避网关（尤其沙箱）的 Referer 校验拦截。
+        """
+        return None
+
     # --- 工具 ---
 
     @staticmethod

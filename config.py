@@ -30,6 +30,8 @@ ALIPAY_APP_ID = os.getenv("ALIPAY_APP_ID", "").strip()
 # True → 沙箱网关 openapi-sandbox.dl.alipaydev.com；False → 生产网关 openapi.alipay.com
 ALIPAY_DEBUG = os.getenv("ALIPAY_DEBUG", "true").strip().lower() in ("1", "true", "yes", "on")
 ALIPAY_SIGN_TYPE = os.getenv("ALIPAY_SIGN_TYPE", "RSA2").strip()
+# 密钥：环境变量 ALIPAY_PRIVATE_KEY / ALIPAY_PUBLIC_KEY 优先（生产推荐，不落盘），
+# 未设置时回退到下面这两个密钥文件（本地开发方便）。详见 keys/README.md
 ALIPAY_PRIVATE_KEY_PATH = os.getenv("ALIPAY_PRIVATE_KEY_PATH", "keys/app_private.txt").strip()
 ALIPAY_PUBLIC_KEY_PATH = os.getenv("ALIPAY_PUBLIC_KEY_PATH", "keys/alipay_public.txt").strip()
 # 回调地址：留空则按当前请求 host 自动拼接（本地开发友好）；公网部署建议显式写死

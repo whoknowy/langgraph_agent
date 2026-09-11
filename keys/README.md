@@ -14,6 +14,18 @@
 最容易踩的坑：把 `app_public.txt`（应用公钥）当成了支付宝公钥。
 **验签用的是 `alipay_public.txt`（支付宝公钥）**，两者不同，放错会一直验签失败。
 
+## 密钥的两种提供方式
+
+代码按「**环境变量优先，文件回退**」读取，见 `alipay_provider.py` 的 `_load_key()`：
+
+| 方式 | 变量 / 路径 | 适用场景 |
+|---|---|---|
+| 环境变量（推荐，生产） | `ALIPAY_PRIVATE_KEY`、`ALIPAY_PUBLIC_KEY` | 容器 / CI / KMS 注入，密钥不落盘 |
+| 密钥文件（当前，本地开发） | `keys/app_private.txt`、`keys/alipay_public.txt` | 本地调试方便 |
+
+两者内容格式要求一致（下面两种都能用），环境变量里直接放密钥原文即可。
+若两个都没提供，下单时会明确报错提示缺哪个。
+
 ## 关于文件格式
 
 `alipay_provider.py` 会自动规范化，下面两种都能用：
@@ -28,7 +40,7 @@ MIIEogIBAAKCAQEA...
 
 > 说明：密钥工具导出的常常是单行裸 Base64，而 pycryptodome 的 `RSA.importKey`
 > 只认 PEM、直接喂会报 `RSA key format is not supported`。
-> 代码里 `_read_pem()` 检测到没有 `BEGIN` 标记时会自动补头尾，所以不用手动改文件。
+> 代码里 `_normalize_pem()` 检测到没有 `BEGIN` 标记时会自动补头尾，所以不用手动改文件。
 
 公钥对应的标记是 `-----BEGIN PUBLIC KEY-----` / `-----END PUBLIC KEY-----`。
 

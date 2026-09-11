@@ -507,9 +507,69 @@ def pay_create():
         )
         if result.get('error'):
             return jsonify(result), 400
+        # redirect 模式改走本站中转页：由它表单 POST 到网关。
+        # 直接 GET 跳转在沙箱环境常因缺少 Referer 被拦（RefererCheckFailed），
+        # 经本站中转可保证 Referer 恒为本站点。
+        if result.get('mode') == 'redirect':
+            result['pay_url'] = f"{base}/api/pay/gateway/{result['pay_no']}"
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': f'发起支付失败: {str(e)}'}), 500
+
+
+@app.route('/api/pay/gateway/<pay_no>')
+def pay_gateway(pay_no):
+    """收银台中转页：自动提交表单跳转到支付宝网关。
+
+    电脑网站支付的官方接入方式就是表单 POST；本站中转后再提交，
+    Referer 恒为本站点，可规避沙箱对直接 GET 跳转的 RefererCheckFailed 拦截。
+    """
+    import html
+    try:
+        from services import payment_repo
+        payment = payment_repo.get_payment((pay_no or '').strip().upper())
+        if not payment:
+            return Response("支付流水不存在或已失效", mimetype='text/html; charset=utf-8'), 404
+        if payment["status"] != "待支付":
+            return Response("该笔支付已处理，请勿重复支付",
+                            mimetype='text/html; charset=utf-8'), 400
+
+        base = _callback_base()
+        provider = _alipay_provider()
+        form = provider.build_checkout_form(
+            pay_no=payment["pay_no"],
+            subject=f"机票订单 {payment['order_no']}",
+            amount=float(payment["amount"]),
+            return_url=ALIPAY_RETURN_URL or f"{base}/#/pay/result",
+            notify_url=ALIPAY_NOTIFY_URL or f"{base}/api/pay/notify/alipay",
+        )
+        if not form:
+            return Response("当前支付渠道不支持表单方式，请返回重试",
+                            mimetype='text/html; charset=utf-8'), 500
+
+        inputs = "".join(
+            f'<input type="hidden" name="{html.escape(str(k))}" value="{html.escape(str(v))}">'
+            for k, v in form["fields"].items())
+        page = (
+            '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>正在跳转支付宝…</title>'
+            '<style>body{font-family:-apple-system,"Microsoft YaHei",sans-serif;'
+            'text-align:center;padding:80px 20px;color:#555}'
+            'button{margin-top:18px;padding:9px 22px;border:0;border-radius:6px;'
+            'background:#1677ff;color:#fff;font-size:14px;cursor:pointer}</style></head>'
+            '<body onload="document.getElementById(\'alipayForm\').submit()">'
+            f'<p>正在跳转到支付宝收银台…</p>'
+            f'<form id="alipayForm" method="POST" action="{html.escape(form["gateway"])}">'
+            f'{inputs}</form>'
+            '<noscript><p>若浏览器未自动跳转，请手动点击：</p></noscript>'
+            '<button type="submit" form="alipayForm">前往支付宝付款</button>'
+            '</body></html>'
+        )
+        return Response(page, mimetype='text/html; charset=utf-8')
+    except Exception as e:
+        print(f"❌ [支付] 收银台中转页生成失败: {e}")
+        return Response("收银台加载失败，请返回重试", mimetype='text/html; charset=utf-8'), 500
 
 
 @app.route('/api/pay/confirm', methods=['POST'])
