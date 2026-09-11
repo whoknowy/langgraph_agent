@@ -129,6 +129,7 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { api, qs, getMemberToken } from '../../api.js'
 import { toastError, toastSuccess, confirmDialog } from '../../ui.js'
+import { usePay } from '../composables/usePay.js'
 
 const props = defineProps({ member: Object })
 
@@ -141,6 +142,10 @@ const pendingAction = ref(null)
 const actionLoading = ref(false)
 const chatBody = ref(null)
 const seatModal = ref({ show: false, map: {}, selected: '', error: '', loading: false, action: null })
+
+// 聊天里订票后的支付：与「我的订单」「机票预订」共用同一实现。
+// 这里不传 win —— 跳转方式与那两处不同，原因见 confirmAction 里的注释。
+const { pay } = usePay()
 
 const suggestions = [
   '帮我查一下明天北京到上海的经济舱机票',
@@ -455,8 +460,16 @@ async function confirmAction() {
       messages.value.push({ role: 'assistant', content: `✅ 订单 ${d.order_no} 已创建（待支付），金额 ¥${d.total_amount}`, toolChips: [] })
       pendingAction.value = null
       if (await confirmDialog('订单已创建，是否立即支付？', '支付')) {
-        await api('/api/pay', { method: 'POST', body: { order_no: d.order_no } })
-        messages.value.push({ role: 'assistant', content: `✅ 支付成功，订单 ${d.order_no} 已出票`, toolChips: [] })
+        // 注意：这里不能用 window.open 跳收银台——confirmDialog 是 await 过来的，
+        // 用户手势上下文已失效，新窗口会被浏览器拦掉。改用当前页跳转，
+        // 支付结果页（/#/pay/result）会自动把用户带回订单列表。
+        const ok = await pay(d.order_no)
+        messages.value.push({
+          role: 'assistant',
+          content: ok
+            ? `✅ 支付成功，订单 ${d.order_no} 已出票`
+            : `订单 ${d.order_no} 尚未支付完成，可到「我的订单」继续支付。`
+        })
       }
     } else if (a.type === 'refund') {
       const d = await api('/api/refund', { method: 'POST', body: {

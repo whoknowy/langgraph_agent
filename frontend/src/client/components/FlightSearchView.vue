@@ -78,8 +78,8 @@
         <el-alert v-if="orderPanel.error" :title="orderPanel.error" type="error" :closable="false" style="margin-top:12px" />
       </template>
       <template #footer>
-        <el-button @click="orderPanel.open = false">取消</el-button>
-        <el-button type="primary" :loading="orderPanel.submitting" @click="confirmBook">
+        <el-button :disabled="orderPanel.submitting" @click="closePanel">取消</el-button>
+        <el-button type="primary" :loading="orderPanel.submitting" @click="onSubmitClick">
           {{ orderPanel.submitting ? '处理中…' : (orderPanel.created ? '去支付' : '确认下单') }}
         </el-button>
       </template>
@@ -91,6 +91,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { api, qs } from '../../api.js'
 import { toastSuccess, toastError } from '../../ui.js'
+import { usePay, openPayWindow } from '../composables/usePay.js'
 
 const form = ref({ departure: '北京', destination: '上海', date: '', cabin: '经济' })
 const flights = ref([])
@@ -98,7 +99,16 @@ const loading = ref(false)
 const error = ref('')
 const orderPanel = reactive({
   open: false, loading: false, submitting: false, error: '', flight: null,
-  cabin: '经济', passengers: 1, quote: {}, created: false, orderNo: '', payMethod: 'balance', passengerName: ''
+  cabin: '经济', passengers: 1, quote: {}, created: false, orderNo: '', payMethod: 'balance', passengerName: '',
+  payWin: null   // 预开的支付窗口，见 onSubmitClick
+})
+
+// 支付成功后刷新航班列表（该舱位余票可能变化）
+const { pay } = usePay({
+  onPaid: async () => {
+    orderPanel.open = false
+    await search()
+  },
 })
 
 function tomorrow() {
@@ -162,12 +172,26 @@ async function openBooking(f) {
   }
 }
 
+// 点击入口：必须在**同步阶段**预开支付窗口。
+// 若等到 await 之后再 window.open，已脱离用户手势上下文，浏览器会当弹窗拦截。
+function onSubmitClick() {
+  if (orderPanel.created && orderPanel.submitting) return   // 防连点
+  orderPanel.payWin = orderPanel.created ? openPayWindow() : null
+  confirmBook()
+}
+
+function closePanel() {
+  if (orderPanel.payWin) { orderPanel.payWin.close(); orderPanel.payWin = null }
+  orderPanel.open = false
+}
+
 async function confirmBook() {
   const f = orderPanel.flight
   orderPanel.submitting = true
   orderPanel.error = ''
   try {
     if (!orderPanel.created) {
+      // 第一步：创建订单
       const d = await api('/api/book', { method: 'POST', body: {
         flight_no: f.flight_no, flight_date: form.value.date,
         cabin: orderPanel.cabin, passengers: 1
@@ -176,9 +200,10 @@ async function confirmBook() {
       orderPanel.orderNo = d.order_no
       toastSuccess(`订单 ${d.order_no} 已创建（待支付），金额 ¥${d.total_amount}`)
     } else {
-      const d = await api('/api/pay', { method: 'POST', body: { order_no: orderPanel.orderNo } })
-      toastSuccess(d.message || '支付成功，已出票')
-      orderPanel.open = false
+      // 第二步：真实支付（走渠道抽象，可能是跳转收银台或站内确认）
+      const ok = await pay(orderPanel.orderNo, { win: orderPanel.payWin })
+      orderPanel.payWin = null
+      if (ok) orderPanel.open = false
     }
   } catch (e) {
     orderPanel.error = e.message

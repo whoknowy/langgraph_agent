@@ -21,7 +21,7 @@
         <div class="order-actions">
           <template v-if="o.status === '待支付'">
             <button class="btn btn-primary btn-sm" :disabled="payingOrder === o.order_no"
-                    @click="pay(o)">
+                    @click="onPayClick(o)">
               {{ payingOrder === o.order_no ? '等待支付…' : '去支付' }}
             </button>
           </template>
@@ -42,10 +42,11 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, qs } from '../../api.js'
 import { toastError, toastSuccess, confirmDialog, promptDialog } from '../../ui.js'
+import { usePay, openPayWindow } from '../composables/usePay.js'
 
 const orders = ref([])
 const router = useRouter()
@@ -74,72 +75,15 @@ function statusClass(s) {
   return 'badge-info'
 }
 
-const payingOrder = ref('')
-let pollTimer = null
+// 支付流程统一走 usePay（与「机票预订」「聊天订票」共用同一实现）
+const { payingOrder, pay } = usePay({
+  onPaid: load,
+})
 
-async function pay(o) {
-  // 同步阶段就把窗口打开：await 之后再 window.open 会失去用户手势上下文被浏览器拦截
-  const win = window.open('', '_blank')
-  try {
-    const d = await api('/api/pay/create', { method: 'POST', body: { order_no: o.order_no } })
-    if (d.mode === 'redirect' && d.pay_url) {
-      if (win) win.location.href = d.pay_url
-      else window.location.href = d.pay_url
-      await waitPaid(o.order_no)
-    } else {
-      if (win) win.close()
-      const r = await api('/api/pay/confirm', { method: 'POST', body: { pay_no: d.pay_no } })
-      toastSuccess(r.message || '支付成功')
-      await load()
-    }
-  } catch (e) {
-    if (win) win.close()
-    stopPoll()
-    toastError(e.message)
-  }
+function onPayClick(o) {
+  // 同步阶段预开窗口，避免 await 之后被浏览器当弹窗拦截
+  pay(o.order_no, { win: openPayWindow() })
 }
-
-// 轮询等待支付结果：异步通知可能比页面跳回慢，本地收不到通知时也是靠它兜底
-function waitPaid(orderNo) {
-  return new Promise((resolve) => {
-    payingOrder.value = orderNo
-    let ticks = 0
-    const maxTicks = 90          // 2 秒一拍，约 3 分钟
-    stopPollTimerOnly()
-    pollTimer = setInterval(async () => {
-      ticks += 1
-      try {
-        const s = await api('/api/pay/status' + qs({ order_no: orderNo }))
-        if (s.paid) {
-          stopPoll()
-          toastSuccess('支付成功，订单已出票')
-          await load()
-          resolve()
-          return
-        }
-      } catch (e) {
-        // 单次轮询失败不打断，继续等下一拍
-      }
-      if (ticks >= maxTicks) {
-        stopPoll()
-        toastError('等待支付超时，请刷新订单列表确认结果')
-        resolve()
-      }
-    }, 2000)
-  })
-}
-
-function stopPollTimerOnly() {
-  if (pollTimer) clearInterval(pollTimer)
-  pollTimer = null
-}
-
-function stopPoll() {
-  stopPollTimerOnly()
-  payingOrder.value = ''
-}
-
-onUnmounted(stopPoll)
 
 function goCheckin(o) {
   router.push({ path: '/checkin', query: { order_no: o.order_no } })
