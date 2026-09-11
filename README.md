@@ -132,6 +132,10 @@ python -c "import web_app; web_app.app.run(host='0.0.0.0', port=5000, debug=Fals
 **本地回调需要公网地址**（支付宝要能访问到你的机器）：用 NATAPP 之类的内网穿透，
 把 `ALIPAY_NOTIFY_URL` 配成 `http://<你的域名>/api/pay/notify/alipay`。
 
+**多端接入**：安卓 / 微信小程序同学看 [docs/PAYMENT_HANDOFF.md](docs/PAYMENT_HANDOFF.md)
+（三个必须建立的认知、完整时序、各端代码、边界情况、自测清单）；
+接口字段速查在 [docs/API.md](docs/API.md) 的 4.4.3。
+
 ## 多端接入（安卓 / 微信小程序）
 
 > **给多端开发同学的完整接口文档见 [docs/API.md](docs/API.md)**（认证方式、全部接口字段、
