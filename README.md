@@ -99,13 +99,38 @@ python -c "import web_app; web_app.app.run(host='0.0.0.0', port=5000, debug=Fals
 
 | 层级 | 命令 | 耗时 | Token | 何时跑 |
 |---|---|---|---|---|
-| 单元测试 | `python -m pytest test_unit.py -q` | ~5秒 | **0** | **每次改代码后随便跑**（费率/状态机/注册/越权/通知/搜索解析/标题/趋势聚合/值机选座/JWT 等 121 用例，独立临时库） |
+| 单元测试 | `python -m pytest test_unit.py -q` | ~5秒 | **0** | **每次改代码后随便跑**（费率/状态机/注册/越权/通知/搜索解析/标题/趋势聚合/值机选座/JWT/支付幂等 等 138 用例，独立临时库） |
 | 管理端回归 | `python test_admin.py` | ~1分钟 | ≈0（纯 REST+DB） | 涉及管理端/订单流改动时 |
 | 客户端回归 | `python test_regression.py --go` | ~10分钟 | **高**（20+ 轮真实 LLM 对话） | 仅在演示前/里程碑，且经明确确认后 |
 
 **Token 纪律**：客户端回归默认被门禁阻止，需显式 `--go`（或 `REGRESSION_GO=1`）才会运行；
 不带参数执行只打印零 token 替代方案提示。日常迭代循环：改代码 → `pytest test_unit.py`
 秒级验证 → 手测界面 → 提交；`test_regression.py` 留到关键节点，且跑之前先问一句。
+
+## 支付
+
+渠道可插拔，一份编排层适配三种模式（代码在 `services/payment/`）：
+
+| `PAY_PROVIDER` | 渠道 | 流程 |
+|---|---|---|
+| `mock`（默认） | 模拟 | 站内一步付讫，零外部依赖，跑测试/演示用 |
+| `alipay_sandbox` | 支付宝沙箱 | 真实收银台 → 异步通知 → 落账 |
+| `alipay` | 支付宝生产 | 同上，仅网关与密钥不同 |
+
+**分层**：`base.py` 定义渠道接口 → `mock_provider.py` / `alipay_provider.py` 实现 →
+`payment_service.py` 编排（不依赖 Flask request，可直接单测）→ `payment_repo.py` 落库。
+
+**幂等是这块的重点**：异步通知会被重投最多 8 次，落账唯一出口 `mark_paid()`
+用 `UPDATE ... WHERE status='待支付'` 的 `rowcount` 做乐观锁，
+只有首次翻转返回 True，调用方据此才推进订单——重投多少次都只出票一次。
+金额与 `app_id` 在验签通过后还要再比对一次，防止他人商户号伪造"已支付"。
+
+**密钥**：环境变量 `ALIPAY_PRIVATE_KEY` / `ALIPAY_PUBLIC_KEY` 优先（生产推荐，不落盘），
+未设置时回退到 `keys/*.txt`。`keys/` 只有 README 入库，密钥文件已被 `.gitignore` 排除。
+详见 [keys/README.md](keys/README.md)。
+
+**本地回调需要公网地址**（支付宝要能访问到你的机器）：用 NATAPP 之类的内网穿透，
+把 `ALIPAY_NOTIFY_URL` 配成 `http://<你的域名>/api/pay/notify/alipay`。
 
 ## 多端接入（安卓 / 微信小程序）
 
@@ -153,7 +178,10 @@ python -c "import web_app; web_app.app.run(host='0.0.0.0', port=5000, debug=Fals
 │   ├── admin_repo.py             #   管理端数据操作
 │   ├── security.py               #   受信身份通道 + 归属硬校验
 │   ├── token_auth.py             #   JWT 签发/校验（多端 Bearer 通道）
-│   ├── lifecycle.py              #   起飞→「已使用」后台任务
+│   ├── lifecycle.py              #   起飞→「已使用」后台任务（超时订单顺带关闭支付流水）
+│   ├── payment/                  #   支付渠道抽象：base 接口 + mock / alipay 实现
+│   ├── payment_repo.py           #   支付流水仓储（幂等落账唯一出口 mark_paid）
+│   ├── payment_service.py        #   支付编排：下单/回调/确认/查单（不依赖 Flask request）
 │   └── tools.py                  #   @tool 注册表（智能体可调用的全部工具）
 ├── frontend/                     # Vue 3 + Vite 工程化前端（客户端 / 管理端两个入口）
 │   ├── src/client/              #   会员端：登录、AI客服、机票预订、值机、登机牌、我的数据

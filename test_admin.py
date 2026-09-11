@@ -13,7 +13,13 @@ from datetime import date, timedelta
 
 FUTURE_DATE = (date.today() + timedelta(days=3)).isoformat()  # 订未来日期，避免生命周期扫描把过期票置为已使用
 
-# 管理员口令：优先读环境变量（强制改密策略生效后，固定默认口令不再可用）
+# 管理员口令：.env → 环境变量 → 内置默认（种子库首次启动用的是 admin123，
+# 一旦改过密就必须提供 ADMIN_PASSWORD，否则登录失败会引发后面一连串级联 FAIL）
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
 ADMIN_PW = os.getenv("ADMIN_PASSWORD", "admin123")
 ADMIN_TEST_PW = os.getenv("ADMIN_TEST_PASSWORD", "Admin-Test-2026!")

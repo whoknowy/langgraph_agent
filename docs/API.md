@@ -211,7 +211,13 @@ token 有效期 7 天。过期后所有接口返回 **401**。统一处理方案
 | 订票 | GET | `/api/flights/search` | 客户端航班搜索（出发/到达/日期） | 是 |
 | 订票 | GET | `/api/booking_quote` | 订票报价（卡片展示） | 是 |
 | 订票 | POST | `/api/book` | 创建订单（待支付） | 是 |
-| 订票 | POST | `/api/pay` | 支付（待支付 → 已出票） | 是 |
+| 订票 | POST | `/api/pay` | 支付（模拟渠道，一步付讫） | 是 |
+| 支付 | POST | `/api/pay/create` | 发起支付（返回收银台地址/表单） | 是 |
+| 支付 | GET | `/api/pay/gateway/{pay_no}` | 收银台中转页（自动 POST 到渠道） | 是 |
+| 支付 | POST | `/api/pay/confirm` | 站内确认支付（模拟渠道用） | 是 |
+| 支付 | GET | `/api/pay/status?pay_no=` | 查询支付流水状态 | 是 |
+| 支付 | POST | `/api/pay/notify/alipay` | 支付宝异步通知（**无需登录**，验签+幂等） | 否 |
+| 支付 | GET | `/api/pay/return/alipay` | 支付宝同步回跳（**无需登录**，跳转结果页） | 否 |
 | 改签 | GET | `/api/change_quote` | 改签报价（新旧航班/差价） | 是 |
 | 改签 | POST | `/api/change` | 执行改签 | 是 |
 | 退票 | GET | `/api/refund_quote` | 自愿退票报价（手续费/到账） | 是 |
@@ -456,7 +462,84 @@ while (source.readUtf8Line()?.also { line ->
 { "order_no": "O4832015" }
 ```
 
-成功：`{"success": true, "order_no": "O4832015", "status": "已出票", "message": "..."}`。演示系统的「支付」只是状态流转（待支付 → 已出票），不接真实支付渠道。
+成功：`{"success": true, "order_no": "O4832015", "status": "已出票", "message": "..."}`。
+
+> 这是**模拟渠道**的一步付讫接口（`PAY_PROVIDER=mock` 时）。
+> 接入真实渠道后请改走下面 4.4.3.1 起的「发起支付 → 收银台 → 回调」流程。
+
+#### 4.4.3.1 支付渠道说明
+
+`PAY_PROVIDER` 决定走哪条路，见 `config.py`：
+
+| 值 | 行为 | 是否跳转外部收银台 |
+|---|---|---|
+| `mock`（默认） | 站内一步付讫，供演示与自动化测试 | 否 |
+| `alipay_sandbox` | 支付宝沙箱，真实收银台、真实回调 | 是 |
+| `alipay` | 支付宝生产 | 是 |
+
+无论哪个渠道，**落账都只认一条路径**：`payments` 表的 `pay_no` 流水由
+`payment_repo.mark_paid()` 翻转，`UPDATE ... WHERE status='待支付'` 且
+`rowcount == 1` 才推进订单——异步通知重投 8 次也只会出票一次。
+
+#### 4.4.3.2 发起支付 `POST /api/pay/create`
+
+```json
+{ "order_no": "O6749065" }
+```
+
+成功：
+
+```json
+{
+  "success": true,
+  "pay_no": "P09111114270069",
+  "provider": "alipay_sandbox",
+  "mode": "redirect",
+  "pay_url": "http://127.0.0.1:5000/api/pay/gateway/P09111114270069",
+  "amount": "630.00",
+  "expires_in": 900
+}
+```
+
+- `mode=redirect`：把 `pay_url` 交给浏览器打开即可；
+- `mode=direct`：无需跳转，直接调 4.4.3.4 确认。
+- 同一订单 + 同渠道 + 同金额会**复用**已有的待支付流水，不会堆积悬挂记录。
+
+#### 4.4.3.3 收银台中转页 `GET /api/pay/gateway/{pay_no}`
+
+返回一段会自动提交的 HTML 表单，Referer 恒为本站点。
+
+> **为什么要中转**：直接把支付宝的 `pay_url` 粘到地址栏打开时 Referer 为空，
+> 沙箱会返回 `{"stat":"fail","msg":"RefererCheckFailed"}`。
+> 用本站页面渲染表单再 POST 出去，是官方推荐的接入姿势，也规避了这个问题。
+
+#### 4.4.3.4 确认支付 `POST /api/pay/confirm`
+
+```json
+{ "pay_no": "P09111114270069" }
+```
+
+成功则订单推进到已出票。**仅模拟渠道允许**，真实渠道的流水只能由回调翻转。
+
+#### 4.4.3.5 查询状态 `GET /api/pay/status?pay_no=P09111114270069`
+
+```json
+{ "success": true, "pay_no": "P09111114270069",
+  "status": "待支付", "paid": false, "amount": "630.00", "expired": false }
+```
+
+前端在打开收银台后按 2 秒轮询这个接口，直到 `paid=true` 或超时。
+
+#### 4.4.3.6 支付宝异步通知 `POST /api/pay/notify/alipay`
+
+由支付宝服务器调用，**不需要登录**。处理顺序：验签 → 校验 `app_id` → 比对金额
+→ 幂等落账。返回 `success` / `failure` 两个纯文本之一（必须是这两个词，
+否则支付宝会认为通知失败并重投，最多 8 次）。
+
+#### 4.4.3.7 同步回跳 `GET /api/pay/return/alipay`
+
+买家付款后浏览器跳回的地址。它**只负责跳结果页**，不改单；页面会主动查单
+（`alipay.trade.query`）兜底，避免异步通知迟到导致用户看到"未支付"。
 
 #### 4.4.4 改签报价 `GET /api/change_quote?order_no=O4832015&new_flight_no=MU5101&new_date=2026-09-09&new_cabin=经济`
 
