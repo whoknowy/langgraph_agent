@@ -1554,6 +1554,26 @@ class TestPayment:
         assert payment["status"] == "支付成功"
         assert payment["trade_no"] == "2026091122001447550512345678"
 
+    def test_return_url_targets_backend_sync_handler(self):
+        """return_url 必须指向后端同步回调，不能直接写前端 hash 结果页。
+
+        支付宝同步回跳只带 out_trade_no，结果页要的是 order_no；若直接跳
+        `/#/pay/result`，页面会显示「缺少订单号」——必须由 `/api/pay/return/alipay`
+        补上 order_no 再 302。这条用例锁死该契约，防回归。
+        """
+        import re
+        src = open("web_app.py", encoding="utf-8").read()
+        assert "/api/pay/return/alipay" in src
+        # 不允许再出现「return_url 直接拼 hash 结果页」的写法
+        bad = re.findall(r'return_url\s*=\s*[^\n]*#/pay/result', src)
+        assert not bad, f"return_url 不应直接指向 hash 结果页：{bad}"
+
+    def test_pay_result_view_reads_order_no_from_query(self):
+        """结果页从 query 取 order_no（这是同步回调补参数后的落点）。"""
+        src = open("frontend/src/client/components/PayResultView.vue",
+                   encoding="utf-8").read()
+        assert "route.query.order_no" in src
+
 
 # ---------------------------------------------------------------- 直接运行入口
 

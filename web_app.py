@@ -496,6 +496,20 @@ def _alipay_provider():
     return get_provider('alipay_sandbox' if ALIPAY_DEBUG else 'alipay')
 
 
+def _pay_urls(co_base: str) -> dict:
+    """拼支付宝的 return_url / notify_url。
+
+    return_url 必须指向本站**后端同步回调**`/api/pay/return/alipay`，不能直接写
+    前端 hash 路由 `/#/pay/result`——支付宝只回传 `out_trade_no`，而结果页要的是
+    `order_no`；直接跳结果页会因缺参数显示「缺少订单号，无法查询支付结果」。
+    由后端回调把 `order_no` 补上再 302 过去，顺带做一次查单兜底。
+    """
+    return {
+        'return_url': ALIPAY_RETURN_URL or f"{co_base}/api/pay/return/alipay",
+        'notify_url': ALIPAY_NOTIFY_URL or f"{_callback_base()}/api/pay/notify/alipay",
+    }
+
+
 @app.route('/api/pay/create', methods=['POST'])
 def pay_create():
     """发起支付。
@@ -509,13 +523,13 @@ def pay_create():
             return denied
         data = request.get_json() or {}
         from services import payment_service
-        cb_base = _callback_base()       # 给支付宝服务器回调用（须公网可达）
         co_base = _checkout_base()       # 给用户浏览器跳转用（沙箱 Referer 白名单）
+        urls = _pay_urls(co_base)
         result = payment_service.start_payment(
             order_no=data.get('order_no', ''),
             member_id=member['member_id'],
-            return_url=ALIPAY_RETURN_URL or f"{co_base}/#/pay/result",
-            notify_url=ALIPAY_NOTIFY_URL or f"{cb_base}/api/pay/notify/alipay",
+            return_url=urls['return_url'],
+            notify_url=urls['notify_url'],
         )
         if result.get('error'):
             return jsonify(result), 400
@@ -546,15 +560,15 @@ def pay_gateway(pay_no):
             return Response("该笔支付已处理，请勿重复支付",
                             mimetype='text/html; charset=utf-8'), 400
 
-        cb_base = _callback_base()
         co_base = _checkout_base()
+        urls = _pay_urls(co_base)
         provider = _alipay_provider()
         form = provider.build_checkout_form(
             pay_no=payment["pay_no"],
             subject=f"机票订单 {payment['order_no']}",
             amount=float(payment["amount"]),
-            return_url=ALIPAY_RETURN_URL or f"{co_base}/#/pay/result",
-            notify_url=ALIPAY_NOTIFY_URL or f"{cb_base}/api/pay/notify/alipay",
+            return_url=urls['return_url'],
+            notify_url=urls['notify_url'],
         )
         if not form:
             return Response("当前支付渠道不支持表单方式，请返回重试",
@@ -687,6 +701,10 @@ def pay_return_alipay():
                 order_no = _pay["order_no"]
         except Exception:
             pass
+        if not order_no:
+            # 拿不到订单号就没法在结果页查状态，直接回订单列表，别给用户死胡同
+            print(f"⚠️ [支付] 同步回调未匹配到订单：out_trade_no={pay_no!r}")
+            return redirect("/#/orders")
         return redirect(f"/#/pay/result?pay_no={pay_no}&order_no={order_no}")
     except Exception as e:
         print(f"❌ [支付] 同步回调处理异常: {e}")
