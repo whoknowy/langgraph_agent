@@ -405,6 +405,14 @@ while (source.readUtf8Line()?.also { line ->
 
 这一组是**确认卡片对应的真正写库接口**。报价类（`*_quote`）是 GET 幂等的，随便调；下单/支付/改签/退票是 POST。
 
+> 🔒 **HITL 服务端强制（2026-09-12 起）**：所有写接口（`book` / `pay` / `pay/confirm` /
+> `change` / `refund` / `checkin`）都必须携带**一次性确认凭证 `confirm_token`**，
+> 缺失/无效/已用/过期一律 **403** `{"error": "...", "need_confirm": true}`。
+> 凭证由对应**准备接口签发**（`booking_quote` / `pay/create` / `change_quote` /
+> `refund_quote` / `checkin/seats`，聊天确认卡片同样带），15 分钟有效、只能用一次、
+> 绑定会员+动作+目标+参数指纹。**流程永远是：先调准备接口拿凭证 → 用户确认 → 带凭证调写接口；
+> 收到 403 就重新调准备接口，不要重试旧凭证。**
+
 #### 4.4.1 订票报价 `GET /api/booking_quote?flight_no=CA1061&flight_date=2026-09-08&cabin=经济&passengers=1`
 
 | 参数 | 说明 |
@@ -420,9 +428,13 @@ while (source.readUtf8Line()?.also { line ->
 {
   "flight_no": "CA1061", "airline": "中国国航", "route": "北京-上海",
   "dep_time": "06:40", "flight_date": "2026-09-08", "cabin": "经济",
-  "passengers": 1, "unit_price": 600, "total_amount": 600
+  "passengers": 1, "unit_price": 600, "total_amount": 600,
+  "confirm_token": "KwMDnSV7WEcWkuJ17LxH...", "confirm_expires_at": "2026-09-13 00:11:15"
 }
 ```
+
+> `confirm_token` 是本报价对应的**下单凭证**（绑定航班/日期/舱位/人数指纹），
+> 下一步 `POST /api/book` 必须原样带回。报价参数变了要重新取报价换新凭证。
 
 #### 4.4.1.1 航班搜索 `GET /api/flights/search?departure=北京&destination=上海&date=2026-09-08`
 
@@ -443,8 +455,11 @@ while (source.readUtf8Line()?.also { line ->
 #### 4.4.2 创建订单 `POST /api/book`
 
 ```json
-{ "flight_no": "CA1061", "flight_date": "2026-09-08", "cabin": "经济", "passengers": 1 }
+{ "flight_no": "CA1061", "flight_date": "2026-09-08", "cabin": "经济", "passengers": 1,
+  "confirm_token": "KwMDnSV7WEcWkuJ17LxH..." }
 ```
+
+> `confirm_token` 来自上一步 `/api/booking_quote` 的响应。缺了会 403 `need_confirm`。
 
 成功：
 
@@ -463,12 +478,13 @@ while (source.readUtf8Line()?.also { line ->
 #### 4.4.3 支付 `POST /api/pay`
 
 ```json
-{ "order_no": "O4832015" }
+{ "order_no": "O4832015", "confirm_token": "KwMDnSV7WEcWkuJ17LxH..." }
 ```
 
 成功：`{"success": true, "order_no": "O4832015", "status": "已出票", "message": "..."}`。
 
 > 这是**模拟渠道**的一步付讫接口（`PAY_PROVIDER=mock` 时）。
+> `confirm_token` 从 `POST /api/pay/create` 的响应拿（先 create 再 pay）。
 > 接入真实渠道后请改走下面 4.4.3.1 起的「发起支付 → 收银台 → 回调」流程。
 
 > 💡 **要接支付的同学请先看 [PAYMENT_HANDOFF.md](PAYMENT_HANDOFF.md)**，
@@ -506,13 +522,17 @@ while (source.readUtf8Line()?.also { line ->
   "pay_no": "P09111114270069",
   "order_no": "O6749065",
   "amount": 630.0,
-  "message": "请在支付宝收银台完成付款"
+  "message": "请在支付宝收银台完成付款",
+  "confirm_token": "KwMDnSV7WEcWkuJ17LxH...",
+  "confirm_expires_at": "2026-09-13 00:11:15"
 }
 ```
 
 - **`mode` 决定你该做什么**（后端可能换渠道，客户端别写死）：
-  - `redirect` → 打开 `pay_url`，然后轮询状态；
-  - `direct` → 不跳转，直接调 4.4.3.4 确认。
+  - `redirect` → 打开 `pay_url`，然后轮询状态（**不需要 confirm_token**）；
+  - `direct` → 不跳转，直接调 4.4.3.4 确认（**必须带 confirm_token**）。
+- `confirm_token` 是一次性支付凭证（15 分钟有效），`direct` 分支回传给 4.4.3.4；
+  `redirect` 分支用不到，忽略即可。
 - `amount` 是数字不是字符串。
 - 同一订单 + 同渠道 + 同金额会**复用**已有的待支付流水，不会堆积悬挂记录。
 - 订单 15 分钟未支付会被自动取消（后端定时任务），取消后支付接口返回 400。
@@ -528,10 +548,13 @@ while (source.readUtf8Line()?.also { line ->
 #### 4.4.3.4 确认支付 `POST /api/pay/confirm`
 
 ```json
-{ "pay_no": "P09111114270069" }
+{ "pay_no": "P09111114270069", "confirm_token": "KwMDnSV7WEcWkuJ17LxH..." }
 ```
 
 成功则订单推进到已出票。**仅模拟渠道允许**，真实渠道的流水只能由回调翻转。
+
+> `confirm_token` 来自 4.4.3.2 的响应，**必带**。403 `need_confirm` 的三种情况
+> （缺少/已被使用/已过期）处理方式一致：**重新调 `/api/pay/create` 换新凭证**。
 
 #### 4.4.3.5 查询状态 `GET /api/pay/status?order_no=O6749065`
 
@@ -575,16 +598,18 @@ while (source.readUtf8Line()?.also { line ->
   "new":  { "flight_no": "MU5101", "airline": "东方航空", "route": "北京-上海",
             "date": "2026-09-09", "dep_time": "08:00", "arr_time": "10:15",
             "cabin": "经济", "unit_price": 620, "amount": 620 },
-  "fare_diff": 20, "diff_desc": "需补差价 20 元", "change_fee": 0, "message": "..."
+  "fare_diff": 20, "diff_desc": "需补差价 20 元", "change_fee": 0, "message": "...",
+  "confirm_token": "KwMDnSV7WEcWkuJ17LxH...", "confirm_expires_at": "2026-09-13 00:11:15"
 }
 ```
 
-`fare_diff` 正数=用户补差价，负数=退差价，0=无差价。
+`fare_diff` 正数=用户补差价，负数=退差价，0=无差价。`confirm_token` 绑定新航班/日期/舱位指纹，执行改签时回传。
 
 #### 4.4.5 执行改签 `POST /api/change`
 
 ```json
-{ "order_no": "O4832015", "new_flight_no": "MU5101", "new_date": "2026-09-09", "new_cabin": "经济" }
+{ "order_no": "O4832015", "new_flight_no": "MU5101", "new_date": "2026-09-09", "new_cabin": "经济",
+  "confirm_token": "KwMDnSV7WEcWkuJ17LxH..." }
 ```
 
 成功：`{"success": true, "order_no": "...", "status": "已改签", "old": {...}, "new": {...}, "fare_diff": 20, "message": "...原值机已取消，请重新值机"}`
@@ -604,15 +629,25 @@ while (source.readUtf8Line()?.also { line ->
 {
   "order_no": "O4832015", "amount": 600, "fee_rate": 0.1,
   "fee_tier": "起飞前48-72小时（收10%）", "fee": 60,
-  "predict_amount": 540, "depart_time": "2026-09-08 06:40"
+  "predict_amount": 540, "depart_time": "2026-09-08 06:40",
+  "refund_type": "voluntary",
+  "confirm_token": "KwMDnSV7WEcWkuJ17LxH...", "confirm_expires_at": "2026-09-13 00:11:15"
 }
 ```
+
+> `confirm_token` **绑定 `refund_type` 指纹**：拿报价时是自愿退票，执行时就不能改成特殊退票（会 403），反之亦然。
 
 #### 4.4.7 执行退票 `POST /api/refund`
 
 ```json
-{ "order_no": "O4832015", "refund_type": "voluntary" }
+{ "order_no": "O4832015", "refund_type": "voluntary",
+  "confirm_token": "KwMDnSV7WEcWkuJ17LxH...", "requestId": "uuid-由客户端生成" }
 ```
+
+> - `confirm_token` 来自 `/api/refund_quote`，**必带**（403 `need_confirm` 同前）；
+> - `requestId` 是**幂等键**（客户端生成一次并保存，如 UUID）：同一 `requestId`
+>   重复提交直接返回首次结果 `{"success": true, "idempotent": true, ...}`，
+>   不会重复退款；**重试/断网重发时必须复用同一个 requestId**。
 
 | refund_type | 含义 | 流程 |
 |---|---|---|
@@ -653,11 +688,16 @@ special 成功：状态变「退票中」，message 末尾会带「（特殊退�
 
 布局：商务舱 1~3 排（A C \| D F），经济舱 31~55 排（A B C \| D E F）。`status` 只有 `free` / `occupied` 两种；渲染时只允许点 `free` 的座位。**渲染前先按订单的 cabin 只展示对应舱位**（订单舱位从 `/api/my/orders` 的 `cabin` 字段拿）。
 
+> 💡 本接口响应里带 `confirm_token`（值机凭证）：**带上 `order_no` 时才签发**，
+> 用户选好座位后 `POST /api/checkin` 时原样回传。
+
 #### 4.5.2 值机 / 改座 `POST /api/checkin`
 
 ```json
-{ "order_no": "O4832015", "seat_no": "31A" }
+{ "order_no": "O4832015", "seat_no": "31A", "confirm_token": "KwMDnSV7WEcWkuJ17LxH..." }
 ```
+
+> `confirm_token` 来自上一步 `/api/checkin/seats` 的响应（见 4.5.1），必带。
 
 成功直接返回登机牌数据：
 
@@ -747,10 +787,10 @@ AI 客服在聊天中替用户发起操作时，**不会直接写数据库**，�
 客户端渲染卡片的标准姿势（以订票为例）：
 
 1. 收到 `pending_action.type == "book_flight"`；
-2. 调 `GET /api/booking_quote?flight_no=...&flight_date=...&cabin=...&passengers=...` 拿**服务端实时报价**（不要信卡片里 AI 报的价，报价接口才是准的）；
+2. 调 `GET /api/booking_quote?flight_no=...&flight_date=...&cabin=...&passengers=...` 拿**服务端实时报价**（不要信卡片里 AI 报的价，报价接口才是准的），**响应里的 `confirm_token` 留好**；
 3. 展示卡片：航班信息 + 单价 × 人数 = 总价 + 「确认预订」「取消」两个按钮；
-4. 用户点确认 → `POST /api/book`（参数用卡片字段）→ 成功后提示订单号，并引导支付 `POST /api/pay`；
-5. 支付完成可顺带提示「可以去值机了」。退票/改签卡片同理先调对应 `*_quote` 再执行。
+4. 用户点确认 → `POST /api/book`（参数用卡片字段 + **上一步的 `confirm_token`**）→ 成功后提示订单号，并引导支付 `POST /api/pay/create`（→ `direct` 带凭证确认 / `redirect` 开收银台，见 4.4.3）；
+5. 支付完成可顺带提示「可以去值机了」。退票/改签/值机卡片同理：**先调对应准备接口（`*_quote` / `checkin/seats`）拿实时数据和新凭证，再带凭证调写接口**。
 
 > 卡片字段来自 AI 的工具调用参数，个别字段可能缺失或格式不规整（比如人数传了字符串）。**客户端只把它们当「预填值」**，提交前用报价接口校验，业务错误后端会返回 400 + 人话提示，展示给用户即可。
 
@@ -766,11 +806,12 @@ AI 客服在聊天中替用户发起操作时，**不会直接写数据库**，�
 AI 返回航班列表（Markdown 表格），用户说"订最便宜的 CA1061 经济舱 1 人"
    ↓ POST /api/chat （session_id 用上一步返回的 thread_id）
 本轮响应 pending_action = {"type":"book_flight","flight_no":"CA1061",...}
-   ↓ 渲染确认卡片；先 GET /api/booking_quote 拿实时总价
+   ↓ 渲染确认卡片；先 GET /api/booking_quote 拿实时总价 + confirm_token
 用户点"确认预订"
-   ↓ POST /api/book  → 拿到 order_no，status=待支付
+   ↓ POST /api/book（带 confirm_token）→ 拿到 order_no，status=待支付
 引导支付
-   ↓ POST /api/pay   → status=已出票
+   ↓ POST /api/pay/create → direct: POST /api/pay/confirm（带 confirm_token）
+   ↓                       → redirect: 打开 pay_url 收银台 + 轮询 /api/pay/status
 完成。提示用户可在"我的订单"里值机
 ```
 
@@ -779,10 +820,10 @@ AI 返回航班列表（Markdown 表格），用户说"订最便宜的 CA1061 �
 ```
 "我的订单"里找到 status ∈ {已出票, 已改签} 且 checked_in=false 的订单
    ↓ 检查值机窗口：起飞前 24h ~ 45min（服务端也会校验，早了会 400 提示）
-   ↓ GET /api/checkin/seats?flight_no=...&flight_date=...&order_no=...
+   ↓ GET /api/checkin/seats?flight_no=...&flight_date=...&order_no=...（响应带 confirm_token）
 渲染座位图（只渲染订单 cabin 对应舱位；free 可点）
    ↓ 用户选座 31A
-POST /api/checkin {order_no, seat_no:"31A"}
+POST /api/checkin {order_no, seat_no:"31A", confirm_token}
    ↓ 成功 → 响应里就是登机牌数据（seat_no/gate/boarding_time/passenger...）
 渲染登机牌卡片；之后随时 GET /api/checkin/boardpass?order_no=... 重查
 ```
@@ -790,11 +831,14 @@ POST /api/checkin {order_no, seat_no:"31A"}
 ### 流程 C：改签 / 退票
 
 ```
-改签：改签卡片确认后 → GET /api/change_quote（展示新旧航班+差价）→ POST /api/change
+改签：改签卡片确认后 → GET /api/change_quote（新旧航班+差价+confirm_token）
+      → POST /api/change（带 confirm_token）
       成功后原值机被自动取消，status=已改签，需要重新值机
-自愿退票：GET /api/refund_quote（展示手续费档位+到账金额）→ POST /api/refund {refund_type:"voluntary"}
-          即时到账，status=已退款
-特殊退票（延误/取消）：POST /api/refund {refund_type:"special"} → status=退票中，等人工审核
+自愿退票：GET /api/refund_quote（手续费档位+到账金额+confirm_token）
+          → POST /api/refund {refund_type:"voluntary", confirm_token, requestId}
+          即时到账，status=已退款（requestId 幂等，重试复用同一个）
+特殊退票（延误/取消）：POST /api/refund {refund_type:"special", confirm_token, requestId}
+          → status=退票中，等人工审核
 ```
 
 ---

@@ -57,6 +57,26 @@
 `/api/pay` 是"一步付讫"的老接口（调一次直接出票），现在只作为模拟渠道和兼容保留。
 新流程统一走 `/api/pay/create`。老接口不会删，但也不再增强。
 
+### 1.4 写接口要带一次性确认凭证（confirm_token）★ 2026-09-12 新增
+
+服务端已启用 **HITL 强制确认**：真正的写库接口（`/api/pay/confirm`、`/api/pay`、
+`/api/book`、`/api/change`、`/api/refund`、`/api/checkin`）都必须携带
+**一次性确认凭证 `confirm_token`**，否则返回 **403** `need_confirm`：
+
+```json
+{ "error": "支付需要用户确认：缺少确认凭证（confirm_token）", "need_confirm": true }
+```
+
+规则只有三条：
+
+1. **凭证从"准备接口"的响应里拿**：`/api/pay/create` 的响应带 `confirm_token`
+   （15 分钟内有效、只能用一次、绑定这笔订单）；
+2. **调写接口时原样带回**：`POST /api/pay/confirm` 时把 `confirm_token` 放进 body；
+3. **403 了就重新走一遍 create**（凭证无效/已被使用/已过期都会 403，重新发起即可）。
+
+对支付流程的影响：**`redirect` 分支（支付宝收银台）完全不变**——落账由后端回调完成，
+客户端不需要凭证；**只有 `direct` 分支（模拟渠道站内确认）多带一个字段**，见 4.4。
+
 ---
 
 ## 2. 接口一览
@@ -67,7 +87,7 @@ Base URL 同 API.md：公网联调用 `http://flightagent.nat100.top`，本机�
 |---|---|---|---|
 | POST | `/api/pay/create` | 是 | **发起支付**，拿到收银台地址 |
 | GET | `/api/pay/gateway/{pay_no}` | 否 | 收银台中转页（H5，`pay_url` 就指向它） |
-| POST | `/api/pay/confirm` | 是 | 站内确认支付（**仅 `mode=direct` 时用**） |
+| POST | `/api/pay/confirm` | 是 | 站内确认支付（**仅 `mode=direct` 时用**），body 须带 create 下发的 `confirm_token` |
 | GET | `/api/pay/status?order_no=` | 是 | **轮询支付结果** |
 | POST | `/api/pay/notify/alipay` | 否 | 支付宝异步通知，**客户端不用管** |
 | GET | `/api/pay/return/alipay` | 否 | 支付宝同步回跳，**客户端不用管** |
@@ -145,7 +165,9 @@ Content-Type: application/json
   "pay_no": "P09111130284804",
   "order_no": "O8285152",
   "amount": 600.0,
-  "message": "请在支付宝收银台完成付款"
+  "message": "请在支付宝收银台完成付款",
+  "confirm_token": "KwMDnSV7WEcWkuJ17LxH...",
+  "confirm_expires_at": "2026-09-13 00:11:15"
 }
 ```
 
@@ -157,6 +179,8 @@ Content-Type: application/json
 | `pay_url` | `redirect` 时才有。这是**后端的中转页**，不是支付宝地址，别自己拼 |
 | `pay_no` | 支付流水号，`direct` 模式调 confirm 要用；**调试报错时把它给后端** |
 | `amount` | 数字（元），不是字符串 |
+| `confirm_token` | **一次性确认凭证**：`direct` 模式调 `/api/pay/confirm` 必须带上（15 分钟有效、只能用一次）；`redirect` 模式用不到，忽略即可 |
+| `confirm_expires_at` | 凭证过期时间，仅提示用 |
 
 **失败（HTTP 400）**：`{"error": "人话原因"}`，直接把 `error` 弹给用户即可。常见：
 
@@ -214,11 +238,20 @@ POST /api/pay/confirm
 Authorization: Bearer <token>
 Content-Type: application/json
 
-{ "pay_no": "P09111130284804" }
+{ "pay_no": "P09111130284804", "confirm_token": "<create 响应里的 confirm_token>" }
 ```
 
 成功直接就是已出票。这个接口**只有模拟渠道能用**，真实渠道调它会报错——
 这也是为什么必须按 `mode` 分支。
+
+**confirm_token 相关的 403**（2026-09-12 起，见 1.4）：
+
+| error | 原因 | 处理 |
+|---|---|---|
+| `…需要用户确认：缺少确认凭证（confirm_token）` | body 里没带凭证 | 从 create 响应取出 `confirm_token` 放进 body |
+| `该确认凭证已被使用…` / `确认凭证已过期…` / `确认凭证无效…` | 凭证一次性、15 分钟 | **重新调 `/api/pay/create`** 拿新凭证再来，不要重试旧凭证 |
+
+> `redirect` 分支不需要凭证：付款落账由支付宝回调在后端完成，轮询 `paid` 即可。
 
 ---
 
@@ -240,8 +273,11 @@ async function payOrder(orderNo, openCashier) {
   const d = await request('/api/pay/create', { method: 'POST', data: { order_no: orderNo } });
 
   if (d.mode === 'direct') {
-    // 模拟渠道：站内直接确认，不用跳转
-    const r = await request('/api/pay/confirm', { method: 'POST', data: { pay_no: d.pay_no } });
+    // 模拟渠道：站内直接确认，不用跳转（confirm_token 必带，见 1.4 / 4.4）
+    const r = await request('/api/pay/confirm', {
+      method: 'POST',
+      data: { pay_no: d.pay_no, confirm_token: d.confirm_token },
+    });
     wx.showToast({ title: r.message || '支付成功', icon: 'none' });
     return true;
   }
@@ -338,26 +374,28 @@ class PayRepository(private val base: String, private val token: () -> String) {
         }
     }
 
-    /** 发起支付，返回 (mode, payUrl, payNo) */
+    /** 发起支付，返回 (mode, payUrl, payNo, confirmToken) */
     fun create(orderNo: String): PayIntent {
         val d = call("/api/pay/create", """{"order_no":"$orderNo"}""")
         return PayIntent(
             mode = d.optString("mode"),
             payUrl = d.optString("pay_url"),
             payNo = d.optString("pay_no"),
+            confirmToken = d.optString("confirm_token"),   // direct 分支 confirm 要用
         )
     }
 
-    /** direct 模式：站内确认 */
-    fun confirm(payNo: String): String =
-        call("/api/pay/confirm", """{"pay_no":"$payNo"}""").optString("message")
+    /** direct 模式：站内确认（confirm_token 必带，见 1.4 / 4.4） */
+    fun confirm(payNo: String, confirmToken: String): String =
+        call("/api/pay/confirm", """{"pay_no":"$payNo","confirm_token":"$confirmToken"}""")
+            .optString("message")
 
     /** 轮询结果 */
     fun isPaid(orderNo: String): Boolean =
         call("/api/pay/status?order_no=$orderNo").optBoolean("paid", false)
 }
 
-data class PayIntent(val mode: String, val payUrl: String, val payNo: String)
+data class PayIntent(val mode: String, val payUrl: String, val payNo: String, val confirmToken: String)
 class AuthExpiredException : Exception()
 class ApiException(msg: String) : Exception(msg)
 ```
@@ -371,7 +409,7 @@ fun pay(orderNo: String) {
             val intent = repo.create(orderNo)
             if (intent.mode == "direct") {
                 withContext(Dispatchers.Main) {
-                    toast(repo.confirm(intent.payNo))
+                    toast(repo.confirm(intent.payNo, intent.confirmToken))
                     _paid.value = true
                 }
                 return@launch
@@ -440,6 +478,7 @@ webView.loadUrl(payUrl)
 | **用户连点"去支付"** | 理论上会重复下单 | 后端同订单同渠道同金额会**复用**同一笔流水，不会重复扣款；但前端仍建议加防抖 |
 | **页面销毁 / App 被杀** | 轮询中断 | 回到订单页时**主动查一次** `/api/pay/status`，别只依赖轮询 |
 | **轮询期间 token 过期** | 401 | 跳登录。重新登录后回订单页，状态查询会补上结果 |
+| **direct 确认返回 403 need_confirm** | 凭证缺失/已用/过期 | **重新调 `/api/pay/create`** 拿新凭证再 confirm，别重试旧凭证 |
 | **异步通知比用户返回慢** | 用户看到"未支付" | 这正是要轮询 3 分钟的原因，别把超时设成 10 秒 |
 | **轮询全部超时** | 状态未知 | 提示"结果确认中，请稍后刷新"，**不要**让用户重复付款 |
 
@@ -554,3 +593,4 @@ A：都是数字，JSON 里 `600.0` 和 `600` 等价。按数字解析，不要�
 |---|---|
 | 2026-09-11 | 初版。支付渠道抽象上线，含 mock / 支付宝沙箱两种模式 |
 | 2026-09-11 | 补 `wap.pay`（手机网站支付）渠道，`ALIPAY_SCENE` 切换 page/wap；9.1 由"待办"改为"已上线" |
+| 2026-09-12 | 写接口启用服务端 HITL：`/api/pay/create` 响应新增 `confirm_token`，`/api/pay/confirm` 必须回传（redirect 分支不受影响）。见 1.4 / 4.4 |
