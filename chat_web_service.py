@@ -344,7 +344,10 @@ def fetch_sessions_list(member_id: Optional[str] = None) -> Tuple[Optional[List[
     """
     try:
         owned = session_owners.owned_by(member_id) if member_id else None
-        response = requests.post(f"{LANGGRAPH_API_URL}/threads/search", json={})
+        # 必须显式传 limit：/threads/search 默认只返回 10 条，
+        # 线程多了之后（含挂载恢复的历史线程）老会话会被默认截断
+        response = requests.post(f"{LANGGRAPH_API_URL}/threads/search",
+                                 json={"limit": 500})
 
         if response.status_code != 200:
             print(f"❌ 获取线程列表失败: {response.status_code}")
