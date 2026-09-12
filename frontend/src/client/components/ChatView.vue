@@ -460,8 +460,11 @@ async function streamChat(message) {
         }
         if (data.done) {
           if (data.session_id) currentSessionId.value = data.session_id
-          if (data.response && !streamText) {
+          // done 携带后端最终回答（打码后的净文本）：整体替换气泡，
+          // 冲掉流式过程中混入的过渡文本，保证最终展示干净
+          if (data.response) {
             ensureAssistant().content = data.response
+            scrollBottom()
           }
           // done 携带后端汇总的完整链路（含耗时/守卫拦截/路由结果），替换实时增量
           if (data.trace && data.trace.nodes) {
@@ -478,6 +481,25 @@ async function streamChat(message) {
     finishToolChips()
     return !!assistantMsg
   } catch (e) {
+    // 流中断但已收到部分内容：就地用非流式接口重取完整回答并替换本气泡。
+    // 不能直接返回 false 走 syncChat——那会再堆一个新气泡，留下半截
+    // "思考文本"残句，还会让模型看到重复提问（"您问的是同一个问题"）。
+    if (assistantMsg && streamText) {
+      try {
+        const d = await api('/api/chat', {
+          method: 'POST',
+          body: { message, session_id: currentSessionId.value }
+        })
+        if (d.session_id) currentSessionId.value = d.session_id
+        assistantMsg.content = d.response || streamText
+        if (d.pending_action) pendingAction.value = d.pending_action
+      } catch (e2) {
+        assistantMsg.content = streamText + '\n\n（连接中断，请重试）'
+      }
+      finishAssistant()
+      finishToolChips()
+      return true
+    }
     finishAssistant()
     finishToolChips()
     return false

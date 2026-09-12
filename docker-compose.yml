@@ -26,6 +26,9 @@ services:
       LANGGRAPH_API_URL: http://langgraph:2024
       # 容器内访问 Langfuse 同理：localhost 是容器自己，必须走服务名
       LANGFUSE_HOST: http://langfuse-web:3000
+      # 会话标题生成等进程内 LLM 调用同样会尝试上报 LangSmith Cloud（403 刷屏）
+      LANGSMITH_TRACING: "false"
+      LANGCHAIN_TRACING_V2: "false"
       APP_ENV: production
     env_file:
       - .env

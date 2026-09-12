@@ -877,6 +877,7 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
     current_event: Optional[str] = None
     prev_content = ""
     emitted_tools: set = set()
+    tool_fired = False  # 是否已见到工具调用事件（区分 ReAct 思考轮与最终回答轮）
     tool_args: Dict[str, dict] = {}  # 工具名 -> 最近一次调用参数（供评估/前端展开）
     msg_nodes: Dict[str, str] = {}  # 消息id -> 产生它的图节点（来自 messages/metadata 事件）
     masker = StreamMasker()  # 输出侧敏感词打码（跨 token 缓冲）
@@ -947,23 +948,32 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
                         else:
                             delta = content[len(prev_content):] if content.startswith(prev_content) else content
                             prev_content = content
+                        # ReAct 中间轮的"思考文本"不下发：首个工具事件之前的正文
+                        # 是模型调工具前的过渡语（如 "I'll check the delay..."），
+                        # 下发会污染对话气泡（结束时会用最终回答整体替换，更不能混入）。
+                        # general_agent 无工具路径不适用；chunk_node 缺失时宁可放行。
+                        if delta and not tool_fired and chunk_node not in (None, "general_agent"):
+                            delta = ""
                         if delta:
                             full_parts.append(delta)
                             _masked = masker.feed(delta)
                             if _masked:
                                 masked_parts.append(_masked)
                                 yield _sse_line({"content": _masked})
-                    if isinstance(msg, dict):
-                        for tc in msg.get("tool_calls") or []:
-                            if isinstance(tc, dict) and tc.get("name"):
-                                _name = tc["name"]
-                                if isinstance(tc.get("args"), dict) and tc["args"]:
-                                    tool_args[_name] = tc["args"]
-                                if _name not in emitted_tools:
-                                    emitted_tools.add(_name)
-                                    for ev in run_trace.observe_tool(
-                                            _name, tool_args.get(_name) or {}, msg_id):
-                                        yield _sse_line(ev)
+                if isinstance(msg, dict):
+                    for tc in msg.get("tool_calls") or []:
+                        if isinstance(tc, dict) and tc.get("name"):
+                            _name = tc["name"]
+                            if isinstance(tc.get("args"), dict) and tc["args"]:
+                                tool_args[_name] = tc["args"]
+                            if _name not in emitted_tools:
+                                emitted_tools.add(_name)
+                                # 见到工具调用：本轮是 ReAct 思考轮，之后的
+                                # 新一轮消息即最终回答，恢复逐 token 下发
+                                tool_fired = True
+                                for ev in run_trace.observe_tool(
+                                        _name, tool_args.get(_name) or {}, msg_id):
+                                    yield _sse_line(ev)
                                     yield _sse_line({"tool": {"name": _name,
                                                               "args": tool_args.get(_name) or {},
                                                               "status": "running"}})
@@ -1006,6 +1016,7 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
                                 tool_args[_name] = tc["args"]
                             if _name not in emitted_tools:
                                 emitted_tools.add(_name)
+                                tool_fired = True  # 同 list 分支：思考轮结束标志
                                 for ev in run_trace.observe_tool(
                                         _name, tool_args.get(_name) or {}, chunk_id):
                                     yield _sse_line(ev)
