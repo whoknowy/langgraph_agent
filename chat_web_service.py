@@ -864,6 +864,7 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
     current_event: Optional[str] = None
     prev_content = ""
     emitted_tools: set = set()
+    tool_args: Dict[str, dict] = {}  # 工具名 -> 最近一次调用参数（供评估/前端展开）
     msg_nodes: Dict[str, str] = {}  # 消息id -> 产生它的图节点（来自 messages/metadata 事件）
     masker = StreamMasker()  # 输出侧敏感词打码（跨 token 缓冲）
     masked_parts: List[str] = []
@@ -916,9 +917,15 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
                                 yield _sse_line({"content": _masked})
                     if isinstance(msg, dict):
                         for tc in msg.get("tool_calls") or []:
-                            if isinstance(tc, dict) and tc.get("name") and tc["name"] not in emitted_tools:
-                                emitted_tools.add(tc["name"])
-                                yield _sse_line({"tool": {"name": tc["name"], "status": "running"}})
+                            if isinstance(tc, dict) and tc.get("name"):
+                                _name = tc["name"]
+                                if isinstance(tc.get("args"), dict) and tc["args"]:
+                                    tool_args[_name] = tc["args"]
+                                if _name not in emitted_tools:
+                                    emitted_tools.add(_name)
+                                    yield _sse_line({"tool": {"name": _name,
+                                                              "args": tool_args.get(_name) or {},
+                                                              "status": "running"}})
                 continue
 
             if not isinstance(payload, dict):
@@ -946,9 +953,15 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
                             yield _sse_line({"content": _masked})
                 if isinstance(chunk, dict):
                     for tc in chunk.get("tool_calls") or []:
-                        if isinstance(tc, dict) and tc.get("name") and tc["name"] not in emitted_tools:
-                            emitted_tools.add(tc["name"])
-                            yield _sse_line({"tool": {"name": tc["name"], "status": "running"}})
+                        if isinstance(tc, dict) and tc.get("name"):
+                            _name = tc["name"]
+                            if isinstance(tc.get("args"), dict) and tc["args"]:
+                                tool_args[_name] = tc["args"]
+                            if _name not in emitted_tools:
+                                emitted_tools.add(_name)
+                                yield _sse_line({"tool": {"name": _name,
+                                                          "args": tool_args.get(_name) or {},
+                                                          "status": "running"}})
             elif event == "end":
                 break
     except Exception as e:
@@ -986,6 +999,8 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
         "thread_id": tid,
         "response": "".join(masked_parts) or "".join(full_parts),
         "tools": sorted(emitted_tools),
+        # 工具调用明细（名字+参数）：供评估统计"参数准确率"与前端展开调用链
+        "tool_calls": [{"name": n, "args": tool_args.get(n) or {}} for n in sorted(emitted_tools)],
     })
     yield "data: [DONE]\n\n"
 

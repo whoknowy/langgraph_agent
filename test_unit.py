@@ -35,8 +35,15 @@ PAST = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
 @pytest.fixture(autouse=True)
 def fresh_db(tmp_path):
-    """每个用例独立临时库；结束后还原路径并清空身份上下文。"""
+    """每个用例独立临时库；结束后还原路径并清空身份上下文。
+
+    身份清空必须在 setup 阶段捕获 token 再于 teardown reset：
+    直接写 `reset(set(None))` 会把参数先求值，net 效果是"还原成上一个用例的身份"，
+    导致越权校验被上一条用例残留的管理员/会员身份绕过。
+    """
     old_path = db.DB_PATH
+    member_token = security.set_current_member(None)
+    admin_token = security.set_current_admin(None)
     db.DB_PATH = str(tmp_path / "unit.db")
     conn = db.get_connection()
     db.init_schema(conn)
@@ -59,8 +66,8 @@ def fresh_db(tmp_path):
     conn.close()
     yield
     db.DB_PATH = old_path
-    security.reset_current_member(security.set_current_member(None))
-    security.reset_current_admin(security.set_current_admin(None))
+    security.reset_current_member(member_token)
+    security.reset_current_admin(admin_token)
 
 
 def _insert_order(order_no, member_id="M1001", status="已出票", flight_date=FUTURE,
@@ -100,6 +107,243 @@ class TestSecurity:
     def test_enforce_owner_admin_exempt(self):
         security.set_current_admin("admin")
         assert security.enforce_owner("M1002") is None
+
+
+# ---------------------------------------------------------------- 行李规则
+
+class TestBaggageAllowance:
+    def test_default_rule_full_service_economy(self):
+        from services.db_seed import default_baggage_rule
+        r = default_baggage_rule(0, "经济")
+        assert r["free_checked_pieces"] == 1 and r["free_checked_kg"] == 23
+
+    def test_default_rule_lcc_economy_has_no_free_checked(self):
+        from services.db_seed import default_baggage_rule
+        r = default_baggage_rule(1, "经济")
+        assert r["free_checked_pieces"] == 0 and r["free_checked_kg"] == 0
+
+    def test_default_rule_business(self):
+        from services.db_seed import default_baggage_rule
+        r = default_baggage_rule(0, "商务")
+        assert r["free_checked_pieces"] == 2 and r["free_checked_kg"] == 32
+
+    def test_allowance_by_flight_no_with_member_bonus(self):
+        from services import flight_repo
+        security.set_current_member("M1001")           # 银卡
+        d = flight_repo.get_baggage_allowance(
+            member_id=security.get_current_member(), flight_no="CA1061")
+        assert d["airline_code"] == "CA" and d["cabin"] == "经济"
+        assert d["base_free_checked_kg"] == 23 and d["member_bonus_kg"] == 5
+        assert d["free_checked"]["weight_kg"] == 28
+        assert d["carry_on"]["pieces"] == 1
+
+    def test_allowance_business_cabin_has_no_member_bonus(self):
+        from services import flight_repo
+        security.set_current_member("M1001")
+        d = flight_repo.get_baggage_allowance(
+            member_id="M1001", flight_no="CA1061", cabin="商务")
+        assert d["free_checked"]["weight_kg"] == 32 and d["member_bonus_kg"] == 0
+
+    def test_allowance_by_order_resolves_flight_and_cabin(self):
+        from services import flight_repo
+        _insert_order("OTEST01", member_id="M1001")
+        security.set_current_member("M1001")
+        d = flight_repo.get_baggage_allowance(member_id="M1001", order_no="OTEST01")
+        assert d["order_no"] == "OTEST01" and d["flight_no"] == "CA1061"
+
+    def test_allowance_rejects_other_member_order(self):
+        from services import flight_repo
+        _insert_order("OTEST01", member_id="M1001")
+        security.set_current_member("M1002")
+        d = flight_repo.get_baggage_allowance(order_no="OTEST01")
+        assert d.get("error") and "无权限" in d["error"]
+
+    def test_allowance_unknown_order(self):
+        from services import flight_repo
+        security.set_current_member("M1001")
+        d = flight_repo.get_baggage_allowance(order_no="ONOPE00")
+        assert d.get("error") and "不存在" in d["error"]
+
+    def test_allowance_by_airline_code_and_name(self):
+        """只知道航司时也要能查（用户问"春秋航空行李额是多少"不该被反追问订单号）。"""
+        from services import flight_repo
+        by_code = flight_repo.get_baggage_allowance(airline="CA")
+        by_name = flight_repo.get_baggage_allowance(airline="中国国航")
+        assert by_code["airline_code"] == "CA" and by_name["airline_code"] == "CA"
+        assert by_code["free_checked"]["weight_kg"] == 23      # 未登录/无会员加成
+        assert flight_repo.get_baggage_allowance(airline="不存在的航司").get("error")
+
+    def test_allowance_requires_a_locator(self):
+        from services import flight_repo
+        assert "error" in flight_repo.get_baggage_allowance()
+
+    def test_baggage_tool_registered(self):
+        from services.tools import all_tools, tools_by_name
+        assert "baggage_allowance" in tools_by_name()
+        assert any(t.name == "baggage_allowance" for t in all_tools())
+
+    def test_seed_baggage_writes_row_per_airline_and_cabin(self):
+        from services import db_seed
+        conn = db.get_connection()
+        conn.executemany("INSERT OR REPLACE INTO airlines (code, name_cn, is_lcc) VALUES (?,?,?)",
+                         [(c, n, l) for (c, n, l, _f) in db_seed.AIRLINES])
+        conn.commit()
+        written = db_seed._seed_baggage(conn)
+        total = conn.execute("SELECT COUNT(*) c FROM baggage_rules").fetchone()["c"]
+        conn.close()
+        assert written == len(db_seed.AIRLINES) * 2 == total
+
+    def test_force_reseed_succeeds_with_baggage_rules(self):
+        """行李规则依赖 airlines 外键：force 重置（先清表再播种）不能因顺序问题崩掉。"""
+        from services import db_seed
+        conn = db.get_connection()
+        db_seed.ensure_seeded(conn, force=True)
+        rules = conn.execute("SELECT COUNT(*) c FROM baggage_rules").fetchone()["c"]
+        airlines = conn.execute("SELECT COUNT(*) c FROM airlines").fetchone()["c"]
+        conn.close()
+        assert airlines == len(db_seed.AIRLINES)
+        assert rules == len(db_seed.AIRLINES) * 2
+
+
+# ---------------------------------------------------------------- 评估判定逻辑
+
+def _load_eval_module():
+    """按文件路径加载 eval/run_eval.py（避免用 `eval` 作为包名遮蔽内置函数）。"""
+    import importlib.util
+    path = Path(__file__).parent / "eval" / "run_eval.py"
+    if not path.exists():
+        pytest.skip("eval/run_eval.py 不存在")
+    spec = importlib.util.spec_from_file_location("run_eval_mod", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestEvalTaskSet:
+    """任务集本身的完整性：50 条、六类覆盖、字段合法（零 token）。"""
+
+    def test_task_set_is_50_and_covers_six_categories(self):
+        ev = _load_eval_module()
+        tasks = ev.load(Path(__file__).parent / "eval" / "tasks.jsonl")
+        assert len(tasks) == 50
+        counts = {}
+        for t in tasks:
+            counts[t["category"]] = counts.get(t["category"], 0) + 1
+        assert counts == {"query": 10, "change": 8, "refund": 8,
+                          "seat": 8, "baggage": 8, "complaint": 8}
+        assert ev.validate(tasks, "tasks") == []
+
+    def test_every_task_declares_a_verdict_rule(self):
+        ev = _load_eval_module()
+        for t in ev.load(Path(__file__).parent / "eval" / "tasks.jsonl"):
+            has_rule = bool(t.get("expect_tools")) or bool(t.get("expect_args")) \
+                or bool(t.get("expect_pending"))
+            assert has_rule, f"{t['id']} 没有任何可判定的期望"
+
+    def test_baggage_category_present(self):
+        """六类中的"行李"是本轮新增能力，必须真的有任务覆盖。"""
+        ev = _load_eval_module()
+        tasks = ev.load(Path(__file__).parent / "eval" / "tasks.jsonl")
+        bag = [t for t in tasks if t["category"] == "baggage"]
+        assert len(bag) == 8
+        assert all("baggage_allowance" in (t.get("expect_tools") or []) for t in bag)
+
+    def test_security_probes_load(self):
+        ev = _load_eval_module()
+        probes = ev.load(Path(__file__).parent / "eval" / "security_probes.jsonl")
+        assert len(probes) >= 6
+        assert any("忽略规则" in p["query"] for p in probes)   # 答辩演示桥段
+        assert all(p.get("assert_no_refund") for p in probes)
+
+
+class TestEvalClassification:
+    """工具调用三分类（该调没调 / 调错工具 / 参数错）的纯逻辑。"""
+
+    def setup_method(self):
+        self.ev = _load_eval_module()
+
+    def test_correct_when_expected_tool_called_with_right_args(self):
+        task = {"expect_tools": ["search_flights"],
+                "expect_args": {"search_flights": {"departure": "北京"}}}
+        assert self.ev.classify(task, ["search_flights"], {"search_flights": {"departure": "北京"}}) == "correct"
+
+    def test_correct_when_tool_has_no_arg_requirement(self):
+        task = {"expect_tools": ["get_weather"], "expect_args": {}}
+        assert self.ev.classify(task, ["get_weather"], {}) == "correct"
+
+    def test_missing_when_no_tool_called_at_all(self):
+        task = {"expect_tools": ["search_flights"]}
+        assert self.ev.classify(task, [], {}) == "missing"
+
+    def test_wrong_tool_when_other_tool_called(self):
+        task = {"expect_tools": ["search_flights"]}
+        assert self.ev.classify(task, ["get_weather"], {}) == "wrong_tool"
+
+    def test_wrong_args_when_right_tool_wrong_params(self):
+        task = {"expect_tools": ["search_flights"],
+                "expect_args": {"search_flights": {"departure": "北京"}}}
+        assert self.ev.classify(task, ["search_flights"],
+                                {"search_flights": {"departure": "上海"}}) == "wrong_args"
+
+    def test_empty_expectation_means_no_tool_should_be_called(self):
+        task = {"expect_tools": [], "expect_args": {}}
+        assert self.ev.classify(task, [], {}) == "correct"
+        assert self.ev.classify(task, ["search_flights"], {}) == "wrong_tool"
+
+    def test_expect_all_tools_requires_every_tool(self):
+        task = {"expect_tools": ["get_order_bill", "search_flights", "change_request"],
+                "expect_all_tools": ["change_request"]}
+        # 关键工具没调（只调了铺垫工具）→ 该调没调
+        assert self.ev.classify(task, ["get_order_bill", "search_flights"], {}) == "missing"
+        # 一个期望工具都没调 → 调错工具
+        assert self.ev.classify(task, ["get_weather"], {}) == "wrong_tool"
+        # 关键工具调到了 → 正确
+        assert self.ev.classify(
+            task, ["get_order_bill", "search_flights", "change_request"], {}) == "correct"
+
+    def test_expect_args_tool_counts_as_required(self):
+        task = {"expect_tools": ["refund_request"], "expect_args": {"refund_request": {"order_no": "O1"}}}
+        assert self.ev.classify(task, ["refund_request"], {"refund_request": {"order_no": "O2"}}) == "wrong_args"
+        assert self.ev.classify(task, ["refund_request"], {"refund_request": {"order_no": "O1"}}) == "correct"
+
+    def test_multi_turn_task_placeholders_validate(self):
+        ev = self.ev
+        tasks = ev.load(Path(__file__).parent / "eval" / "tasks.jsonl")
+        change = [t for t in tasks if t["category"] == "change"]
+        assert change, "改签类任务不应为空"
+        assert all(t.get("turns") or t.get("expect_pending") is None for t in change)
+        multi = [t for t in tasks if t.get("turns")]
+        assert len(multi) >= 5, "改签主流程应有多轮任务（给方案 → 选定 → 弹卡片）"
+        assert ev.validate(tasks, "tasks") == []
+
+    def test_args_match_is_separator_and_case_insensitive(self):
+        assert self.ev.args_match({"date": "2026-09-15"}, {"date": "2026/09/15"})
+        assert self.ev.args_match({"cabin": "商务"}, {"cabin": "商务舱"})
+        assert self.ev.args_match({"flight_no": "CA1061"}, {"flight_no": "ca1061"})
+        assert self.ev.args_match({"route": "北京-上海"}, {"route": "北京到上海"})
+        assert not self.ev.args_match({"order_no": "O1"}, {})
+
+    def test_expect_args_placeholders_are_substituted(self):
+        """expect_args 里的 {order_no} 必须先替换成真实订单号再比对，
+        否则正确调用会被误判为"参数错"。"""
+        ev = self.ev
+        task = {"expect_args": {"refund_request": {"order_no": "{order_no}"}}}
+        eff = ev.resolve_expect_args(task, {"order_no": "O1234567"})
+        assert eff == {"refund_request": {"order_no": "O1234567"}}
+        assert ev.classify({**task, "expect_args": eff},
+                           ["refund_request"], {"refund_request": {"order_no": "O1234567"}}) == "correct"
+        # 未替换时会被误判
+        assert ev.classify(task, ["refund_request"],
+                           {"refund_request": {"order_no": "O1234567"}}) == "wrong_args"
+
+    def test_pending_rule(self):
+        assert self.ev.pending_ok(None, None) is True            # 不校验
+        assert self.ev.pending_ok(None, {"type": "refund"}) is True
+        assert self.ev.pending_ok("none", None) is True
+        assert self.ev.pending_ok("none", {"type": "refund"}) is False
+        assert self.ev.pending_ok("refund", {"type": "refund"}) is True
+        assert self.ev.pending_ok("refund", {"type": "change_flight"}) is False
+        assert self.ev.pending_ok("refund", None) is False
 
 
 # ---------------------------------------------------------------- 退票费率
@@ -324,7 +568,7 @@ class TestSeatMapHook:
             assert a._pending_action["flight_no"] == "CA9001"
             assert a._pending_action["flight_date"] == fdate
         finally:
-            security.reset_current_member(security.set_current_member(None))
+            security.set_current_member(None)
 
     def test_open_seat_map_rejects_out_of_window(self):
         from agents.billing_agent import BillingAgent
@@ -337,7 +581,7 @@ class TestSeatMapHook:
             assert hit and "尚未开放" in payload["error"]
             assert a._pending_action is None
         finally:
-            security.reset_current_member(security.set_current_member(None))
+            security.set_current_member(None)
 
     def test_open_seat_map_rejects_other_member(self):
         from agents.billing_agent import BillingAgent
@@ -349,14 +593,14 @@ class TestSeatMapHook:
             hit, payload = a._on_tool_call("open_seat_map", {"order_no": "S3"})
             assert hit and "无权限" in payload["error"]
         finally:
-            security.reset_current_member(security.set_current_member(None))
+            security.set_current_member(None)
 
     def test_open_seat_map_requires_login(self):
         from agents.billing_agent import BillingAgent
         from services import security
         self._add_window_order("S4")
         a = BillingAgent()
-        security.reset_current_member(security.set_current_member(None))
+        security.set_current_member(None)
         hit, payload = a._on_tool_call("open_seat_map", {"order_no": "S4"})
         assert hit and "error" in payload
 

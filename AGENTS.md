@@ -5,10 +5,11 @@
 
 ## Token 纪律
 
-1. **默认只跑 `python -m pytest test_unit.py -q`**（秒级、0 token、69 用例，独立临时库）。
+1. **默认只跑 `python -m pytest test_unit.py -q`**（秒级、0 token、169 用例，独立临时库）。
 2. 涉及管理端/订单流改动 → `python test_admin.py`（纯 REST+DB，≈0 token）。
-3. **禁止主动运行 `test_regression.py`**——它发起 20+ 轮真实 LLM 对话且默认被
-   `--go` 门禁阻止；只有用户明确要求时才带 `--go` 运行。
+3. **禁止主动运行 `test_regression.py` 与 `eval/run_eval.py`**——前者发起 20+ 轮真实 LLM 对话，
+   后者发起 50 轮真实对话并真实下单；两者都默认被门禁阻止，只有用户明确要求时才带 `--go` 运行。
+   `eval/run_eval.py --dry-run` 是零 token 的替代校验手段。
 4. **不要用"发真实对话消息"来验证改动**。验证手段优先级：
    单测 → REST 探测（curl/requests）→ 看日志（flask.log / lg_dev.log）→ 查 DB →
    浏览器 UI 操作（界面渲染、点按钮、看面板，但不触发 LLM 的部分）。

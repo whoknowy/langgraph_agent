@@ -102,6 +102,23 @@ CREATE TABLE IF NOT EXISTS complaints (
     created_at TEXT NOT NULL
 );
 
+-- 行李规则：按 航司×舱位 定义随身/免费托运额度与超重、加件费率
+CREATE TABLE IF NOT EXISTS baggage_rules (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    airline_code          TEXT NOT NULL REFERENCES airlines(code),
+    cabin                 TEXT NOT NULL CHECK (cabin IN ('经济', '商务')),
+    carry_on_pieces       INTEGER NOT NULL,
+    carry_on_kg           INTEGER NOT NULL,
+    free_checked_pieces   INTEGER NOT NULL,
+    free_checked_kg       INTEGER NOT NULL,
+    overweight_fee_per_kg INTEGER NOT NULL,
+    extra_piece_fee       INTEGER NOT NULL,
+    note                  TEXT,
+    UNIQUE (airline_code, cabin)
+);
+
+CREATE INDEX IF NOT EXISTS idx_baggage_airline ON baggage_rules(airline_code);
+
 CREATE TABLE IF NOT EXISTS city_coords (
     city TEXT PRIMARY KEY,
     lat  REAL NOT NULL,

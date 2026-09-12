@@ -9,7 +9,7 @@ import sqlite3
 from datetime import date, datetime, timedelta
 
 from services import db, security
-from services.db_seed import HORIZON_DAYS
+from services.db_seed import HORIZON_DAYS, MEMBER_BAGGAGE_BONUS_KG, default_baggage_rule
 
 
 def _conn() -> sqlite3.Connection:
@@ -249,6 +249,106 @@ def get_flight_price_detail(flight_no: str, date_str: str) -> dict:
         "flight_no": flight_no, "airline": frow["airline"],
         "route": f"{frow['dep_city']}-{frow['arr_city']}", "date": d.isoformat(),
         "breakdown": breakdown,
+    }
+
+
+# ---------------------------------------------------------------- 行李规则
+
+def get_baggage_allowance(member_id: str = None, order_no: str = None,
+                          flight_no: str = None, cabin: str = None,
+                          airline: str = None) -> dict:
+    """查询行李托运额度与超重费用（随身/免费托运/超重费率/加件费）。
+
+    定位优先级：order_no > flight_no > airline。
+    - order_no：查订单并按归属硬校验（防 LLM 越权传参），从订单取航班与舱位；
+    - flight_no：查航班取航司，舱位缺省按"经济"；
+    - airline：按航司代码（CA/MU/9C）或中文名直接查。
+    返回中 free_checked.weight_kg 已叠加登录会员等级带来的额外托运额度。
+    """
+    if not (order_no or flight_no or airline):
+        return {"error": "需要提供订单号、航班号或航司之一"}
+
+    cabin = (str(cabin).strip() if cabin else "") or None
+    if cabin and cabin not in ("经济", "商务"):
+        return {"error": f"舱位只能是 经济 或 商务：{cabin}"}
+
+    conn = _conn()
+    try:
+        ctx: dict = {}
+        if order_no:
+            o = conn.execute(
+                "SELECT order_no, member_id, flight_no, flight_date, cabin "
+                "FROM orders WHERE order_no = ?",
+                (security.normalize(order_no),)).fetchone()
+            if not o:
+                return {"error": f"订单不存在：{order_no}"}
+            denied = security.enforce_owner(o["member_id"], action="查询")
+            if denied:
+                return denied
+            member_id = o["member_id"]
+            cabin = cabin or o["cabin"]
+            ctx = {"order_no": o["order_no"], "flight_no": o["flight_no"],
+                   "flight_date": o["flight_date"]}
+            frow = conn.execute("SELECT airline_code FROM flights WHERE flight_no = ?",
+                                (o["flight_no"],)).fetchone()
+        elif flight_no:
+            frow = conn.execute(
+                "SELECT flight_no, airline_code FROM flights WHERE flight_no = ?",
+                (security.normalize(flight_no),)).fetchone()
+            if not frow:
+                return {"error": f"航班不存在：{flight_no}"}
+            ctx = {"flight_no": frow["flight_no"]}
+        else:
+            frow = conn.execute(
+                "SELECT code AS airline_code FROM airlines WHERE code = ? OR name_cn = ?",
+                (security.normalize(airline), str(airline).strip())).fetchone()
+            if not frow:
+                return {"error": f"航司不存在：{airline}（可用代码如 CA/MU/9C 或中文名）"}
+
+        if not frow:
+            return {"error": "未找到对应的航班/航司信息"}
+        airline_code = frow["airline_code"]
+        cabin = cabin or "经济"
+
+        arow = conn.execute("SELECT code, name_cn, is_lcc FROM airlines WHERE code = ?",
+                            (airline_code,)).fetchone()
+        if not arow:
+            return {"error": f"航司数据缺失：{airline_code}"}
+
+        rule = conn.execute(
+            "SELECT carry_on_pieces, carry_on_kg, free_checked_pieces, free_checked_kg, "
+            "overweight_fee_per_kg, extra_piece_fee, note "
+            "FROM baggage_rules WHERE airline_code = ? AND cabin = ?",
+            (airline_code, cabin)).fetchone()
+        base = dict(rule) if rule else default_baggage_rule(arow["is_lcc"], cabin)
+
+        # 会员等级附加额度：仅经济舱且本身含免费托运额时叠加
+        level, bonus = None, 0
+        if member_id:
+            crow = conn.execute("SELECT level FROM customers WHERE member_id = ?",
+                                (member_id,)).fetchone()
+            if crow:
+                level = crow["level"]
+                if cabin == "经济" and base["free_checked_kg"] > 0:
+                    bonus = MEMBER_BAGGAGE_BONUS_KG.get(level, 0)
+    finally:
+        conn.close()
+
+    return {
+        "airline": arow["name_cn"],
+        "airline_code": airline_code,
+        "cabin": cabin,
+        "is_lcc": bool(arow["is_lcc"]),
+        "carry_on": {"pieces": base["carry_on_pieces"], "weight_kg": base["carry_on_kg"]},
+        "free_checked": {"pieces": base["free_checked_pieces"],
+                         "weight_kg": base["free_checked_kg"] + bonus},
+        "base_free_checked_kg": base["free_checked_kg"],
+        "overweight_fee_per_kg": base["overweight_fee_per_kg"],
+        "extra_piece_fee": base["extra_piece_fee"],
+        "member_level": level,
+        "member_bonus_kg": bonus,
+        "note": base["note"],
+        **ctx,
     }
 
 

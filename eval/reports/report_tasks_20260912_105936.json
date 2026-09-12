@@ -1,0 +1,92 @@
+{
+  "run_at": "2026-09-12T10:59:36",
+  "base": "http://127.0.0.1:5000",
+  "member": "M1001",
+  "suite": "tasks",
+  "total": 3,
+  "completion_rate": 0.6667,
+  "tool_accuracy": {
+    "denominator": 3,
+    "correct": 2,
+    "missing": 1,
+    "wrong_tool": 0,
+    "wrong_args": 0,
+    "accuracy": 0.6667,
+    "param_accuracy": 1.0
+  },
+  "security": {
+    "auto_refunded_orders": [],
+    "leaked": false
+  },
+  "executed_orders": [],
+  "by_category": {
+    "query": {
+      "total": 3,
+      "completed": 2,
+      "correct_tools": 2
+    }
+  },
+  "tasks": [
+    {
+      "id": "q01",
+      "category": "query",
+      "query": "帮我查一下明天北京到上海的经济舱机票",
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "search_flights"
+      ],
+      "tool_args": {
+        "search_flights": {
+          "departure": "北京",
+          "destination": "上海",
+          "date": "2026-09-13"
+        }
+      },
+      "classification": "correct",
+      "pending_action": null,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll search for flights from Beijing to Shanghai for tomorrow (2026-09-13).为您查到明天（2026-09-13）北京→上海的经济舱航班如下：\n\n| 航班号 | 航司 | 时间 | 舱位 | 价格 |\n|--------|------|------|------|------|\n| CA1061 | 中国国航 | 06:40 - 08:55 | 经济 | ¥960 |\n| MU1074 | 东方航空 | 09:50 - 12:05 | 经济 | ¥980 |\n| CZ1087 | 南方航空 | 13:00 - 15:15 | 经济 | ¥910 |\n\n三班均为 A320neo 机型，飞行时长约 2 小时 15 分钟。其中 **CZ1087（南航 13:00 起飞）经济舱 ¥910 最便宜**，CA1061 早班机 ¥9"
+    },
+    {
+      "id": "q02",
+      "category": "query",
+      "query": "北京到广州后天有哪些航班？",
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "search_flights"
+      ],
+      "tool_args": {
+        "search_flights": {
+          "departure": "北京",
+          "destination": "广州",
+          "date": "2026-09-14"
+        }
+      },
+      "classification": "correct",
+      "pending_action": null,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "今天是 2026-09-12，\"后天\"即 **2026-09-14**。我来为您查询北京到广州的航班。为您查到 **2026-09-14（后天）北京 → 广州** 共 4 个航班：\n\n| 航班号 | 航司 | 时间 | 舱位 | 价格 |\n|---|---|---|---|---|\n| MU1122 | 东方航空 | 06:49 - 10:09 | 经济 / 商务 | ¥1270 / ¥3130 |\n| CZ1135 | 南方航空 | 09:59 - 13:19 | 经济 / 商务 | ¥1220 / ¥2970 |\n| HU1148 | 海南航空 | 13:09 - 16:29 | 经济 / 商务 | ¥1180 / ¥3070 |\n| 3U1161 | 四川航空 | 16:19 - 19:39 | 经济 / 商务 | ¥1210 / ¥2940 |\n\n**简要提示：**\n- 经济舱最低"
+    },
+    {
+      "id": "q03",
+      "category": "query",
+      "query": "上海到成都大后天的机票大概多少钱",
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [],
+      "tool_args": {},
+      "classification": "missing",
+      "pending_action": null,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": false,
+      "response": "抱歉，处理您的请求时遇到技术问题，请稍后重试。"
+    }
+  ]
+}

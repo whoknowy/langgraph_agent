@@ -16,7 +16,7 @@ class BillingAgent(BaseAgent):
         super().__init__(
             name="账单专家",
             role="订单账单、支付问题、退改与值机服务",
-            expertise=["订单查询", "账单明细", "支付问题", "退款处理", "退票申请", "发票", "值机选座", "登机牌"],
+            expertise=["订单查询", "账单明细", "支付问题", "退款处理", "退票申请", "发票", "值机选座", "登机牌", "行李额度"],
         )
 
     def _react_tools(self) -> list:
@@ -44,8 +44,10 @@ class BillingAgent(BaseAgent):
                                       "提示用户点击\"确认改签\"，不要自称已改签成功。"})
         if name == "open_seat_map":
             from services import checkin_repo, security
-            info = checkin_repo.checkin_info((args or {}).get("order_no", ""),
-                                             security.get_current_member())
+            member_id = security.get_current_member()
+            if not member_id:
+                return (True, {"error": "未登录：请先登录会员账号后再值机选座"})
+            info = checkin_repo.checkin_info((args or {}).get("order_no", ""), member_id)
             if info.get("error"):
                 return (True, info)
             if not info.get("window_open"):
@@ -69,6 +71,9 @@ class BillingAgent(BaseAgent):
             "回答规范：\n"
             "1. 订单/账单问题先用 get_order_bill 查询真实数据，如实引用金额与状态；\n"
             "2. 若信息不足，先礼貌追问，不要猜测；\n"
+            "2b. 用户询问某订单能带多少行李/免费托运额度/超重怎么收费时，调用 baggage_allowance"
+            "（有订单号传 order_no，没有则传 flight_no，只知道航司就传 airline），"
+            "按随身、免费托运、超重费率、加件费说明；\n"
             "3. 用简洁、专业、友好的中文回复。\n\n"
             "改签流程（严格遵守）：\n"
             "a. 用户要求改签时，先用 get_order_bill 确认订单存在且状态为\"已出票/已改签\"；\n"

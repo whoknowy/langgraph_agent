@@ -63,6 +63,30 @@ AIRLINES = [
     ("9C", "春秋航空", 1, 0.68),
 ]
 
+
+def default_baggage_rule(is_lcc: int, cabin: str) -> dict:
+    """按（是否低成本航司 × 舱位）给出标准行李规则。
+
+    真实航司行李政策差异大，这里用"全服务/低成本 × 经济/商务"四档做可复现的
+    确定性建模；db_seed 会把它落库到 baggage_rules，repo 在查不到记录时也用它兜底。
+    """
+    if cabin == "商务":
+        return {"carry_on_pieces": 2, "carry_on_kg": 5, "free_checked_pieces": 2,
+                "free_checked_kg": 32, "overweight_fee_per_kg": 18, "extra_piece_fee": 260,
+                "note": "商务舱标准：随身2件（合计不超过5kg），免费托运2件每件不超过32kg"}
+    if is_lcc:
+        return {"carry_on_pieces": 1, "carry_on_kg": 7, "free_checked_pieces": 0,
+                "free_checked_kg": 0, "overweight_fee_per_kg": 25, "extra_piece_fee": 200,
+                "note": "低成本航司经济舱不含免费托运额，需另行购买托运行李"}
+    return {"carry_on_pieces": 1, "carry_on_kg": 5, "free_checked_pieces": 1,
+            "free_checked_kg": 23, "overweight_fee_per_kg": 20, "extra_piece_fee": 300,
+            "note": "全服务航司经济舱标准：随身1件不超过5kg，免费托运1件不超过23kg"}
+
+
+# 会员等级附加免费托运额度（仅在经济舱基础免费额>0时叠加）
+MEMBER_BAGGAGE_BONUS_KG = {"金卡": 10, "银卡": 5, "普通": 0}
+
+
 # 无向航线表：(城市1, 城市2, 飞行时长分钟)
 ROUTES = [
     ("北京", "上海", 135), ("北京", "广州", 200), ("北京", "深圳", 205),
@@ -160,8 +184,12 @@ def _seed_base(conn: sqlite3.Connection, rnd: random.Random) -> None:
                         (airline, route, bucket, round(mean_min, 1), round(min(max(prob, 0.05), 0.45), 3), 365)
                     )
 
+    # 必须显式列名：flights 后来新增了 gate 列（_ensure_column 迁移），
+    # 用无列名的 INSERT ... VALUES 会因列数不匹配而在重置库时失败。
     conn.executemany(
-        "INSERT OR REPLACE INTO flights VALUES (?,?,?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO flights "
+        "(flight_no, airline_code, dep_iata, arr_iata, dep_time, arr_time, "
+        " duration_min, aircraft, freq_days) VALUES (?,?,?,?,?,?,?,?,?)",
         flights_rows,
     )
     conn.executemany(
@@ -186,7 +214,8 @@ def _seed_base(conn: sqlite3.Connection, rnd: random.Random) -> None:
         level = "金卡" if i % 10 == 0 else ("银卡" if i % 10 in (1, 2, 3) else "普通")
         customers.append((member_id, name, phone, f"member{i}@example.com", level))
     conn.executemany(
-        "INSERT OR REPLACE INTO customers VALUES (?,?,?,?,?)",
+        "INSERT OR REPLACE INTO customers (member_id, name, phone, email, level) "
+        "VALUES (?,?,?,?,?)",
         customers,
     )
 
@@ -216,6 +245,31 @@ def _price_for(flight_no: str, flight_date: date, cabin: str, duration_min: int,
     jitter = rnd.uniform(0.92, 1.08)
     price = int(round(base * adv * seasonal * price_factor * jitter / 10) * 10)
     return max(price, 200)
+
+
+def _seed_baggage(conn: sqlite3.Connection) -> int:
+    """补齐行李规则（幂等）：每个航司 × 两个舱位各一行，确定性可复现。
+
+    单独成函数是为了让**存量库**（已建库、非首次种子）也能在启动时自动补上
+    baggage_rules 数据，而不必清库重建。返回写入行数。
+    """
+    rows = []
+    for code, _name, is_lcc, _factor in AIRLINES:
+        for cabin in ("经济", "商务"):
+            rule = default_baggage_rule(is_lcc, cabin)
+            rows.append((
+                code, cabin, rule["carry_on_pieces"], rule["carry_on_kg"],
+                rule["free_checked_pieces"], rule["free_checked_kg"],
+                rule["overweight_fee_per_kg"], rule["extra_piece_fee"], rule["note"],
+            ))
+    conn.executemany(
+        "INSERT OR REPLACE INTO baggage_rules "
+        "(airline_code, cabin, carry_on_pieces, carry_on_kg, free_checked_pieces, "
+        " free_checked_kg, overweight_fee_per_kg, extra_piece_fee, note) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        rows,
+    )
+    return len(rows)
 
 
 def _seed_prices(conn: sqlite3.Connection, start: date, end: date) -> int:
@@ -272,7 +326,9 @@ def _seed_orders_and_complaints(conn: sqlite3.Connection, rnd: random.Random) ->
                                row["cabin"], row["price"], status, created_at.isoformat()))
 
     conn.executemany(
-        "INSERT OR REPLACE INTO orders VALUES (?,?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO orders "
+        "(order_no, member_id, flight_no, flight_date, cabin, amount, status, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?)",
         order_rows,
     )
 
@@ -295,7 +351,9 @@ def _seed_orders_and_complaints(conn: sqlite3.Connection, rnd: random.Random) ->
         complaints.append((ticket_no, member_id, order_no, content, status, created.isoformat()))
 
     conn.executemany(
-        "INSERT OR REPLACE INTO complaints VALUES (?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO complaints "
+        "(ticket_no, member_id, order_no, content, status, created_at) "
+        "VALUES (?,?,?,?,?,?)",
         complaints,
     )
 
@@ -366,7 +424,7 @@ def ensure_seeded(conn: sqlite3.Connection, force: bool = False) -> None:
 
     if force:
         for table in ("complaints", "orders", "flight_prices", "delay_stats", "flights",
-                      "airlines", "airports", "customers", "city_coords", "meta"):
+                      "baggage_rules", "airlines", "airports", "customers", "city_coords", "meta"):
             conn.execute(f"DELETE FROM {table}")
 
     _seed_admin(conn)
@@ -377,12 +435,19 @@ def ensure_seeded(conn: sqlite3.Connection, force: bool = False) -> None:
     if count == 0:
         rnd = random.Random(SEED)
         _seed_base(conn, rnd)
+        # 行李规则依赖 airlines 外键，必须在 _seed_base 之后写入
+        print(f"🧳 已写入行李规则 {_seed_baggage(conn)} 条")
         _seed_prices(conn, today, today + timedelta(days=HORIZON_DAYS))
         _seed_orders_and_complaints(conn, rnd)
         conn.execute("INSERT OR REPLACE INTO meta VALUES ('seed_version','1')")
         conn.execute("INSERT OR REPLACE INTO meta VALUES ('seed_date',?)", (today.isoformat(),))
         conn.commit()
         return
+
+    # 增量：存量库补齐行李规则（仅表为空时写入，避免覆盖人工维护的规则）
+    if conn.execute("SELECT COUNT(*) AS c FROM baggage_rules").fetchone()["c"] == 0:
+        print(f"🧳 已补齐行李规则 {_seed_baggage(conn)} 条")
+        conn.commit()
 
     # 增量：确保未来 30 天价格存在（每日运行）
     max_date_row = conn.execute("SELECT MAX(flight_date) AS d FROM flight_prices").fetchone()

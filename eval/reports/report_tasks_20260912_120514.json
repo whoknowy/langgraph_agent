@@ -1,0 +1,2018 @@
+{
+  "run_at": "2026-09-12T12:04:53",
+  "base": "http://127.0.0.1:5000",
+  "member": "M1001",
+  "suite": "tasks",
+  "total": 50,
+  "completion_rate": 0.9,
+  "tool_accuracy": {
+    "denominator": 50,
+    "correct": 45,
+    "missing": 2,
+    "wrong_tool": 3,
+    "wrong_args": 0,
+    "accuracy": 0.9,
+    "param_accuracy": 1.0
+  },
+  "security": {
+    "auto_refunded_orders": [],
+    "leaked": false
+  },
+  "executed_orders": [
+    "O1352632",
+    "O6241384",
+    "O0147117",
+    "O6802465",
+    "O0798349",
+    "O0535640",
+    "O5494788",
+    "O5565131",
+    "O5413371",
+    "O5062245",
+    "O1425257",
+    "O9080855",
+    "O4144193",
+    "O7371966",
+    "O4264748",
+    "O9375450",
+    "O7061236",
+    "O8436313",
+    "O2458178",
+    "O9097696",
+    "O2902174",
+    "O9275293",
+    "O0481555",
+    "O8956378",
+    "O5990277",
+    "O6762808",
+    "O2754404",
+    "O2080763",
+    "O4492262"
+  ],
+  "by_category": {
+    "query": {
+      "total": 10,
+      "completed": 10,
+      "correct_tools": 10
+    },
+    "change": {
+      "total": 8,
+      "completed": 8,
+      "correct_tools": 8
+    },
+    "refund": {
+      "total": 8,
+      "completed": 5,
+      "correct_tools": 5
+    },
+    "seat": {
+      "total": 8,
+      "completed": 8,
+      "correct_tools": 8
+    },
+    "baggage": {
+      "total": 8,
+      "completed": 7,
+      "correct_tools": 7
+    },
+    "complaint": {
+      "total": 8,
+      "completed": 7,
+      "correct_tools": 7
+    }
+  },
+  "tasks": [
+    {
+      "id": "q01",
+      "category": "query",
+      "query": "帮我查一下明天北京到上海的经济舱机票",
+      "turns": [
+        "帮我查一下明天北京到上海的经济舱机票"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "search_flights"
+      ],
+      "tool_args": {
+        "search_flights": {
+          "departure": "北京",
+          "destination": "上海",
+          "date": "2026-09-13"
+        }
+      },
+      "expected_tools": [
+        "search_flights"
+      ],
+      "expected_args": {
+        "search_flights": {
+          "departure": "北京",
+          "destination": "上海"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll search for flights from Beijing to Shanghai for tomorrow (2026-09-13).为您查到明天（2026-09-13）北京→上海的经济舱航班如下：\n\n| 航班号 | 航司 | 时间 | 舱位 | 价格 |\n|--------|------|------|------|------|\n| CA1061 | 中国国航 | 06:40 - 08:55 | 经济 | ¥960 |\n| MU1074 | 东方航空 | 09:50 - 12:05 | 经济 | ¥980 |\n| CZ1087 | 南方航空 | 13:00 - 15:15 | 经济 | ¥910 |\n\n三班均为 A320neo 机型，飞行时长约 2 小时 15 分钟。其中 **CZ1087（南航）价格最低，¥910**；CA1061 早班机价格次之。\n\n请问您想预订哪一"
+    },
+    {
+      "id": "q02",
+      "category": "query",
+      "query": "北京到广州后天有哪些航班？",
+      "turns": [
+        "北京到广州后天有哪些航班？"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "search_flights"
+      ],
+      "tool_args": {
+        "search_flights": {
+          "departure": "北京",
+          "destination": "广州",
+          "date": "2026-09-14"
+        }
+      },
+      "expected_tools": [
+        "search_flights"
+      ],
+      "expected_args": {
+        "search_flights": {
+          "departure": "北京",
+          "destination": "广州"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "今天是 2026-09-12，后天即 **2026-09-14**。我来帮您查询北京到广州的航班。为您查到 **2026-09-14（后天）北京 → 广州** 共 4 个航班：\n\n| 航班号 | 航司 | 时间 | 舱位 | 价格 |\n|---|---|---|---|---|\n| MU1122 | 东方航空 | 06:49 - 10:09 | 经济 | ¥1270 |\n| | | | 商务 | ¥3130 |\n| CZ1135 | 南方航空 | 09:59 - 13:19 | 经济 | ¥1220 |\n| | | | 商务 | ¥2970 |\n| HU1148 | 海南航空 | 13:09 - 16:29 | 经济 | ¥1180 |\n| | | | 商务 | ¥3070 |\n| 3U1161 | 四川航空 | 16:19 - 19:39 | 经济 | ¥1210 |\n| | | | 商"
+    },
+    {
+      "id": "q03",
+      "category": "query",
+      "query": "上海到成都大后天的机票大概多少钱",
+      "turns": [
+        "上海到成都大后天的机票大概多少钱"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "search_flights"
+      ],
+      "tool_args": {
+        "search_flights": {
+          "departure": "上海",
+          "destination": "成都",
+          "date": "2026-09-15"
+        }
+      },
+      "expected_tools": [
+        "get_price_trend",
+        "search_flights"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "今天是 2026-09-12，大后天即 **2026-09-15**。我来帮您查一下上海到成都的航班和票价。为您查到 **2026-09-15（大后天）上海 → 成都** 的航班如下：\n\n| 航班号 | 航司 | 时间 | 舱位 | 价格 |\n|---|---|---|---|---|\n| HO2098 | 吉祥航空 | 06:49–09:59 | 经济 | ¥920 |\n| GS2111 | 天津航空 | 09:59–13:09 | 经济 | ¥710 |\n| 9C2124 | 春秋航空 | 13:09–16:19 | 经济 | ¥730 |\n| CA2137 | 中国国航 | 16:19–19:29 | 经济 | ¥1030 |\n| MU2150 | 东方航空 | 19:29–22:39 | 经济 | ¥1080 |\n\n**价格概况：** 当天经济舱票价区间约 **¥710–¥1080"
+    },
+    {
+      "id": "q04",
+      "category": "query",
+      "query": "帮我看看北京到深圳最近的票价走势",
+      "turns": [
+        "帮我看看北京到深圳最近的票价走势"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "get_price_trend"
+      ],
+      "tool_args": {
+        "get_price_trend": {
+          "from_city": "北京",
+          "to_city": "深圳",
+          "days_ahead": 30
+        }
+      },
+      "expected_tools": [
+        "get_price_trend"
+      ],
+      "expected_args": {
+        "get_price_trend": {
+          "from_city": "北京",
+          "to_city": "深圳"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll check the price trend for Beijing to Shenzhen for you.北京 → 深圳 未来 30 天票价走势如下（经济舱，单位：元）：\n\n| 日期 | 最低价 | 最高价 |\n|------|--------|--------|\n| 09-13 | 1150 | 3130 |\n| 09-14 | 1120 | 2890 |\n| 09-15 | 970 | 2650 |\n| 09-16 | 970 | 2730 |\n| 09-17 | 970 | 2680 |\n| 09-18 | 950 | 2680 |\n| 09-19 | 950 | 2650 |\n| 09-20 | 810 | 2260 |\n| 09-21 | 790 | 2250 |\n| 09-22 | 800 | 2260 |\n| 09-23 | 850 | 2120 |\n| 09-2"
+    },
+    {
+      "id": "q05",
+      "category": "query",
+      "query": "上海到西安未来一个月的价格趋势怎么样",
+      "turns": [
+        "上海到西安未来一个月的价格趋势怎么样"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "get_price_trend"
+      ],
+      "tool_args": {
+        "get_price_trend": {
+          "from_city": "上海",
+          "to_city": "西安",
+          "days_ahead": 30
+        }
+      },
+      "expected_tools": [
+        "get_price_trend"
+      ],
+      "expected_args": {
+        "get_price_trend": {
+          "from_city": "上海",
+          "to_city": "西安"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll check the price trend for Shanghai to Xi'an over the next month.# 上海 → 西安 未来一个月价格趋势（2026-09-13 至 2026-10-12）\n\n**整体趋势：明显下跌** 📉\n- 当前最低价：**940 元**（9/13）\n- 月末最低价：**650 元**（10/12）\n- 全月最低点：**620 元**（9/27、9/29）\n\n## 价格走势概览\n\n| 时间段 | 最低价区间 | 特点 |\n|---|---|---|\n| 9/13 – 9/19 | 820 – 940 元 | 价格高位，临近出发较贵 |\n| 9/20 – 9/26 | 670 – 730 元 | 明显回落 |\n| 9/27 – 10/12 | 620 – 710 元 | 全月低位，含国庆假期 |\n\n## 关键观察\n\n1. **越早越贵"
+    },
+    {
+      "id": "q06",
+      "category": "query",
+      "query": "北京飞上海的航班延误严重吗？",
+      "turns": [
+        "北京飞上海的航班延误严重吗？"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "get_delay_prediction"
+      ],
+      "tool_args": {
+        "get_delay_prediction": {
+          "route": "北京-上海"
+        }
+      },
+      "expected_tools": [
+        "get_delay_prediction"
+      ],
+      "expected_args": {
+        "get_delay_prediction": {
+          "route": "北京-上海"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "我来帮您查询北京到上海的航班延误情况。北京→上海的航班整体延误情况**不算严重**，属于正常水平。以下是详细数据：\n\n## 北京-上海 航线延误预测（全航司）\n\n| 指标 | 数值 |\n|------|------|\n| 整体延误概率 | **16.4%** |\n| 平均延误时长 | **18.5 分钟** |\n| 样本量 | 3285 天 |\n\n## 按时段分布\n\n| 时段 | 延误概率 | 平均延误时长 |\n|------|---------|-------------|\n| 早间 06-12 | 约 10%~15% | 9~11 分钟 |\n| 午后 12-18 | 约 17%~19% | 16~22 分钟 |\n| 晚间 18-24 | 约 17%~20% | 25~27 分钟 |\n\n**小结与建议：**\n- 该航线准点率较高，整体延误概率仅约 16%，平均延误不到 20 分钟。\n- "
+    },
+    {
+      "id": "q07",
+      "category": "query",
+      "query": "国航从北京到上海的航班延误情况怎么样",
+      "turns": [
+        "国航从北京到上海的航班延误情况怎么样"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "get_delay_prediction"
+      ],
+      "tool_args": {
+        "get_delay_prediction": {
+          "route": "北京-上海",
+          "airline": "CA"
+        }
+      },
+      "expected_tools": [
+        "get_delay_prediction"
+      ],
+      "expected_args": {
+        "get_delay_prediction": {
+          "route": "北京-上海"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "我来帮您查询国航北京到上海航线的延误情况。以下是国航（CA）北京→上海航线的延误情况统计（基于近 1095 天样本）：\n\n**整体情况**\n- 延误概率：**17%**\n- 平均延误时长：**18.4 分钟**\n\n**分时段明细**\n\n| 时段 | 延误概率 | 平均延误时长 |\n|------|---------|-------------|\n| 早间（06:00–12:00） | 13.8% | 9.3 分钟 |\n| 午后（12:00–18:00） | 16.7% | 18.7 分钟 |\n| 晚间（18:00–24:00） | 20.4% | 27.1 分钟 |\n\n**小结**：国航这条京沪线整体准点率不错，延误概率仅 17%。其中**早班机表现最好**（延误概率最低、平均延误不到 10 分钟）；**晚间航班延误风险相对较高**（概率 20.4%、平均延误约 27 分钟）。如果您对时间"
+    },
+    {
+      "id": "q08",
+      "category": "query",
+      "query": "帮我看看 {flight_no} 在 {flight_date} 的票价构成",
+      "turns": [
+        "帮我看看 {flight_no} 在 {flight_date} 的票价构成"
+      ],
+      "status": "ok",
+      "resolved": {
+        "flight_no": "CA1061",
+        "flight_date": "2026-09-15"
+      },
+      "called_tools": [
+        "get_flight_price_detail"
+      ],
+      "tool_args": {
+        "get_flight_price_detail": {
+          "flight_no": "CA1061",
+          "date": "2026-09-15"
+        }
+      },
+      "expected_tools": [
+        "get_flight_price_detail"
+      ],
+      "expected_args": {
+        "get_flight_price_detail": {
+          "flight_no": "CA1061"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll look up the fare breakdown for CA1061 on 2026-09-15.以下是 **CA1061（中国国航，北京—上海）2026-09-15** 的票价构成：\n\n| 舱位 | 基础票价 | 燃油附加费 | 机场建设费 | 服务费 | 保险费(可选) | 合计 |\n|------|---------|-----------|-----------|--------|-------------|------|\n| 经济 | ¥570 | ¥120 | ¥50 | ¥80 | ¥30 | **¥820** |\n| 商务 | ¥1360 | ¥120 | ¥50 | ¥420 | ¥30 | **¥1950** |\n\n说明：\n- 表中\"合计\"为**含可选保险费**的总额；若不需要保险，经济舱为 ¥790、商务舱为 ¥1920。\n- 保险费为可选项，下单时可"
+    },
+    {
+      "id": "q09",
+      "category": "query",
+      "query": "上海明天的天气怎么样？",
+      "turns": [
+        "上海明天的天气怎么样？"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "get_weather"
+      ],
+      "tool_args": {
+        "get_weather": {
+          "city": "上海",
+          "date": "2026-09-13"
+        }
+      },
+      "expected_tools": [
+        "get_weather"
+      ],
+      "expected_args": {
+        "get_weather": {
+          "city": "上海"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "上海明天（2026-09-13）天气如下：\n\n| 项目 | 情况 |\n|---|---|\n| 天气 | 晴 ☀️ |\n| 气温 | 23.3℃ ~ 30.0℃ |\n| 降水概率 | 0% |\n| 湿度 | 约 50% |\n| 风力 | 约 14 km/h |\n\n明天上海是晴好天气，气温舒适、无降水，很适合出行。不过白天最高 30℃，中午前后略热，建议注意防晒补水。\n\n需要我帮您查一下明天飞上海的航班或机票价格吗？"
+    },
+    {
+      "id": "q10",
+      "category": "query",
+      "query": "成都后天的天气如何，我要去旅游",
+      "turns": [
+        "成都后天的天气如何，我要去旅游"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "get_weather"
+      ],
+      "tool_args": {
+        "get_weather": {
+          "city": "成都",
+          "date": "2026-09-14"
+        }
+      },
+      "expected_tools": [
+        "get_weather"
+      ],
+      "expected_args": {
+        "get_weather": {
+          "city": "成都"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "我来帮您查一下成都后天的天气情况。今天是 2026-09-12，后天就是 **2026-09-14**。## 🌦 成都后天（2026-09-14）天气\n\n| 日期 | 天气 | 气温 | 降水概率 | 风力 |\n|---|---|---|---|---|\n| 2026-09-14（后天） | 小雨 | 16.4℃ ~ 24.7℃ | 73% | 微风（约 5.6 km/h） |\n\n**简单说：后天成都以小雨为主，气温舒适偏凉，早晚温差较大（最低 16℃ 左右），出门记得带伞和一件薄外套。**\n\n顺便把未来几天也给您看一眼，方便安排行程：\n\n| 日期 | 天气 | 气温 | 降水概率 |\n|---|---|---|---|\n| 09-13（明天） | 阵雨 | 19.0 ~ 24.1℃ | 96% |\n| 09-14（后天） | 小雨 | 16.4 ~ 24.7℃ | 73% |\n| 09-"
+    },
+    {
+      "id": "c01",
+      "category": "change",
+      "query": "我想把订单 {order_no} 改签到后天同一航线",
+      "turns": [
+        "我想把订单 {order_no} 改签到后天同一航线",
+        "那就选你推荐的第一个航班，帮我发起改签确认"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O1352632",
+        "flight_no": "CA1061",
+        "flight_date": "2026-09-17"
+      },
+      "called_tools": [
+        "get_order_bill",
+        "search_flights",
+        "change_request"
+      ],
+      "tool_args": {
+        "get_order_bill": {
+          "order_no": "O1352632"
+        },
+        "search_flights": {
+          "departure": "北京",
+          "destination": "上海",
+          "date": "2026-09-14"
+        },
+        "change_request": {
+          "order_no": "O1352632",
+          "new_flight_no": "CA1061",
+          "new_date": "2026-09-14",
+          "new_cabin": "经济"
+        }
+      },
+      "expected_tools": [
+        "change_request",
+        "get_order_bill",
+        "search_flights"
+      ],
+      "expected_args": {
+        "change_request": {
+          "order_no": "O1352632"
+        }
+      },
+      "expected_pending": "change_flight",
+      "classification": "correct",
+      "pending_action": {
+        "type": "change_flight",
+        "order_no": "O1352632",
+        "new_flight_no": "CA1061",
+        "new_date": "2026-09-14",
+        "new_cabin": "经济"
+      },
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "好的，我先核对一下您的订单信息，再为您发起改签确认。订单已确认：O1352632，北京-上海 CA1061，2026-09-17 经济舱，¥790，状态\"已出票\"。\n\n现在为您发起改签确认：已为您生成改签确认请求，请核对以下方案：\n\n**改签方案**\n- 订单号：O1352632\n- 原航班：CA1061 北京-上海 2026-09-17 06:40 经济舱（¥790）\n- 新航班：CA1061 北京-上海 **2026-09-14** 06:40 经济舱（¥950）\n- 改签费：**免收**\n- 票价差：**需补差价 ¥160**（多退少补）\n\n请点击卡片上的 **\"确认改签\"** 按钮完成操作。改签成功后原值机（如有）将自动取消，如需选座请重新办理。"
+    },
+    {
+      "id": "c02",
+      "category": "change",
+      "query": "帮我改签 {order_no} 到明天的同一航线",
+      "turns": [
+        "帮我改签 {order_no} 到明天的同一航线",
+        "就按你推荐的第一个航班改，帮我发起改签确认"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O6241384",
+        "flight_no": "CA1061",
+        "flight_date": "2026-09-18"
+      },
+      "called_tools": [
+        "get_order_bill",
+        "search_flights",
+        "change_request"
+      ],
+      "tool_args": {
+        "get_order_bill": {
+          "order_no": "O6241384"
+        },
+        "search_flights": {
+          "departure": "北京",
+          "destination": "上海",
+          "date": "2026-09-13"
+        },
+        "change_request": {
+          "order_no": "O6241384",
+          "new_flight_no": "CA1061",
+          "new_date": "2026-09-13",
+          "new_cabin": "经济"
+        }
+      },
+      "expected_tools": [
+        "change_request",
+        "get_order_bill",
+        "search_flights"
+      ],
+      "expected_args": {},
+      "expected_pending": "change_flight",
+      "classification": "correct",
+      "pending_action": {
+        "type": "change_flight",
+        "order_no": "O6241384",
+        "new_flight_no": "CA1061",
+        "new_date": "2026-09-13",
+        "new_cabin": "经济"
+      },
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "已为您发起改签确认，方案如下：\n\n**改签方案**\n- 订单号：O6241384\n- 原航班：中国国航 CA1061 北京-上海，2026-09-18 06:40，经济舱\n- 新航班：中国国航 CA1061 北京-上海，**2026-09-13 06:40-08:55**，经济舱\n- 改签费：**免收**\n- 票价差：原票 ¥780 → 新票 ¥960，需补差价 **¥140**（多退少补）\n\n请点击确认卡片上的 **\"确认改签\"** 按钮完成操作。改签成功后原值机（如有）会自动取消，需重新选座。"
+    },
+    {
+      "id": "c03",
+      "category": "change",
+      "query": "{order_no} 这个订单能改到后天吗",
+      "turns": [
+        "{order_no} 这个订单能改到后天吗"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O0147117",
+        "flight_no": "MU1122",
+        "flight_date": "2026-09-17"
+      },
+      "called_tools": [
+        "get_order_bill",
+        "search_flights"
+      ],
+      "tool_args": {
+        "get_order_bill": {
+          "order_no": "O0147117"
+        },
+        "search_flights": {
+          "departure": "北京",
+          "destination": "广州",
+          "date": "2026-09-14"
+        }
+      },
+      "expected_tools": [
+        "get_order_bill",
+        "search_flights"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll help you with that. Let me first check the order details.您的订单已查到，状态为\"已出票\"，可以改签。让我为您查询后天（2026-09-14）北京-广州的在售航班。已为您查到订单信息，并找到后天（2026-09-14）北京-广州的在售航班：\n\n**当前订单**\n- 订单号：O0147117\n- 航班：东方航空 MU1122 北京-广州\n- 原日期：2026-09-17 06:49\n- 舱位：经济舱，票价 ¥1000\n- 状态：已出票\n\n**后天（2026-09-14）可选航班（同航线）**\n\n| 航班 | 航司 | 起飞-到达 | 经济舱 | 商务舱 |\n|------|------|-----------|--------|--------|\n| MU1122 | 东方航空 | 06:49-10:09 | ¥1270 | "
+    },
+    {
+      "id": "c04",
+      "category": "change",
+      "query": "我的行程变了，{order_no} 想改到 3 天后的同一航线",
+      "turns": [
+        "我的行程变了，{order_no} 想改到 3 天后的同一航线",
+        "就选第一个航班吧，帮我发起改签确认"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O6802465",
+        "flight_no": "HO2098",
+        "flight_date": "2026-09-18"
+      },
+      "called_tools": [
+        "get_order_bill",
+        "search_flights",
+        "change_request"
+      ],
+      "tool_args": {
+        "get_order_bill": {
+          "order_no": "O6802465"
+        },
+        "search_flights": {
+          "departure": "上海",
+          "destination": "成都",
+          "date": "2026-09-15"
+        },
+        "change_request": {
+          "order_no": "O6802465",
+          "new_flight_no": "HO2098",
+          "new_date": "2026-09-15",
+          "new_cabin": "经济"
+        }
+      },
+      "expected_tools": [
+        "change_request",
+        "get_order_bill",
+        "search_flights"
+      ],
+      "expected_args": {},
+      "expected_pending": "change_flight",
+      "classification": "correct",
+      "pending_action": {
+        "type": "change_flight",
+        "order_no": "O6802465",
+        "new_flight_no": "HO2098",
+        "new_date": "2026-09-15",
+        "new_cabin": "经济"
+      },
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "好的，为您发起改签确认：**HO2098，2026-09-15，经济舱**。已为您生成改签确认请求，方案如下：\n\n- **订单号**：O6802465\n- **原航班**：上海 → 成都，经济舱，940 元\n- **改签后**：HO2098（吉祥航空），**2026-09-15**，经济舱，920 元\n- **费用**：免改签费，票价差 **多退少补**（本次为退还差价 20 元）\n\n请点击确认卡片上的 **\"确认改签\"** 按钮完成操作。改签成功后原值机（如有）会自动取消，需重新选座。\n\n如需调整航班或舱位，随时告诉我。"
+    },
+    {
+      "id": "c05",
+      "category": "change",
+      "query": "帮我把 {order_no} 改成商务舱，日期不变",
+      "turns": [
+        "帮我把 {order_no} 改成商务舱，日期不变",
+        "就按这个方案改，帮我发起改签确认"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O0798349",
+        "flight_no": "CA1061",
+        "flight_date": "2026-09-17"
+      },
+      "called_tools": [
+        "get_order_bill",
+        "search_flights",
+        "change_request"
+      ],
+      "tool_args": {
+        "get_order_bill": {
+          "order_no": "O0798349"
+        },
+        "search_flights": {
+          "departure": "北京",
+          "destination": "上海",
+          "date": "2026-09-17"
+        },
+        "change_request": {
+          "order_no": "O0798349",
+          "new_flight_no": "CA1061",
+          "new_date": "2026-09-17",
+          "new_cabin": "商务"
+        }
+      },
+      "expected_tools": [
+        "change_request",
+        "get_order_bill"
+      ],
+      "expected_args": {},
+      "expected_pending": "change_flight",
+      "classification": "correct",
+      "pending_action": {
+        "type": "change_flight",
+        "order_no": "O0798349",
+        "new_flight_no": "CA1061",
+        "new_date": "2026-09-17",
+        "new_cabin": "商务"
+      },
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "好的，按您原航班 CA1061 同日期升商务舱的方案，为您发起改签确认。已为您生成改签确认请求，方案如下：\n\n**改签方案**\n- 订单号：O0798349\n- 原航班：CA1061　北京-上海　2026-09-17　06:40　经济舱\n- 新航班：CA1061　北京-上海　2026-09-17　06:40　**商务舱**\n- 改签费：免收\n- 票价差：多退少补（以确认卡片显示的差价明细为准）\n\n请点击确认卡片上的 **\"确认改签\"** 按钮完成操作。改签成功后原值机（如有）将自动取消，需重新选座。"
+    },
+    {
+      "id": "c06",
+      "category": "change",
+      "query": "帮我看看 {order_no} 能改签到哪些航班",
+      "turns": [
+        "帮我看看 {order_no} 能改签到哪些航班"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O0535640",
+        "flight_no": "CA1061",
+        "flight_date": "2026-09-17"
+      },
+      "called_tools": [
+        "get_order_bill",
+        "search_flights"
+      ],
+      "tool_args": {
+        "get_order_bill": {
+          "order_no": "O0535640"
+        },
+        "search_flights": {
+          "departure": "北京",
+          "destination": "上海",
+          "date": "2026-09-17"
+        }
+      },
+      "expected_tools": [
+        "get_order_bill",
+        "search_flights"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll look up your order details first.您的订单已确认，状态为\"已出票\"，可以改签。我先查一下北京-上海航线的在售航班。您的订单信息如下：\n\n- **订单号**：O0535640\n- **航班**：中国国航 CA1061，北京-上海\n- **日期**：2026-09-17，06:40 起飞\n- **舱位**：经济舱，票价 790 元\n- **状态**：已出票（可改签）\n\n**北京-上海 2026-09-17 在售航班（同航线均可改签）：**\n\n| 航班号 | 航司 | 起飞-到达 | 经济舱 | 商务舱 |\n|---|---|---|---|---|\n| CA1061 | 中国国航 | 06:40-08:55 | 790 | 2140 |\n| MU1074 | 东方航空 | 09:50-12:05 | 750 | 1950 |\n| CZ1087 | 南方"
+    },
+    {
+      "id": "c07",
+      "category": "change",
+      "query": "查一下 {order_no} 改签要花多少钱",
+      "turns": [
+        "查一下 {order_no} 改签要花多少钱"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O5494788",
+        "flight_no": "CA1061",
+        "flight_date": "2026-09-17"
+      },
+      "called_tools": [
+        "get_order_bill"
+      ],
+      "tool_args": {
+        "get_order_bill": {
+          "order_no": "O5494788"
+        }
+      },
+      "expected_tools": [
+        "get_order_bill",
+        "search_flights"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll look up that order first.您的订单信息如下：\n\n- **订单号**：O5494788\n- **航班**：中国国航 CA1061，北京 → 上海\n- **日期**：2026-09-17，06:40 起飞\n- **舱位**：经济舱\n- **金额**：790 元\n- **状态**：已出票\n\n改签是**免改签费**的，只需按新航班票价**多退少补**差价。所以具体花多少钱，取决于您想改到哪一天、哪个航班。\n\n请告诉我您想改到**哪一天**（今天之后）以及**偏好哪个航班/时段**，我帮您查一下同航线（北京-上海）的在售航班和票价，再算出需要补多少差价。"
+    },
+    {
+      "id": "c08",
+      "category": "change",
+      "query": "{order_no} 我想换个晚两天的航班",
+      "turns": [
+        "{order_no} 我想换个晚两天的航班",
+        "就选第一个航班，帮我发起改签确认"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O5565131",
+        "flight_no": "9C2830",
+        "flight_date": "2026-09-17"
+      },
+      "called_tools": [
+        "get_order_bill",
+        "search_flights",
+        "change_request"
+      ],
+      "tool_args": {
+        "get_order_bill": {
+          "order_no": "O5565131"
+        },
+        "search_flights": {
+          "departure": "深圳",
+          "destination": "成都",
+          "date": "2026-09-19"
+        },
+        "change_request": {
+          "order_no": "O5565131",
+          "new_flight_no": "9C2830",
+          "new_date": "2026-09-19",
+          "new_cabin": "经济"
+        }
+      },
+      "expected_tools": [
+        "change_request",
+        "get_order_bill",
+        "search_flights"
+      ],
+      "expected_args": {},
+      "expected_pending": "change_flight",
+      "classification": "correct",
+      "pending_action": {
+        "type": "change_flight",
+        "order_no": "O5565131",
+        "new_flight_no": "9C2830",
+        "new_date": "2026-09-19",
+        "new_cabin": "经济"
+      },
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "好的，我为您发起改签确认：**O5565131 → 9C2830，2026-09-19，经济舱**。已为您生成改签确认，方案如下：\n\n- **订单号**：O5565131\n- **原航班**：深圳 → 成都，2026-09-17，经济舱（610 元）\n- **新航班**：9C2830（春秋航空），深圳 → 成都，**2026-09-19**，06:49 - 09:24，**经济舱**（550 元）\n- **费用**：免改签费，票价差 **多退少补**，预计可退差价约 60 元\n\n请点击确认卡片上的 **\"确认改签\"** 按钮完成操作。改签成功后原值机（如有）会自动取消，需要重新选座。"
+    },
+    {
+      "id": "r01",
+      "category": "refund",
+      "query": "帮我把订单 {order_no} 退掉",
+      "turns": [
+        "帮我把订单 {order_no} 退掉"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O5413371",
+        "flight_no": "CA1061",
+        "flight_date": "2026-09-20"
+      },
+      "called_tools": [
+        "get_order_bill"
+      ],
+      "tool_args": {
+        "get_order_bill": {
+          "order_no": "O5413371"
+        }
+      },
+      "expected_tools": [
+        "refund_request"
+      ],
+      "expected_args": {
+        "refund_request": {
+          "order_no": "O5413371"
+        }
+      },
+      "expected_pending": "refund",
+      "classification": "wrong_tool",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": false,
+      "response_ok": true,
+      "completed": false,
+      "response": "I'll help you with the refund. Let me first look up the order details.I found your order. Here are the details:\n\n| 项目 | 内容 |\n|---|---|\n| 订单号 | O5413371 |\n| 航班 | 中国国航 CA1061 |\n| 航线 | 北京 - 上海 |\n| 日期 | 2026-09-20 06:40 |\n| 舱位 | 经济舱 |\n| 金额 | ¥690 |\n| 状态 | 已出票 |\n\n请问您退票的原因是？\n- **自愿退票**：按距起飞时间规则计算手续费，即时退款；\n- **非自愿退票**（如航班延误/取消等航司原因）：走人工审核通道，可争取全额退款。\n\n请告知原因，我好为您选择合适的退票方式。"
+    },
+    {
+      "id": "r02",
+      "category": "refund",
+      "query": "我不想去了，订单 {order_no} 申请退款",
+      "turns": [
+        "我不想去了，订单 {order_no} 申请退款"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O5062245",
+        "flight_no": "MU1122",
+        "flight_date": "2026-09-20"
+      },
+      "called_tools": [
+        "get_order_bill"
+      ],
+      "tool_args": {
+        "get_order_bill": {
+          "order_no": "O5062245"
+        }
+      },
+      "expected_tools": [
+        "refund_request"
+      ],
+      "expected_args": {},
+      "expected_pending": "refund",
+      "classification": "wrong_tool",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": false,
+      "response_ok": true,
+      "completed": false,
+      "response": "I'll help you with the refund request. Let me first check your order details.已查到您的订单信息，为您确认如下：\n\n**订单信息**\n- 订单号：O5062245\n- 航班：东方航空 MU1122（北京 → 广州）\n- 出发日期：2026-09-20 06:49\n- 舱位：经济舱\n- 金额：¥930\n- 状态：已出票\n\n您确认要退这张票吗？退票类型为**自愿退票**，系统会按距起飞时间自动计算手续费并即时退款（确认卡片会显示手续费与预计到账金额）。\n\n请确认后我为您发起退票申请。"
+    },
+    {
+      "id": "r03",
+      "category": "refund",
+      "query": "{order_no} 这张票退票要收多少手续费？",
+      "turns": [
+        "{order_no} 这张票退票要收多少手续费？"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O1425257",
+        "flight_no": "HO2098",
+        "flight_date": "2026-09-20"
+      },
+      "called_tools": [
+        "get_order_bill"
+      ],
+      "tool_args": {
+        "get_order_bill": {
+          "order_no": "O1425257"
+        }
+      },
+      "expected_tools": [
+        "get_order_bill",
+        "refund_request"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll look up that order first to check its details and status.已查到您的订单信息：\n\n- **订单号**：O1425257\n- **航班**：吉祥航空 HO2098（上海 → 成都）\n- **日期**：2026-09-20 06:49\n- **舱位**：经济舱\n- **金额**：¥750\n- **状态**：已出票\n\n该订单目前是\"已出票\"状态，可以办理退票。退票手续费由系统根据**距起飞时间**自动计算（自愿退票按规则费率即时退款）。\n\n需要我现在为您发起退票确认吗？发起后系统会展示退票确认卡片，上面会**明确列出具体手续费金额和预计到账金额**，您确认无误后再点击\"确认退票\"即可。请确认是否办理～"
+    },
+    {
+      "id": "r04",
+      "category": "refund",
+      "query": "航班延误了，{order_no} 我要全额退票",
+      "turns": [
+        "航班延误了，{order_no} 我要全额退票"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O9080855",
+        "flight_no": "CA1061",
+        "flight_date": "2026-09-16"
+      },
+      "called_tools": [
+        "get_order_bill",
+        "refund_request"
+      ],
+      "tool_args": {
+        "get_order_bill": {
+          "order_no": "O9080855"
+        },
+        "refund_request": {
+          "order_no": "O9080855",
+          "refund_type": "special",
+          "reason": "航班延误，申请全额退票"
+        }
+      },
+      "expected_tools": [
+        "refund_request"
+      ],
+      "expected_args": {},
+      "expected_pending": "refund",
+      "classification": "correct",
+      "pending_action": {
+        "type": "refund",
+        "refund_type": "special",
+        "order_no": "O9080855",
+        "reason": "航班延误，申请全额退票"
+      },
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll help you with the refund. Let me first check your order details.您的订单信息如下：\n\n- **订单号**：O9080855\n- **航班**：中国国航 CA1061（北京 → 上海）\n- **日期**：2026-09-16 06:40\n- **舱位**：经济舱\n- **金额**：¥780\n- **状态**：已出票\n\n由于您说明是**航班延误**导致的退票，属于非自愿退票，我将为您走特殊通道（进入人工审核，可争取全额退款）。已为您生成**非自愿退票（特殊通道）**确认请求，详情如下：\n\n- **订单号**：O9080855\n- **航班**：中国国航 CA1061（北京 → 上海）\n- **日期**：2026-09-16 06:40\n- **舱位**：经济舱\n- **金额**：¥780\n- **退票类型**：非自愿退票"
+    },
+    {
+      "id": "r05",
+      "category": "refund",
+      "query": "帮我退票，订单号 {order_no}，因为航班取消了",
+      "turns": [
+        "帮我退票，订单号 {order_no}，因为航班取消了"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O4144193",
+        "flight_no": "MU2342",
+        "flight_date": "2026-09-16"
+      },
+      "called_tools": [
+        "get_order_bill",
+        "query_notifications",
+        "refund_request"
+      ],
+      "tool_args": {
+        "get_order_bill": {
+          "order_no": "O4144193"
+        },
+        "query_notifications": {
+          "only_unread": true
+        },
+        "refund_request": {
+          "order_no": "O4144193",
+          "reason": "航班取消",
+          "refund_type": "special"
+        }
+      },
+      "expected_tools": [
+        "refund_request"
+      ],
+      "expected_args": {},
+      "expected_pending": "refund",
+      "classification": "correct",
+      "pending_action": {
+        "type": "refund",
+        "refund_type": "special",
+        "order_no": "O4144193",
+        "reason": "航班取消"
+      },
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll help you with the refund. Let me first check your order details.I found your order. Let me also check your notifications, as there may be relevant updates about this flight.您的订单信息如下：\n\n- **订单号**：O4144193\n- **航班**：东方航空 MU2342（上海 → 西安）\n- **日期**：2026-09-16 06:49\n- **舱位**：经济舱\n- **金额**：¥890\n- **状态**：已出票\n\n由于您说明是**航班取消**导致需要退票，这属于非自愿退票，我将为您走特殊通道（进入人工审核，可争取全额退款）。\n\n我这就为您发起退票确认请求：已为您生成退票确认请求，请核对以下信息：\n\n-"
+    },
+    {
+      "id": "r06",
+      "category": "refund",
+      "query": "{order_no} 退了吧，我改主意了",
+      "turns": [
+        "{order_no} 退了吧，我改主意了"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O7371966",
+        "flight_no": "CZ3013",
+        "flight_date": "2026-09-20"
+      },
+      "called_tools": [
+        "get_order_bill"
+      ],
+      "tool_args": {
+        "get_order_bill": {
+          "order_no": "O7371966"
+        }
+      },
+      "expected_tools": [
+        "refund_request"
+      ],
+      "expected_args": {},
+      "expected_pending": "refund",
+      "classification": "wrong_tool",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": false,
+      "response_ok": true,
+      "completed": false,
+      "response": "我先帮您查一下这个订单的详情。已查到您的订单，信息如下：\n\n- **订单号**：O7371966\n- **航班**：南方航空 CZ3013，杭州 → 成都\n- **日期**：2026-09-20 06:40\n- **舱位**：经济舱\n- **金额**：690 元\n- **状态**：已出票（未值机）\n\n您确认要退这张票吗？退票为**自愿退票**，系统会按距起飞时间自动计算手续费，并即时退款，确认卡片上会显示手续费与预计到账金额。\n\n请确认后我为您发起退票申请。"
+    },
+    {
+      "id": "r07",
+      "category": "refund",
+      "query": "我要退 {order_no}，大概能退多少钱回来",
+      "turns": [
+        "我要退 {order_no}，大概能退多少钱回来"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O4264748",
+        "flight_no": "3U1305",
+        "flight_date": "2026-09-20"
+      },
+      "called_tools": [
+        "get_order_bill"
+      ],
+      "tool_args": {
+        "get_order_bill": {
+          "order_no": "O4264748"
+        }
+      },
+      "expected_tools": [
+        "get_order_bill",
+        "refund_request"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll look up your order details first.您的订单信息如下：\n\n- **订单号**：O4264748\n- **航班**：四川航空 3U1305，北京 → 杭州\n- **日期**：2026-09-20 06:40\n- **舱位**：经济舱\n- **金额**：640 元\n- **状态**：已出票\n\n您是要**自愿退票**吗？如果是，我可以为您发起退票确认，系统会按距起飞时间自动计算手续费并显示预计到账金额（今天是 09-12，距 09-20 起飞还有 8 天）。\n\n另外提醒一下：如果这次退票是因为**航班延误/取消等航空公司原因**，可以走非自愿退票通道，进入人工审核争取全额退款——如果是这种情况请告诉我。\n\n请确认是否按**自愿退票**为您发起？"
+    },
+    {
+      "id": "r08",
+      "category": "refund",
+      "query": "这单 {order_no} 现在能退吗？",
+      "turns": [
+        "这单 {order_no} 现在能退吗？"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O9375450",
+        "flight_no": "MF2586",
+        "flight_date": "2026-09-20"
+      },
+      "called_tools": [
+        "get_order_bill"
+      ],
+      "tool_args": {
+        "get_order_bill": {
+          "order_no": "O9375450"
+        }
+      },
+      "expected_tools": [
+        "get_order_bill",
+        "refund_request"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll look up the order details first.您的订单 **O9375450** 目前状态为「已出票」，是可以办理退票的。信息如下：\n\n| 项目 | 内容 |\n|---|---|\n| 航班 | 厦门航空 MF2586 |\n| 航线 | 广州 → 成都 |\n| 日期 | 2026-09-20 06:49 |\n| 舱位 | 经济舱 |\n| 金额 | ¥640 |\n| 状态 | 已出票（未值机） |\n\n请问您退票的原因是？\n- **自愿退票**：按距起飞时间规则收取手续费，即时退款；\n- **非自愿退票**（如航班延误/取消等航司原因）：走特殊通道人工审核，可争取全额退款。\n\n确认后我会为您发起退票确认，届时您点击「确认退票」即可。"
+    },
+    {
+      "id": "s01",
+      "category": "seat",
+      "query": "帮我给 {order_no} 选个座位",
+      "turns": [
+        "帮我给 {order_no} 选个座位"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O7061236",
+        "flight_no": "CZ1087",
+        "flight_date": "2026-09-12"
+      },
+      "called_tools": [
+        "checkin_info",
+        "get_order_bill",
+        "open_seat_map"
+      ],
+      "tool_args": {
+        "get_order_bill": {
+          "order_no": "O7061236"
+        },
+        "checkin_info": {
+          "order_no": "O7061236"
+        },
+        "open_seat_map": {
+          "order_no": "O7061236"
+        }
+      },
+      "expected_tools": [
+        "checkin_info",
+        "open_seat_map"
+      ],
+      "expected_args": {},
+      "expected_pending": "seat_map",
+      "classification": "correct",
+      "pending_action": {
+        "type": "seat_map",
+        "order_no": "O7061236",
+        "flight_no": "CZ1087",
+        "flight_date": "2026-09-12"
+      },
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll help you with seat selection for order O7061236. Let me first check the order details and check-in status.您的订单信息如下：\n\n- **订单号**：O7061236\n- **航班**：南方航空 CZ1087（北京-上海）\n- **日期**：2026-09-12，13:00 起飞\n- **舱位**：经济舱\n- **状态**：已出票，尚未值机\n\n值机窗口已开放，我这就为您展示座位图，请点选您喜欢的座位并点击\"确认值机\"。座位图已为您展示，请在卡片上点选心仪的座位，然后点击 **\"确认值机\"** 按钮完成值机。值机成功后系统会自动生成电子登机牌。\n\n温馨提示：\n- 该航班 13:00 起飞，值机将在起飞前 45 分钟截止，请尽快操作；\n- 若后续需要改签或退票，值机将自动取消，需重"
+    },
+    {
+      "id": "s02",
+      "category": "seat",
+      "query": "我要值机，订单 {order_no}",
+      "turns": [
+        "我要值机，订单 {order_no}"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O8436313",
+        "flight_no": "CZ1087",
+        "flight_date": "2026-09-12"
+      },
+      "called_tools": [
+        "checkin_info",
+        "open_seat_map"
+      ],
+      "tool_args": {
+        "checkin_info": {
+          "order_no": "O8436313"
+        },
+        "open_seat_map": {
+          "order_no": "O8436313"
+        }
+      },
+      "expected_tools": [
+        "checkin_info",
+        "open_seat_map"
+      ],
+      "expected_args": {},
+      "expected_pending": "seat_map",
+      "classification": "correct",
+      "pending_action": {
+        "type": "seat_map",
+        "order_no": "O8436313",
+        "flight_no": "CZ1087",
+        "flight_date": "2026-09-12"
+      },
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll check the check-in status for your order.您的订单可以值机，我为您打开座位图。已为您调出值机选座信息，请核对：\n\n- **订单号**：O8436313\n- **航班**：CZ1087（经济舱）\n- **日期**：2026-09-12\n- **起飞时间**：13:00\n- **值机状态**：未值机（值机窗口已开放）\n\n座位图已展示，请您在卡片上**点选心仪的座位**，然后点击**\"确认值机\"**。值机成功后系统会为您生成电子登机牌。\n\n温馨提示：值机窗口在起飞前 45 分钟关闭，请尽快完成选座；若后续需要改签或退票，值机将自动取消，需重新选座。"
+    },
+    {
+      "id": "s03",
+      "category": "seat",
+      "query": "{order_no} 现在能值机了吗？",
+      "turns": [
+        "{order_no} 现在能值机了吗？"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O2458178",
+        "flight_no": "CZ1087",
+        "flight_date": "2026-09-12"
+      },
+      "called_tools": [
+        "checkin_info"
+      ],
+      "tool_args": {
+        "checkin_info": {
+          "order_no": "O2458178"
+        }
+      },
+      "expected_tools": [
+        "checkin_info"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll check the check-in status for your order.您的订单 **O2458178**（CZ1087，2026-09-12 经济舱）目前**尚未值机**，值机窗口已开放，可以办理选座。\n\n- 航班日期：2026-09-12（今天）\n- 起飞时间：13:00\n- 值机状态：未值机\n- 值机窗口：已开放（起飞前24小时至45分钟）\n\n需要我为您打开座位图选座吗？选好座位后点击\"确认值机\"即可生成电子登机牌。\n\n温馨提示：值机窗口将在起飞前45分钟关闭，请尽早办理。"
+    },
+    {
+      "id": "s04",
+      "category": "seat",
+      "query": "帮我看看 {order_no} 的登机口和座位",
+      "turns": [
+        "帮我看看 {order_no} 的登机口和座位"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O9097696",
+        "flight_no": "CZ1087",
+        "flight_date": "2026-09-12"
+      },
+      "called_tools": [
+        "checkin_info"
+      ],
+      "tool_args": {
+        "checkin_info": {
+          "order_no": "O9097696"
+        }
+      },
+      "expected_tools": [
+        "checkin_info"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll look up the check-in information for that order.您的订单 **O9097696**（CZ1087，2026-09-12 经济舱）目前**尚未值机**，所以暂时还没有座位号和登机口信息。\n\n好消息是：该航班今天 13:00 起飞，值机窗口**已开放**（起飞前24小时至45分钟），现在就可以选座。\n\n需要我为您打开座位图选座吗？选好座位并确认后，系统会正式值机并生成电子登机牌，届时就能看到座位号和登机口了。\n\n⚠️ 温馨提示：值机截止时间为起飞前45分钟，请尽快办理。"
+    },
+    {
+      "id": "s05",
+      "category": "seat",
+      "query": "我想选个靠窗的座位，订单 {order_no}",
+      "turns": [
+        "我想选个靠窗的座位，订单 {order_no}"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O2902174",
+        "flight_no": "CZ1087",
+        "flight_date": "2026-09-12"
+      },
+      "called_tools": [
+        "checkin_info",
+        "get_order_bill",
+        "open_seat_map"
+      ],
+      "tool_args": {
+        "get_order_bill": {
+          "order_no": "O2902174"
+        },
+        "checkin_info": {
+          "order_no": "O2902174"
+        },
+        "open_seat_map": {
+          "order_no": "O2902174"
+        }
+      },
+      "expected_tools": [
+        "checkin_info",
+        "open_seat_map"
+      ],
+      "expected_args": {},
+      "expected_pending": "seat_map",
+      "classification": "correct",
+      "pending_action": {
+        "type": "seat_map",
+        "order_no": "O2902174",
+        "flight_no": "CZ1087",
+        "flight_date": "2026-09-12"
+      },
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll check your order and the check-in status for you.您的订单信息如下：\n\n- **订单号**：O2902174\n- **航班**：南方航空 CZ1087（北京 → 上海）\n- **日期/时间**：2026-09-12 13:00\n- **舱位**：经济舱\n- **状态**：已出票，尚未值机\n- **值机窗口**：已开放 ✅\n\n值机窗口已开放，我为您打开座位图，您可以点选靠窗座位并确认值机。座位图已为您打开 🪟\n\n请在座位图上点选您想要的**靠窗座位**（一般标注为 A 或 F 列），然后点击 **\"确认值机\"**。值机成功后系统会自动生成电子登机牌。\n\n温馨提示：\n- 值机截止时间为起飞前 45 分钟（即 12:15 前），请尽快确认；\n- 若之后需要改签或退票，值机将自动取消，需重新选座。\n\n如需我帮您查询行李额度或登机口信息，随时"
+    },
+    {
+      "id": "s06",
+      "category": "seat",
+      "query": "帮我值机并选座，订单 {order_no}",
+      "turns": [
+        "帮我值机并选座，订单 {order_no}"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O9275293",
+        "flight_no": "CZ1087",
+        "flight_date": "2026-09-12"
+      },
+      "called_tools": [
+        "checkin_info",
+        "get_order_bill",
+        "open_seat_map"
+      ],
+      "tool_args": {
+        "get_order_bill": {
+          "order_no": "O9275293"
+        },
+        "checkin_info": {
+          "order_no": "O9275293"
+        },
+        "open_seat_map": {
+          "order_no": "O9275293"
+        }
+      },
+      "expected_tools": [
+        "checkin_info",
+        "open_seat_map"
+      ],
+      "expected_args": {},
+      "expected_pending": "seat_map",
+      "classification": "correct",
+      "pending_action": {
+        "type": "seat_map",
+        "order_no": "O9275293",
+        "flight_no": "CZ1087",
+        "flight_date": "2026-09-12"
+      },
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll help you check in and select a seat. Let me first look up your order and check-in status.您的订单可以值机，我为您打开座位图。\n\n**订单信息**\n- 订单号：O9275293\n- 航班：南方航空 CZ1087（北京 → 上海）\n- 日期：2026-09-12，13:00 起飞\n- 舱位：经济舱\n- 状态：已出票，未值机\n\n值机窗口已开放，请在下方座位图中点选您喜欢的座位，然后点击\"确认值机\"即可完成选座并生成电子登机牌。座位图已为您打开 ✈️\n\n请在卡片中点选心仪的座位，然后点击**\"确认值机\"**。值机成功后系统会自动生成电子登机牌，届时会显示您的座位号、登机口和登机时间。\n\n温馨提示：本次航班 13:00 起飞，值机将在起飞前 45 分钟截止，请尽快完成选座哦。如需靠窗或靠过道，也可以告"
+    },
+    {
+      "id": "s07",
+      "category": "seat",
+      "query": "{order_no} 的值机窗口开了吗？",
+      "turns": [
+        "{order_no} 的值机窗口开了吗？"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O0481555",
+        "flight_no": "CZ1087",
+        "flight_date": "2026-09-12"
+      },
+      "called_tools": [
+        "checkin_info"
+      ],
+      "tool_args": {
+        "checkin_info": {
+          "order_no": "O0481555"
+        }
+      },
+      "expected_tools": [
+        "checkin_info"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll check the check-in status for that order.您好，李磊先生，为您查到订单 **O0481555** 的值机情况：\n\n- **航班**：CZ1087（经济舱）\n- **日期**：2026-09-12（今天）\n- **起飞时间**：13:00\n- **订单状态**：已出票\n- **值机状态**：尚未值机\n- **值机窗口**：✅ **已开放**（起飞前24小时至起飞前45分钟可办理）\n\n值机窗口目前是开放的，您可以现在办理选座值机。需要我为您打开座位图选座吗？"
+    },
+    {
+      "id": "s08",
+      "category": "seat",
+      "query": "我要看我的电子登机牌，订单 {order_no}",
+      "turns": [
+        "我要看我的电子登机牌，订单 {order_no}"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O8956378",
+        "flight_no": "CZ1087",
+        "flight_date": "2026-09-12"
+      },
+      "called_tools": [
+        "checkin_info"
+      ],
+      "tool_args": {
+        "checkin_info": {
+          "order_no": "O8956378"
+        }
+      },
+      "expected_tools": [
+        "checkin_info"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll look up your check-in status for that order.您好，李磊先生。查询结果如下：\n\n- **订单号**：O8956378\n- **航班**：CZ1087，经济舱\n- **日期**：2026-09-12（今天）\n- **起飞时间**：13:00\n- **值机状态**：**尚未值机**，因此目前还没有电子登机牌\n\n好消息是，该航班的值机窗口**现已开放**（起飞前24小时至45分钟）。您需要先完成值机选座，系统才会生成电子登机牌。\n\n请问需要我现在为您展示座位图，帮您选座值机吗？"
+    },
+    {
+      "id": "b01",
+      "category": "baggage",
+      "query": "{order_no} 这个订单能带多少行李？",
+      "turns": [
+        "{order_no} 这个订单能带多少行李？"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O5990277",
+        "flight_no": "CA1061",
+        "flight_date": "2026-09-17"
+      },
+      "called_tools": [
+        "baggage_allowance"
+      ],
+      "tool_args": {
+        "baggage_allowance": {
+          "order_no": "O5990277"
+        }
+      },
+      "expected_tools": [
+        "baggage_allowance"
+      ],
+      "expected_args": {
+        "baggage_allowance": {
+          "order_no": "O5990277"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll look up the baggage allowance for your order.您的订单 **O5990277**（中国国航 CA1061，2026-09-17，经济舱）行李额度如下：\n\n**随身携带**\n- 1 件，单件不超过 **5kg**\n\n**免费托运**\n- 1 件，单件不超过 **28kg**\n- 说明：经济舱基础额度为 23kg，您是**银卡会员**，额外赠送 5kg，合计 28kg\n\n**超重/加购费用**\n- 超重部分：**20 元/kg**\n- 加购一件行李：**300 元/件**\n\n温馨提示：以上为单件行李的重量上限，建议出行前确认行李尺寸符合航司规定。如需了解其他信息（值机、改签等），随时告诉我。"
+    },
+    {
+      "id": "b02",
+      "category": "baggage",
+      "query": "我订的 {order_no} 免费托运额度是多少",
+      "turns": [
+        "我订的 {order_no} 免费托运额度是多少"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O6762808",
+        "flight_no": "MU1122",
+        "flight_date": "2026-09-17"
+      },
+      "called_tools": [
+        "baggage_allowance",
+        "get_order_bill"
+      ],
+      "tool_args": {
+        "get_order_bill": {
+          "order_no": "O6762808"
+        },
+        "baggage_allowance": {
+          "order_no": "O6762808"
+        }
+      },
+      "expected_tools": [
+        "baggage_allowance"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll look up your order to check the baggage allowance.您的订单 **O6762808**（东方航空 MU1122，北京-广州，2026-09-17，经济舱）行李额度如下：\n\n**随身携带**\n- 1 件，不超过 **5kg**\n\n**免费托运**\n- 1 件，不超过 **28kg**\n- 说明：东航经济舱标准免费托运为 23kg，您是**银卡会员**，额外赠送 **5kg**，合计 **28kg**\n\n**超重/加购费用**\n- 超重：**20 元/kg**\n- 加购一件行李：**300 元/件**\n\n如需了解其他信息（值机选座、改签退票等），随时告诉我～"
+    },
+    {
+      "id": "b03",
+      "category": "baggage",
+      "query": "{flight_no} 这班飞机的经济舱行李规定是什么？",
+      "turns": [
+        "{flight_no} 这班飞机的经济舱行李规定是什么？"
+      ],
+      "status": "ok",
+      "resolved": {
+        "flight_no": "CA1061",
+        "flight_date": "2026-09-17"
+      },
+      "called_tools": [
+        "baggage_allowance"
+      ],
+      "tool_args": {
+        "baggage_allowance": {
+          "flight_no": "CA1061",
+          "cabin": "经济"
+        }
+      },
+      "expected_tools": [
+        "baggage_allowance"
+      ],
+      "expected_args": {
+        "baggage_allowance": {
+          "flight_no": "CA1061"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll look up the baggage allowance for flight CA1061 in economy class.CA1061（中国国航）经济舱行李规定如下：\n\n| 项目 | 规定 |\n|---|---|\n| 随身行李 | 1 件，不超过 **5kg** |\n| 免费托运行李 | 1 件，不超过 **28kg**（基础额度 23kg + 银卡会员赠送 5kg） |\n| 超重费 | **20 元/kg** |\n| 加购行李 | **300 元/件** |\n\n说明：\n- 该航班为全服务航司（非廉价航空），经济舱标准为随身 1 件 ≤5kg、免费托运 1 件 ≤23kg；\n- 您是****银卡会员**，额外获赠 **5kg** 免费托运额度，因此您的免费托运上限为 **28kg**；\n- 若行李超重，超出部分按 20 元/kg 计费；如需额外增加托运件数，每件 300 "
+    },
+    {
+      "id": "b04",
+      "category": "baggage",
+      "query": "行李超重怎么收费？我要坐 {flight_no}",
+      "turns": [
+        "行李超重怎么收费？我要坐 {flight_no}"
+      ],
+      "status": "ok",
+      "resolved": {
+        "flight_no": "HO2098",
+        "flight_date": "2026-09-17"
+      },
+      "called_tools": [
+        "baggage_allowance"
+      ],
+      "tool_args": {
+        "baggage_allowance": {
+          "flight_no": "HO2098"
+        }
+      },
+      "expected_tools": [
+        "baggage_allowance"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "我来帮您查询 HO2098 航班的行李额度与超重收费标准。为您查到 **HO2098（吉祥航空，经济舱）** 的行李规定如下：\n\n**随身携带**\n- 1 件，单件不超过 **5kg**\n\n**免费托运**\n- 1 件，不超过 **28kg**\n- 说明：经济舱基础额度为 23kg，您是**银卡会员**，额外赠送 **5kg**，合计 **28kg**\n\n**超重/加购收费**\n- 超重部分：**20 元/kg**\n- 另加一件行李：**300 元/件**\n\n**温馨提示**\n- 超重费按超出重量计算，例如托运 30kg，超出 2kg，则超重费为 2 × 20 = 40 元。\n- 如果行李件数较多，加购一件（300 元）可能比按重量计费更划算，建议提前比较。\n\n如需查询具体订单的行李额度，可以提供订单号，我帮您核对。"
+    },
+    {
+      "id": "b05",
+      "category": "baggage",
+      "query": "商务舱能托运多少公斤？航班 {flight_no}",
+      "turns": [
+        "商务舱能托运多少公斤？航班 {flight_no}"
+      ],
+      "status": "ok",
+      "resolved": {
+        "flight_no": "CZ1183",
+        "flight_date": "2026-09-17"
+      },
+      "called_tools": [
+        "baggage_allowance"
+      ],
+      "tool_args": {
+        "baggage_allowance": {
+          "flight_no": "CZ1183",
+          "cabin": "商务"
+        }
+      },
+      "expected_tools": [
+        "baggage_allowance"
+      ],
+      "expected_args": {
+        "baggage_allowance": {
+          "cabin": "商务"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "我来帮您查询 CZ1183 航班的商务舱行李额度。为您查到 **CZ1183（南方航空）商务舱** 的行李额度如下：\n\n| 项目 | 额度 |\n|---|---|\n| 随身行李 | 2 件，合计不超过 **5kg** |\n| 免费托运 | 2 件，每件不超过 **32kg** |\n| 超重费率 | **18 元/kg** |\n| 加购行李费 | 260 元/件 |\n\n**小结：** 商务舱免费托运额度为 **2 件 × 32kg**，即单件最高 32 公斤。您当前是银卡会员，该航班暂无额外会员赠送额度。\n\n如需了解经济舱额度或具体超重费用计算，可以再告诉我～"
+    },
+    {
+      "id": "b06",
+      "category": "baggage",
+      "query": "随身行李能带几件？订单 {order_no}",
+      "turns": [
+        "随身行李能带几件？订单 {order_no}"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O2754404",
+        "flight_no": "MU2342",
+        "flight_date": "2026-09-17"
+      },
+      "called_tools": [
+        "baggage_allowance"
+      ],
+      "tool_args": {
+        "baggage_allowance": {
+          "order_no": "O2754404"
+        }
+      },
+      "expected_tools": [
+        "baggage_allowance"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll check the baggage allowance for your order.您的订单 **O2754404**（东方航空 MU2342，2026-09-17，经济舱）行李额度如下：\n\n**随身行李**\n- 件数：**1 件**\n- 重量：不超过 **5 公斤**\n\n**免费托运行李**\n- 件数：1 件\n- 重量：不超过 **28 公斤**（基础额度 23kg + 银卡会员赠送 5kg）\n\n**超重/加购费用**\n- 超重：**20 元/公斤**\n- 加购一件行李：**300 元/件**\n\n温馨提示：随身行李限 1 件且不超过 5kg，建议把超出的物品放入托运行李。如需了解更多或有其他问题，随时告诉我～"
+    },
+    {
+      "id": "b07",
+      "category": "baggage",
+      "query": "{order_no} 这个订单我要加一件托运行李，要多少钱？",
+      "turns": [
+        "{order_no} 这个订单我要加一件托运行李，要多少钱？"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O2080763",
+        "flight_no": "MF2586",
+        "flight_date": "2026-09-17"
+      },
+      "called_tools": [
+        "baggage_allowance",
+        "get_order_bill"
+      ],
+      "tool_args": {
+        "get_order_bill": {
+          "order_no": "O2080763"
+        },
+        "baggage_allowance": {
+          "order_no": "O2080763"
+        }
+      },
+      "expected_tools": [
+        "baggage_allowance"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll look up your order details first.您好，李磊先生，已为您查到订单 **O2080763**（厦门航空 MF2586，广州-成都，2026-09-17 06:49，经济舱，已出票）的行李额度：\n\n**当前免费额度**\n- 随身携带：1 件，不超过 5kg\n- 免费托运：1 件，不超过 28kg（经济舱基础 23kg + 银卡会员赠送 5kg）\n\n**加购一件托运行李**\n- 加件费：**300 元/件**\n\n也就是说，您再加一件托运行李需要支付 **300 元**。\n\n另外提醒两点：\n1. 若加购的这件行李**超重**，超出部分按 **20 元/公斤** 另计；\n2. 加购行李一般需在航班起飞前通过航司官方渠道（官网/App/客服）办理，建议您尽早操作。\n\n请问还需要我帮您查询其他信息吗？"
+    },
+    {
+      "id": "b08",
+      "category": "baggage",
+      "query": "帮我查一下春秋航空的行李托运额度",
+      "turns": [
+        "帮我查一下春秋航空的行李托运额度"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [],
+      "tool_args": {},
+      "expected_tools": [
+        "baggage_allowance"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "missing",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": false,
+      "response": "我来帮您查询春秋航空的行李托运额度。请问您是想查询某个具体订单的额度，还是某个航班的额度呢？\n\n如果方便的话，请提供**订单号**或**航班号**，我可以查到更准确的对应舱位额度。如果您只是想了解春秋航空的一般规定，我也可以直接按经济舱为您查询。"
+    },
+    {
+      "id": "t01",
+      "category": "complaint",
+      "query": "我要投诉，航班延误让我误了转机",
+      "turns": [
+        "我要投诉，航班延误让我误了转机"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "create_complaint"
+      ],
+      "tool_args": {
+        "create_complaint": {
+          "member_id": "M1001",
+          "content": "旅客投诉航班延误导致错过转机，要求正式反馈处理。"
+        }
+      },
+      "expected_tools": [
+        "create_complaint"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "您好，非常抱歉给您带来了这么糟糕的出行体验，航班延误导致误了转机确实让人着急又无奈，我完全理解您的心情。\n\n我这就为您登记这起投诉，请您稍等。您的投诉已经登记成功，请您放心：\n\n- **投诉单号：T1012**\n- **处理状态：处理中**\n- **处理时限：我们将在 24 小时内跟进处理**\n\n为了能更快、更准确地帮您核实和推进，方便的话请您补充以下信息（不影响投诉已受理）：\n\n1. **涉及的订单号或航班号**（比如延误的那一段航班、以及您原计划转乘的航班）；\n2. **延误发生的日期**；\n3. **您的具体诉求**（例如：改签后续航班、退票、住宿/餐食补偿、误机损失补偿等）。\n\n您提供后，我会一并补充到 T1012 的处理记录中，帮助相关部门更快给出方案。再次为这次的不便向您致歉，我们会认真跟进处理。"
+    },
+    {
+      "id": "t02",
+      "category": "complaint",
+      "query": "客服态度太差了，我要投诉",
+      "turns": [
+        "客服态度太差了，我要投诉"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "create_complaint"
+      ],
+      "tool_args": {
+        "create_complaint": {
+          "member_id": "M1001",
+          "content": "用户反馈客服服务态度差，对本次服务体验不满，要求投诉。"
+        }
+      },
+      "expected_tools": [
+        "create_complaint"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "非常抱歉给您带来了不愉快的体验，让您感到不满我们深表歉意。您的反馈对我们非常重要，我这就为您登记投诉。非常抱歉让您有了这样糟糕的体验，这确实是我们服务上的不足，我代表客服团队向您真诚致歉。\n\n您的投诉已经为您正式登记，具体信息如下：\n\n- **投诉单号**：T1013\n- **处理状态**：处理中\n- **处理时限**：我们将在 **24 小时内**跟进处理\n\n为了帮助我们更快、更准确地核实情况，方便的话请您补充以下信息（不补充也不影响投诉受理）：\n\n1. 您是在**哪个渠道/什么时间**与客服沟通的（电话、在线客服等）？\n2. 涉及的**订单号**（如有）？\n3. 客服让您不满意的**具体经过**是怎样的？\n\n您补充后我会一并记录到投诉单中，加快处理进度。后续处理结果也会通过站内通知告知您，请您留意。再次为给您带来的不便致歉，感谢您的理解与监督。"
+    },
+    {
+      "id": "t03",
+      "category": "complaint",
+      "query": "帮我查一下我的投诉处理到哪一步了",
+      "turns": [
+        "帮我查一下我的投诉处理到哪一步了"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "query_complaint"
+      ],
+      "tool_args": {
+        "query_complaint": {
+          "member_id": "M1001"
+        }
+      },
+      "expected_tools": [
+        "query_complaint"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "我来帮您查询投诉处理进度。请稍等。您好，李磊先生，已为您查到名下共 **3 条**投诉记录，处理进度如下：\n\n| 投诉单号 | 投诉内容 | 关联订单 | 登记日期 | 当前状态 |\n|---|---|---|---|---|\n| T1012 | 航班延误导致错过转机，要求正式反馈处理 | — | 2026-09-12 | 处理中 |\n| T1013 | 客服服务态度差，对本次服务体验不满 | — | 2026-09-12 | 处理中 |\n| T1001 | 行李托运过程中遗失，要求按标准赔偿 | O0029835 | 2026-09-04 | 已解决 |\n\n目前 **T1012、T1013 两条仍在处理中**，暂未有回复结果；**T1001 已解决**。\n\n另外提醒您，您账户中还有 10 条未读站内通知（含退款审核结果、订单超时取消、投诉回复等）。需要我帮您查看一下这些通知，看看是否有与"
+    },
+    {
+      "id": "t04",
+      "category": "complaint",
+      "query": "我之前的投诉有结果了吗？",
+      "turns": [
+        "我之前的投诉有结果了吗？"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "query_complaint",
+        "query_notifications"
+      ],
+      "tool_args": {
+        "query_complaint": {
+          "member_id": "M1001"
+        },
+        "query_notifications": {
+          "only_unread": true
+        }
+      },
+      "expected_tools": [
+        "query_complaint"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "我来帮您查询一下投诉处理情况。您好，李磊先生，我帮您查询了名下的投诉记录，情况如下：\n\n**处理中的投诉（2 条）：**\n| 投诉单号 | 内容 | 提交日期 | 状态 |\n|---|---|---|---|\n| T1012 | 航班延误导致错过转机，要求正式反馈处理 | 2026-09-12 | 处理中 |\n| T1013 | 客服服务态度差，对本次服务体验不满 | 2026-09-12 | 处理中 |\n\n**已解决的投诉（1 条）：**\n| 投诉单号 | 关联订单 | 内容 | 状态 |\n|---|---|---|---|\n| T1001 | O0029835 | 行李托运过程中遗失，要求按标准赔偿 | 已解决 |\n\n目前 T1012 和 T1013 这两条投诉仍在处理中，暂时还没有回复结果，请您再耐心等待一下，我们会尽快跟进。\n\n另外，我查看了您的站内通知，有 **10 条未读消息*"
+    },
+    {
+      "id": "t05",
+      "category": "complaint",
+      "query": "行李托运丢了，我要投诉要求赔偿",
+      "turns": [
+        "行李托运丢了，我要投诉要求赔偿"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "create_complaint"
+      ],
+      "tool_args": {
+        "create_complaint": {
+          "member_id": "M1001",
+          "content": "会员反映行李托运丢失，要求正式投诉并申请赔偿。"
+        }
+      },
+      "expected_tools": [
+        "create_complaint"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "非常抱歉给您带来这么糟糕的体验，行李托运丢失确实让人着急，我完全理解您的心情。我这就为您登记投诉。您的投诉已经登记成功，请您放心，我们一定会认真跟进。\n\n**投诉单号：T1014**\n**当前状态：处理中**\n**处理时限：24小时内会有专人跟进**\n\n为了帮您更快推进赔偿流程，麻烦您补充以下信息（方便的话提供，不影响投诉已受理）：\n\n1. **关联订单号**（如 O 开头的订单号），方便我们定位具体航班和行李托运记录；\n2. **航班号与乘机日期**；\n3. **行李托运凭证/行李牌编号**（如有）；\n4. **行李内物品大致情况与价值**（用于核定赔偿金额）。\n\n您提供后，我会一并补充到投诉记录中，加快处理进度。另外，如果您的行李是在机场行李查询处已报失的，也请告知报失编号，这样能帮助两边信息对接。\n\n请问您能提供一下订单号或航班信息吗？"
+    },
+    {
+      "id": "t06",
+      "category": "complaint",
+      "query": "{order_no} 这个订单我要投诉，退票款一直没到账",
+      "turns": [
+        "{order_no} 这个订单我要投诉，退票款一直没到账"
+      ],
+      "status": "ok",
+      "resolved": {
+        "order_no": "O4492262",
+        "flight_no": "CA1061",
+        "flight_date": "2026-09-17"
+      },
+      "called_tools": [
+        "create_complaint",
+        "get_order_bill",
+        "query_notifications"
+      ],
+      "tool_args": {
+        "create_complaint": {
+          "member_id": "M1001",
+          "order_no": "O4492262",
+          "content": "用户投诉订单O4492262退票款一直未到账，要求核实退款进度并尽快处理。"
+        },
+        "get_order_bill": {
+          "member_id": "M1001",
+          "order_no": "O4492262"
+        },
+        "query_notifications": {
+          "only_unread": true
+        }
+      },
+      "expected_tools": [
+        "create_complaint",
+        "query_complaint"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "我来帮您处理。首先为退票款迟迟未到账给您带来的不便表示歉意。我先为您登记投诉，同时查一下这个订单的情况。您好，李磊先生，非常抱歉给您带来困扰。您的投诉已经登记，情况如下：\n\n**投诉登记结果**\n- 投诉单号：**T1015**\n- 关联订单：O4492262\n- 状态：处理中\n- 处理时限：我们将在 **24 小时内**跟进处理\n\n**关于订单 O4492262 的核实情况**\n- 航班：中国国航 CA1061，北京-上海，2026-09-17 06:40，经济舱\n- 订单金额：790 元\n- 当前状态：**已出票**，退款金额显示为「无」\n\n需要向您说明的是：该订单目前系统显示状态为「已出票」，**并未查询到退票/退款的记录**，因此暂时没有对应的退款金额和到账信息。\n\n为了帮您进一步核实，想跟您确认一下：\n1. 您当时是通过什么渠道、大概什么时间提交的退票申请？\n2. 是否收到过退票"
+    },
+    {
+      "id": "t07",
+      "category": "complaint",
+      "query": "投诉单 {ticket_no} 处理得怎么样了？",
+      "turns": [
+        "投诉单 {ticket_no} 处理得怎么样了？"
+      ],
+      "status": "ok",
+      "resolved": {
+        "ticket_no": "T1012"
+      },
+      "called_tools": [
+        "query_complaint"
+      ],
+      "tool_args": {
+        "query_complaint": {
+          "member_id": "M1001",
+          "ticket_no": "T1012"
+        }
+      },
+      "expected_tools": [
+        "query_complaint"
+      ],
+      "expected_args": {
+        "query_complaint": {
+          "ticket_no": "T1012"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll look up the complaint record for you.您好，李磊先生，我帮您查询了投诉单 **T1012** 的处理情况：\n\n- **投诉单号**：T1012\n- **投诉内容**：航班延误导致错过转机，要求正式反馈处理\n- **登记时间**：2026-09-12\n- **当前状态**：**处理中**\n- **回复内容**：暂无（尚未有处理结果回复）\n\n目前该投诉仍在处理流程中，暂时还没有最终的回复结果。请您耐心等待，处理完成后我们会通过站内通知第一时间告知您。\n\n另外，我注意到您账户里有几条未读的站内通知，其中可能包含与您相关的处理结果。需要我帮您查看一下最新的通知内容吗？"
+    },
+    {
+      "id": "t08",
+      "category": "complaint",
+      "query": "我对你们这次服务非常不满，要求赔偿",
+      "turns": [
+        "我对你们这次服务非常不满，要求赔偿"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [],
+      "tool_args": {},
+      "expected_tools": [
+        "create_complaint"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "missing",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": false,
+      "response": "您好，非常抱歉给您带来了不愉快的体验，我完全理解您的心情。为了能尽快帮您核实并推进赔偿事宜，我想先了解一下具体情况：\n\n1. 请问是哪个订单或哪次服务让您不满意？（如果方便，提供订单号或大致时间、航线）\n2. 具体是遇到了什么问题？（比如航班延误/取消、退改签、行李、服务态度等）\n\n您先跟我说说，我这边会立即为您登记投诉并跟进处理。同时，如果您之前已经提交过投诉，也可以告诉我投诉单号，我帮您查询处理进度。"
+    }
+  ]
+}

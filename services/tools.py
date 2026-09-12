@@ -321,9 +321,44 @@ def checkin_info(order_no: str) -> str:
         return _dump({"error": f"值机状态查询失败: {e}"})
 
 
+# ------------------------------------------------ 行李规则
+
+@tool
+def baggage_allowance(order_no: str = "", flight_no: str = "", cabin: str = "",
+                      airline: str = "") -> str:
+    """查询行李额度与超重费用：随身行李件数/重量、免费托运件数/重量、超重每公斤费率、加购行李费。
+
+    用户询问"能带多少行李/免费托运额度/行李超重怎么收费/随身携带规定"时调用。
+    定位方式三选一，优先级 order_no > flight_no > airline：
+    - order_no：按订单查（会按登录身份校验归属），最准确；
+    - flight_no：按航班查该航司的额度；
+    - airline：只知道航司时用（传代码如 CA/MU/9C 或中文名如"春秋航空"）。
+    用户没有给订单号/航班号、只问了某家航司的规定时，直接用 airline 查，不要反过来追问用户要订单号。
+    cabin 缺省按订单舱位或经济舱。
+    回复时把随身、免费托运、超重费率、加件费讲清楚；若 free_checked.weight_kg 高于基础额度，
+    说明是会员等级赠送的额外额度。不要凭记忆编造额度数值。
+
+    Args:
+        order_no: 订单号（如 O0123456），可选；优先使用
+        flight_no: 航班号（如 CA1061），可选
+        cabin: 舱位（经济 / 商务），可选；缺省时按订单舱位或经济舱
+        airline: 航司代码或中文名（如 9C / 春秋航空），可选
+    """
+    try:
+        from services import security
+        data = flight_repo.get_baggage_allowance(
+            member_id=security.get_current_member(),
+            order_no=order_no or None, flight_no=flight_no or None,
+            cabin=cabin or None, airline=airline or None)
+        return _dump(data)
+    except Exception as e:  # pragma: no cover - 兜底
+        return _dump({"error": f"行李额度查询失败: {e}"})
+
+
 # ------------------------------------------------ 确认卡片伪工具（schema-only）
-# 这两个工具不执行任何写操作：Agent 的 ReAct 循环通过 _on_tool_call 钩子拦截调用，
+# 这些工具不执行任何写操作：Agent 的 ReAct 循环通过 _on_tool_call 钩子拦截调用，
 # 把参数交给前端确认卡片；用户点击确认后由 REST 接口（/api/book 等）真正写库。
+# 注意：伪工具**不注册进 all_tools()**，因此通用执行路径拿不到它们（见 tools_by_name）。
 
 @tool
 def submit_booking_request(flight_no: str, flight_date: str, cabin: str, passengers: int = 1) -> str:
@@ -422,6 +457,7 @@ def all_tools():
         create_complaint,
         query_notifications,
         checkin_info,
+        baggage_allowance,
         web_search,
     ]
 
