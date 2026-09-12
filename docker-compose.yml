@@ -56,6 +56,10 @@ services:
     environment:
       # 容器内访问 Langfuse 走服务名（localhost 是容器自己）
       LANGFUSE_HOST: http://langfuse-web:3000
+      # langgraph dev 默认向 LangSmith Cloud 上报 trace；未配置有效
+      # LANGSMITH_API_KEY 时每 1-2 秒刷一条 403 告警，这里显式关闭
+      LANGSMITH_TRACING: "false"
+      LANGCHAIN_TRACING_V2: "false"
     env_file:
       - .env
     expose:
