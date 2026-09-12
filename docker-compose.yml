@@ -24,6 +24,8 @@ services:
     environment:
       # 容器内访问 LangGraph 走服务名，覆盖 .env 里的 127.0.0.1
       LANGGRAPH_API_URL: http://langgraph:2024
+      # 容器内访问 Langfuse 同理：localhost 是容器自己，必须走服务名
+      LANGFUSE_HOST: http://langfuse-web:3000
       APP_ENV: production
     env_file:
       - .env
@@ -51,6 +53,9 @@ services:
     # 生产建议改用 `langgraph up`（LangSmith Deployment）；本地演示用 dev 服务器
     command: ["langgraph", "dev", "--host", "0.0.0.0", "--port", "2024",
               "--no-browser", "--no-reload"]
+    environment:
+      # 容器内访问 Langfuse 走服务名（localhost 是容器自己）
+      LANGFUSE_HOST: http://langfuse-web:3000
     env_file:
       - .env
     expose:
