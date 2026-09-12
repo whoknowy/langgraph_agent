@@ -161,7 +161,11 @@ def _seed_base(conn: sqlite3.Connection, rnd: random.Random) -> None:
                     )
 
     conn.executemany(
-        "INSERT OR REPLACE INTO flights VALUES (?,?,?,?,?,?,?,?,?)",
+        # 必须显式列名：flights 后来新增了 gate 列（_ensure_column 迁移），
+        # 用无列名的 INSERT ... VALUES 会因列数不匹配而在重置库时失败。
+        "INSERT OR REPLACE INTO flights "
+        "(flight_no, airline_code, dep_iata, arr_iata, dep_time, arr_time, "
+        " duration_min, aircraft, freq_days) VALUES (?,?,?,?,?,?,?,?,?)",
         flights_rows,
     )
     conn.executemany(
@@ -186,7 +190,8 @@ def _seed_base(conn: sqlite3.Connection, rnd: random.Random) -> None:
         level = "金卡" if i % 10 == 0 else ("银卡" if i % 10 in (1, 2, 3) else "普通")
         customers.append((member_id, name, phone, f"member{i}@example.com", level))
     conn.executemany(
-        "INSERT OR REPLACE INTO customers VALUES (?,?,?,?,?)",
+        "INSERT OR REPLACE INTO customers (member_id, name, phone, email, level) "
+        "VALUES (?,?,?,?,?)",
         customers,
     )
 
@@ -272,7 +277,9 @@ def _seed_orders_and_complaints(conn: sqlite3.Connection, rnd: random.Random) ->
                                row["cabin"], row["price"], status, created_at.isoformat()))
 
     conn.executemany(
-        "INSERT OR REPLACE INTO orders VALUES (?,?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO orders "
+        "(order_no, member_id, flight_no, flight_date, cabin, amount, status, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?)",
         order_rows,
     )
 
@@ -295,7 +302,9 @@ def _seed_orders_and_complaints(conn: sqlite3.Connection, rnd: random.Random) ->
         complaints.append((ticket_no, member_id, order_no, content, status, created.isoformat()))
 
     conn.executemany(
-        "INSERT OR REPLACE INTO complaints VALUES (?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO complaints "
+        "(ticket_no, member_id, order_no, content, status, created_at) "
+        "VALUES (?,?,?,?,?,?)",
         complaints,
     )
 
@@ -365,9 +374,14 @@ def ensure_seeded(conn: sqlite3.Connection, force: bool = False) -> None:
     db.init_schema(conn)
 
     if force:
+        # 清库临时关闭外键：白名单不含的表（如 baggage_rules→airlines、payments、
+        # checkins 等遗留数据）会挂在 airlines/customers 的删除上；审计表
+        # audit_logs 与 confirm_tokens 刻意不在白名单（必须留痕）。
+        conn.execute("PRAGMA foreign_keys=OFF")
         for table in ("complaints", "orders", "flight_prices", "delay_stats", "flights",
                       "airlines", "airports", "customers", "city_coords", "meta"):
             conn.execute(f"DELETE FROM {table}")
+        conn.execute("PRAGMA foreign_keys=ON")
 
     _seed_admin(conn)
 

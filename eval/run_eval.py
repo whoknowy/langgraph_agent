@@ -192,6 +192,15 @@ def _suffix_for(member, opener=None):
     return None
 
 
+def _quote_token(params: dict, opener=None) -> str:
+    """从准备接口（booking_quote）拿一次性确认凭证（服务端 HITL 强制）。"""
+    qs = urllib.parse.urlencode(params)
+    data = get_json("/api/booking_quote?" + qs, opener=opener)
+    if data.get("error"):
+        raise RuntimeError(f"报价失败：{data}")
+    return data.get("confirm_token") or ""
+
+
 def _book_paid(route, cabin, date_offset, passengers, opener=None, window_open=False):
     if window_open:
         picked = _window_flight(route, cabin, opener=opener)
@@ -204,12 +213,21 @@ def _book_paid(route, cabin, date_offset, passengers, opener=None, window_open=F
         if not f:
             raise RuntimeError(f"未找到 {route[0]}→{route[1]} {d} 的可售航班")
         flight_no = f["flight_no"]
+    # 服务端 HITL：写操作必须先拿一次性确认凭证（报价接口签发）
+    token = _quote_token({"flight_no": flight_no, "flight_date": d,
+                          "cabin": cabin, "passengers": passengers}, opener=opener)
     booked = post_json("/api/book", {"flight_no": flight_no, "flight_date": d,
-                                     "cabin": cabin, "passengers": passengers}, opener=opener)
+                                     "cabin": cabin, "passengers": passengers,
+                                     "confirm_token": token}, opener=opener)
     order_no = booked.get("order_no")
     if not order_no:
         raise RuntimeError(f"下单失败：{booked}")
-    paid = post_json("/api/pay", {"order_no": order_no}, opener=opener)
+    # 支付同理：pay/create 签发凭证，/api/pay 消费
+    created = post_json("/api/pay/create", {"order_no": order_no, "provider": "mock"},
+                        opener=opener)
+    pay_token = (created or {}).get("confirm_token") or ""
+    paid = post_json("/api/pay", {"order_no": order_no, "confirm_token": pay_token},
+                     opener=opener)
     if paid.get("error"):
         raise RuntimeError(f"支付失败：{paid}")
     return {"order_no": order_no, "flight_no": flight_no, "flight_date": d}
@@ -256,8 +274,11 @@ def prepare(setup, opener=None):
     if not cfg.get("paid", True):
         # 仅下单不支付：重下一单（_book_paid 已支付，这里用于"待支付"场景）
         d = result["flight_date"]
+        token = _quote_token({"flight_no": result["flight_no"], "flight_date": d,
+                              "cabin": cabin, "passengers": passengers}, opener=opener)
         booked = post_json("/api/book", {"flight_no": result["flight_no"], "flight_date": d,
-                                         "cabin": cabin, "passengers": passengers}, opener=opener)
+                                         "cabin": cabin, "passengers": passengers,
+                                         "confirm_token": token}, opener=opener)
         if not booked.get("order_no"):
             raise RuntimeError(f"下单失败：{booked}")
         return {"order_no": booked["order_no"], "flight_no": result["flight_no"],
