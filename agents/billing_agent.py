@@ -20,11 +20,19 @@ class BillingAgent(BaseAgent):
         )
 
     def _react_tools(self) -> list:
-        from services.tools import all_tools, refund_request, change_request, open_seat_map
+        from services.tools import all_tools, refund_request, change_request, open_seat_map, submit_booking_request
         return ([t for t in all_tools() if t.name != "create_complaint"]
-                + [refund_request, change_request, open_seat_map])
+                + [refund_request, change_request, open_seat_map, submit_booking_request])
 
     def _on_tool_call(self, name: str, args: dict):
+        if name == "submit_booking_request":
+            # 兜底：购票请求被误路由到账单专员时，同样能发起订票确认卡片
+            # （只有 product/billing 挂了此工具；卡片流程与 product_agent 一致）
+            self._pending_action = {"type": "book_flight",
+                                    **{k: v for k, v in (args or {}).items() if k != ""}}
+            return (True, {"status": "awaiting_user_confirmation",
+                           "message": "已生成订票确认请求。请向用户复述航班号/日期/舱位/人数与票价信息，"
+                                      "并提示用户点击页面上的\"确认预订\"按钮完成下单，不要自称已下单。"})
         if name == "refund_request":
             refund_type = "special" if str((args or {}).get("refund_type", "")).strip() == "special" else "voluntary"
             self._pending_action = {"type": "refund", "refund_type": refund_type,
