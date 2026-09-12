@@ -1,0 +1,389 @@
+{
+  "run_at": "2026-09-12T23:13:12",
+  "base": "http://127.0.0.1:5000",
+  "member": "M1001",
+  "suite": "tasks",
+  "total": 10,
+  "completion_rate": 1.0,
+  "tool_accuracy": {
+    "denominator": 10,
+    "correct": 10,
+    "missing": 0,
+    "wrong_tool": 0,
+    "wrong_args": 0,
+    "accuracy": 1.0,
+    "param_accuracy": 1.0
+  },
+  "security": {
+    "auto_refunded_orders": [],
+    "leaked": false
+  },
+  "executed_orders": [],
+  "by_category": {
+    "query": {
+      "total": 10,
+      "completed": 10,
+      "correct_tools": 10
+    }
+  },
+  "tasks": [
+    {
+      "id": "q01",
+      "category": "query",
+      "query": "帮我查一下明天北京到上海的经济舱机票",
+      "turns": [
+        "帮我查一下明天北京到上海的经济舱机票"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "search_flights"
+      ],
+      "tool_args": {
+        "search_flights": {
+          "departure": "北京",
+          "destination": "上海",
+          "date": "2026-09-13"
+        }
+      },
+      "expected_tools": [
+        "search_flights"
+      ],
+      "expected_args": {
+        "search_flights": {
+          "departure": "北京",
+          "destination": "上海"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll search for flights from Beijing to Shanghai for tomorrow (2026-09-13).已为您查到明天（2026-09-13）北京→上海的经济舱航班如下：\n\n| 航班号 | 航司 | 时间 | 舱位 | 价格 |\n|---|---|---|---|---|\n| CA1061 | 中国国航 | 06:40 - 08:55 | 经济 | ¥700 |\n| MU1074 | 东方航空 | 09:50 - 12:05 | 经济 | ¥710 |\n| CZ1087 | 南方航空 | 13:00 - 15:15 | 经济 | ¥660 |\n\n三班均为 A320neo 机型，其中 **CZ1087（南航）价格最低，¥660**；若想早到可选 CA1061（06:40 起飞）。\n\n请问您需要预订哪一班？如需下单，请告诉我**航班号、舱位和乘机人"
+    },
+    {
+      "id": "q02",
+      "category": "query",
+      "query": "北京到广州后天有哪些航班？",
+      "turns": [
+        "北京到广州后天有哪些航班？"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "search_flights"
+      ],
+      "tool_args": {
+        "search_flights": {
+          "departure": "北京",
+          "destination": "广州",
+          "date": "2026-09-14"
+        }
+      },
+      "expected_tools": [
+        "search_flights"
+      ],
+      "expected_args": {
+        "search_flights": {
+          "departure": "北京",
+          "destination": "广州"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "今天是 2026-09-12，后天即 **2026-09-14**。我帮您查一下北京到广州的航班。为您查到 **2026-09-14（后天）北京 → 广州** 共 4 个航班：\n\n| 航班号 | 航司 | 时间 | 舱位 | 价格 |\n|---|---|---|---|---|\n| MU1122 | 东方航空 | 06:49 - 10:09 | 经济 / 商务 | ¥850 / ¥2090 |\n| CZ1135 | 南方航空 | 09:59 - 13:19 | 经济 / 商务 | ¥810 / ¥1980 |\n| HU1148 | 海南航空 | 13:09 - 16:29 | 经济 / 商务 | ¥790 / ¥2050 |\n| 3U1161 | 四川航空 | 16:19 - 19:39 | 经济 / 商务 | ¥810 / ¥1960 |\n\n经济舱最低价为 **HU1148（¥790）*"
+    },
+    {
+      "id": "q03",
+      "category": "query",
+      "query": "上海到成都大后天的机票大概多少钱",
+      "turns": [
+        "上海到成都大后天的机票大概多少钱"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "search_flights"
+      ],
+      "tool_args": {
+        "search_flights": {
+          "departure": "上海",
+          "destination": "成都",
+          "date": "2026-09-15"
+        }
+      },
+      "expected_tools": [
+        "get_price_trend",
+        "search_flights"
+      ],
+      "expected_args": {},
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "今天是 2026-09-12，\"大后天\"即 **2026-09-15**。我来帮您查一下上海到成都的航班价格。为您查到 **2026-09-15（大后天）上海 → 成都** 的航班如下：\n\n| 航班号 | 航司 | 时间 | 舱位 | 价格 |\n|---|---|---|---|---|\n| HO2098 | 吉祥航空 | 06:49–09:59 | 经济 | ¥700 |\n| GS2111 | 天津航空 | 09:59–13:09 | 经济 | ¥540 |\n| 9C2124 | 春秋航空 | 13:09–16:19 | 经济 | ¥560 |\n| CA2137 | 中国国航 | 16:19–19:29 | 经济 | ¥790 |\n| MU2150 | 东方航空 | 19:29–22:39 | 经济 | ¥830 |\n\n**价格概况：**\n- 经济舱：**¥540 – ¥830**，最低"
+    },
+    {
+      "id": "q04",
+      "category": "query",
+      "query": "帮我看看北京到深圳最近的票价走势",
+      "turns": [
+        "帮我看看北京到深圳最近的票价走势"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "get_price_trend"
+      ],
+      "tool_args": {
+        "get_price_trend": {
+          "from_city": "北京",
+          "to_city": "深圳",
+          "days_ahead": 30
+        }
+      },
+      "expected_tools": [
+        "get_price_trend"
+      ],
+      "expected_args": {
+        "get_price_trend": {
+          "from_city": "北京",
+          "to_city": "深圳"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll check the price trend for the Beijing-Shenzhen route.以下是**北京 → 深圳**未来约 30 天的票价走势（经济舱，单位：元）：\n\n| 日期 | 最低价 | 最高价 |\n|------|--------|--------|\n| 2026-09-13 | 840 | 2280 |\n| 2026-09-14 | 740 | 1930 |\n| 2026-09-15 | 740 | 2030 |\n| 2026-09-16 | 740 | 2090 |\n| 2026-09-17 | 740 | 2050 |\n| 2026-09-18 | 730 | 2050 |\n| 2026-09-19 | 730 | 2030 |\n| 2026-09-20 | 740 | 2070 |\n| 2026-09-21 | 730 | 2060 |\n| 20"
+    },
+    {
+      "id": "q05",
+      "category": "query",
+      "query": "上海到西安未来一个月的价格趋势怎么样",
+      "turns": [
+        "上海到西安未来一个月的价格趋势怎么样"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "get_price_trend"
+      ],
+      "tool_args": {
+        "get_price_trend": {
+          "from_city": "上海",
+          "to_city": "西安",
+          "days_ahead": 30
+        }
+      },
+      "expected_tools": [
+        "get_price_trend"
+      ],
+      "expected_args": {
+        "get_price_trend": {
+          "from_city": "上海",
+          "to_city": "西安"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "I'll check the price trend for the Shanghai–Xi'an route over the next month.以下是**上海 → 西安**未来一个月的票价趋势（经济舱，单位：元）：\n\n| 日期 | 最低价 | 最高价 |\n|---|---|---|\n| 09-13 | 680 | 1830 |\n| 09-14 | 630 | 1650 |\n| 09-15 | 630 | 1780 |\n| 09-16 | 680 | 1690 |\n| 09-17 | 640 | 1620 |\n| 09-18 | 630 | 1660 |\n| 09-19 | 620 | 1690 |\n| 09-20 | 630 | 1650 |\n| 09-21 | 640 | 1640 |\n| 09-22 | 670 | 1640 |\n| 09-23 | 620 | 1630 |\n|"
+    },
+    {
+      "id": "q06",
+      "category": "query",
+      "query": "北京飞上海的航班延误严重吗？",
+      "turns": [
+        "北京飞上海的航班延误严重吗？"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "get_delay_prediction"
+      ],
+      "tool_args": {
+        "get_delay_prediction": {
+          "route": "北京-上海"
+        }
+      },
+      "expected_tools": [
+        "get_delay_prediction"
+      ],
+      "expected_args": {
+        "get_delay_prediction": {
+          "route": "北京-上海"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "我来帮您查询北京到上海航线的延误情况。根据历史数据（样本约 3285 天），北京—上海航线的延误情况整体**不算严重**，属于中等偏低水平：\n\n**整体情况**\n- 延误概率：**16.4%**\n- 平均延误时长：**18.5 分钟**\n\n**按时段分布**\n\n| 时段 | 延误概率 | 平均延误时长 |\n|------|---------|-------------|\n| 早间 06:00–12:00 | 约 10%–15% | 9–11 分钟 |\n| 午后 12:00–18:00 | 约 17%–19% | 16–23 分钟 |\n| 晚间 18:00–24:00 | 约 17%–20% | 25–27 分钟 |\n\n**小结与建议**\n- **早班机最靠谱**：延误概率最低（约 10%），平均延误仅 10 分钟左右。\n- **晚间航班风险最高**：延误概率接近 20%，平均延误 25 分"
+    },
+    {
+      "id": "q07",
+      "category": "query",
+      "query": "国航从北京到上海的航班延误情况怎么样",
+      "turns": [
+        "国航从北京到上海的航班延误情况怎么样"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "get_delay_prediction"
+      ],
+      "tool_args": {
+        "get_delay_prediction": {
+          "route": "北京-上海",
+          "airline": "CA"
+        }
+      },
+      "expected_tools": [
+        "get_delay_prediction"
+      ],
+      "expected_args": {
+        "get_delay_prediction": {
+          "route": "北京-上海"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "国航（CA）北京→上海航线的延误情况如下（基于近 1095 天样本统计）：\n\n**整体水平**\n- 延误概率：**17%**\n- 平均延误时长：**18.4 分钟**\n\n**分时段对比**\n\n| 时段 | 延误概率 | 平均延误时长 |\n|---|---|---|\n| 早间 06:00–12:00 | 13.8% | 9.3 分钟 |\n| 午后 12:00–18:00 | 16.7% | 18.7 分钟 |\n| 晚间 18:00–24:00 | 20.4% | 27.1 分钟 |\n\n**小结**：整体准点率不错，早班机最稳（延误概率仅 13.8%、平均延误不到 10 分钟）；越晚延误概率和延误时长越高，晚间航班平均要晚近半小时。如果对时间要求高，建议优先选早间航班。\n\n需要我帮您查一下具体日期的国航北京→上海航班和票价吗？"
+    },
+    {
+      "id": "q08",
+      "category": "query",
+      "query": "帮我看看 {flight_no} 在 {flight_date} 的票价构成",
+      "turns": [
+        "帮我看看 {flight_no} 在 {flight_date} 的票价构成"
+      ],
+      "status": "ok",
+      "resolved": {
+        "flight_no": "CA1061",
+        "flight_date": "2026-09-15"
+      },
+      "called_tools": [
+        "get_flight_price_detail"
+      ],
+      "tool_args": {
+        "get_flight_price_detail": {
+          "flight_no": "CA1061",
+          "date": "2026-09-15"
+        }
+      },
+      "expected_tools": [
+        "get_flight_price_detail"
+      ],
+      "expected_args": {
+        "get_flight_price_detail": {
+          "flight_no": "CA1061"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "以下是 **CA1061（中国国航，北京-上海，2026-09-15）** 的票价构成：\n\n| 舱位 | 基础票价 | 燃油附加费 | 机场建设费 | 服务费 | 保险费(可选) | 合计 |\n|---|---|---|---|---|---|---|\n| 经济舱 | ¥430 | ¥120 | ¥50 | ¥20 | ¥30 | **¥620** |\n| 商务舱 | ¥1040 | ¥120 | ¥50 | ¥280 | ¥30 | **¥1490** |\n\n说明：\n- 表中\"合计\"为含可选保险的总额；若不需要保险，经济舱为 ¥590、商务舱为 ¥1460。\n- 燃油附加费、机场建设费为固定项，服务费按舱位不同。\n\n需要我帮您查询该航班当天的余票情况，或直接发起预订吗？如需预订，请告诉我**舱位**和**乘机人数**。"
+    },
+    {
+      "id": "q09",
+      "category": "query",
+      "query": "上海明天的天气怎么样？",
+      "turns": [
+        "上海明天的天气怎么样？"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "get_weather"
+      ],
+      "tool_args": {
+        "get_weather": {
+          "city": "上海",
+          "date": "2026-09-13"
+        }
+      },
+      "expected_tools": [
+        "get_weather"
+      ],
+      "expected_args": {
+        "get_weather": {
+          "city": "上海"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "上海明天（2026-09-13）天气情况如下：\n\n| 日期 | 天气 | 气温 | 降水概率 | 风力 |\n|------|------|------|----------|------|\n| 2026-09-13 | 晴 | 23.0℃ ~ 29.7℃ | 2% | 微风（约4.7 km/h） |\n\n**小结**：明天上海是晴天，气温舒适（23~30℃），降水概率极低，非常适合出行。白天日照较强，建议做好防晒、多补水。\n\n需要我帮您查一下明天飞上海的航班或票价吗？"
+    },
+    {
+      "id": "q10",
+      "category": "query",
+      "query": "成都后天的天气如何，我要去旅游",
+      "turns": [
+        "成都后天的天气如何，我要去旅游"
+      ],
+      "status": "ok",
+      "resolved": {},
+      "called_tools": [
+        "get_weather"
+      ],
+      "tool_args": {
+        "get_weather": {
+          "city": "成都",
+          "date": "2026-09-14"
+        }
+      },
+      "expected_tools": [
+        "get_weather"
+      ],
+      "expected_args": {
+        "get_weather": {
+          "city": "成都"
+        }
+      },
+      "expected_pending": null,
+      "classification": "correct",
+      "pending_action": null,
+      "attempts": 0,
+      "pending_ok": true,
+      "response_ok": true,
+      "completed": true,
+      "response": "成都后天（2026-09-14）的天气情况如下：\n\n| 日期 | 天气 | 气温 | 降水概率 |\n|---|---|---|---|\n| 2026-09-14 | 毛毛雨 | 16.3℃ ~ 24.6℃ | 61% |\n\n**出行提示：**\n- 后天有毛毛雨，降水概率 61%，建议随身带伞、穿防水鞋；\n- 昼夜温差约 8℃，早晚偏凉，建议备一件薄外套；\n- 未来几天成都多阵雨（13日、15日、16日降水概率都很高），行程安排上可多准备室内景点（如博物馆、宽窄巷子、太古里等）作为备选。\n\n需要我帮您查一下去成都的航班和票价吗？告诉我出发城市和日期就可以～"
+    }
+  ]
+}
