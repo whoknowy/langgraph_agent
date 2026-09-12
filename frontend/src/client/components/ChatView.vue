@@ -27,6 +27,9 @@
 
     <div class="chat-workspace">
       <div ref="chatBody" class="chat-body">
+        <button class="trace-toggle" :class="{ on: showTrace }" title="展开/收起执行链路" @click="showTrace = !showTrace">
+          ⛓ 链路
+        </button>
         <div v-if="!messages.length" class="chat-empty">
           <h3>您好，我是智能客服助手</h3>
           <p>可以帮你查航班、订机票、值机选座、退改签、投诉、行程规划</p>
@@ -38,7 +41,10 @@
         <div v-for="(msg, i) in messages" :key="i" class="msg-row" :class="msg.role">
           <div class="msg-avatar">{{ msg.role === 'user' ? '我' : 'AI' }}</div>
           <div class="msg-content">
-            <div class="msg-meta">{{ msg.role === 'user' ? '我' : '智能客服' }}</div>
+            <div class="msg-meta">
+              <span>{{ msg.role === 'user' ? '我' : '智能客服' }}</span>
+              <button v-if="msg.trace" class="trace-link" @click="showMsgTrace(msg)">⛓ 链路</button>
+            </div>
             <div v-if="msg.toolChips && msg.toolChips.length" class="tool-chips">
               <span
                 v-for="chip in msg.toolChips"
@@ -87,6 +93,9 @@
         <button class="send-btn" :disabled="!input.trim() || isTyping" @click="send">发送</button>
       </div>
     </div>
+
+    <!-- 执行链路面板：实时点亮图节点与工具调用（验收⑤ 状态机可观测） -->
+    <TracePanel v-if="showTrace" :trace="activeTrace" @close="showTrace = false" />
 
     <!-- 值机选座弹窗 -->
     <div v-if="seatModal.show" class="modal-mask" @click.self="seatModal.show = false">
@@ -143,6 +152,11 @@ const actionLoading = ref(false)
 const chatBody = ref(null)
 const seatModal = ref({ show: false, map: {}, selected: '', error: '', loading: false, action: null })
 
+// 执行链路面板（验收⑤）：activeTrace 指向当前/所选一轮对话的 {nodes, tools}，
+// 流式期间实时更新，done 后固化并挂到对应助手消息上（msg.trace）供回看。
+const showTrace = ref(false)
+const activeTrace = ref(null)
+
 // 聊天里订票后的支付：与「我的订单」「机票预订」共用同一实现。
 // 这里不传 win —— 跳转方式与那两处不同，原因见 confirmAction 里的注释。
 const { pay } = usePay()
@@ -155,13 +169,6 @@ const suggestions = [
   '上海明天的天气怎么样？适合出行吗',
   '我的机票可以退票吗？退票流程是什么'
 ]
-
-const TOOL_LABELS = {
-  search_flights: '航班搜索', get_price_trend: '价格趋势', get_delay_prediction: '延误预测',
-  get_weather: '天气查询', get_flight_price_detail: '票价构成', get_order_bill: '账单查询',
-  query_complaint: '投诉查询', create_complaint: '投诉登记', submit_booking_request: '订票确认',
-  refund_request: '退票确认', open_seat_map: '值机选座'
-}
 
 onMounted(() => {
   newSession()
@@ -306,6 +313,8 @@ async function send() {
   if (!message || isTyping.value) return
   input.value = ''
   messages.value.push({ role: 'user', content: message, toolChips: [] })
+  // 新一轮对话：链路面板切换到本轮（旧轮次的链路仍可从消息上的"⛓ 链路"回看）
+  activeTrace.value = reactive({ nodes: [], tools: [] })
   isTyping.value = true
   scrollBottom()
   try {
@@ -318,6 +327,37 @@ async function send() {
     scrollBottom()
     loadSessions()
   }
+}
+
+/** SSE 的 node/tool 事件 → 更新当前轮链路（同名节点/工具就地更新状态与耗时）。 */
+function applyTraceNode(n) {
+  if (!n || !n.name) return
+  const t = activeTrace.value
+  if (!t) return
+  let item = t.nodes.find(x => x.name === n.name)
+  if (!item) {
+    item = { name: n.name }
+    t.nodes.push(item)
+  }
+  Object.assign(item, n)
+}
+
+function applyTraceTool(tool) {
+  if (!tool || !tool.name) return
+  const t = activeTrace.value
+  if (!t) return
+  let item = t.tools.find(x => x.name === tool.name)
+  if (!item) {
+    item = { name: tool.name }
+    t.tools.push(item)
+  }
+  Object.assign(item, tool)
+}
+
+function showMsgTrace(msg) {
+  if (!msg.trace) return
+  activeTrace.value = msg.trace
+  showTrace.value = true
 }
 
 async function streamChat(message) {
@@ -336,8 +376,6 @@ async function streamChat(message) {
   let streamText = ''
   let assistantMsg = null
   let toolChips = []
-
-  const toolLabel = (name) => TOOL_LABELS[name] || name
 
   const addToolChip = (name, status = 'running') => {
     ensureAssistant()
@@ -404,7 +442,11 @@ async function streamChat(message) {
           finishToolChips()
           return true
         }
+        if (data.node) {
+          applyTraceNode(data.node)
+        }
         if (data.tool && data.tool.name) {
+          applyTraceTool(data.tool)
           addToolChip(data.tool.name, data.tool.status === 'done' ? 'done' : 'running')
           syncToolChips()
         }
@@ -421,6 +463,11 @@ async function streamChat(message) {
           if (data.response && !streamText) {
             ensureAssistant().content = data.response
           }
+          // done 携带后端汇总的完整链路（含耗时/守卫拦截/路由结果），替换实时增量
+          if (data.trace && data.trace.nodes) {
+            activeTrace.value = reactive({ ...data.trace })
+          }
+          if (assistantMsg && activeTrace.value) assistantMsg.trace = activeTrace.value
           finishAssistant()
           finishToolChips(data.tools)
           return true
@@ -588,7 +635,7 @@ async function confirmSeat() {
   flex: 1; min-width: 0; background: #fff; border: 1px solid var(--border); border-radius: var(--radius);
   display: flex; flex-direction: column; overflow: hidden;
 }
-.chat-body { flex: 1; overflow: auto; padding: 20px; }
+.chat-body { flex: 1; overflow: auto; padding: 20px; position: relative; }
 .chat-empty { text-align: center; padding: 60px 20px; }
 .chat-empty h3 { font-size: 20px; margin-bottom: 8px; }
 .chat-empty p { color: var(--text-muted); margin-bottom: 20px; }
@@ -613,6 +660,19 @@ async function confirmSeat() {
 
 .msg-row.user .msg-body { background: var(--primary); color: #fff; }
 .tool-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.trace-toggle {
+  position: absolute; top: 12px; right: 16px; z-index: 2;
+  padding: 4px 12px; border-radius: 999px; border: 1px solid var(--border);
+  background: #fff; color: var(--text-muted); font-size: 12px;
+  cursor: pointer; transition: background .2s, color .2s, border-color .2s;
+}
+.trace-toggle:hover { border-color: var(--primary); color: var(--primary); }
+.trace-toggle.on { background: var(--primary); border-color: var(--primary); color: #fff; }
+.msg-meta .trace-link {
+  margin-left: 8px; padding: 1px 8px; border-radius: 999px; border: 1px solid transparent;
+  background: transparent; color: var(--text-faint); font-size: 11px; cursor: pointer;
+}
+.msg-meta .trace-link:hover { border-color: #bfdbfe; color: var(--primary); background: #eff6ff; }
 .tool-chip {
   display: inline-flex; align-items: center; gap: 5px; font-size: 11px;
   padding: 3px 9px; border-radius: 999px; background: #eef2ff; color: #4338ca;
