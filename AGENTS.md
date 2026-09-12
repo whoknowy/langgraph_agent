@@ -3,18 +3,6 @@
 多智能体航空客服系统（LangGraph × ReAct 真实工具调用 × SQLite 真实数据）。
 接手前先读 README.md 与 GETTING_STARTED.md；本文档只讲"怎么干活"。
 
-## Token 纪律
-
-1. **默认只跑 `python -m pytest test_unit.py -q`**（秒级、0 token、69 用例，独立临时库）。
-2. 涉及管理端/订单流改动 → `python test_admin.py`（纯 REST+DB，≈0 token）。
-3. **禁止主动运行 `test_regression.py`**——它发起 20+ 轮真实 LLM 对话且默认被
-   `--go` 门禁阻止；只有用户明确要求时才带 `--go` 运行。
-4. **不要用"发真实对话消息"来验证改动**。验证手段优先级：
-   单测 → REST 探测（curl/requests）→ 看日志（flask.log / lg_dev.log）→ 查 DB →
-   浏览器 UI 操作（界面渲染、点按钮、看面板，但不触发 LLM 的部分）。
-   确需一轮真实对话验证时，先向用户说明成本并征得同意，且一轮说完所有验证点。
-5. LangSmith 轨迹验证同理：看日志里的上报记录即可，不要为产生轨迹专门烧对话。
-
 ## 服务与启动
 
 - LangGraph 运行时（端口 2024）：`.venv/Scripts/langgraph.exe dev --no-browser --no-reload`
