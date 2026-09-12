@@ -191,10 +191,11 @@ async function confirmBook() {
   orderPanel.error = ''
   try {
     if (!orderPanel.created) {
-      // 第一步：创建订单
+      // 第一步：创建订单（携带报价接口签发的一次性确认凭证，服务端强制 HITL）
       const d = await api('/api/book', { method: 'POST', body: {
         flight_no: f.flight_no, flight_date: form.value.date,
-        cabin: orderPanel.cabin, passengers: 1
+        cabin: orderPanel.cabin, passengers: 1,
+        confirm_token: (orderPanel.quote || {}).confirm_token
       }})
       orderPanel.created = true
       orderPanel.orderNo = d.order_no

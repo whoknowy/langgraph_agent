@@ -27,8 +27,14 @@ class TripPlannerAgent(BaseAgent):
 
     def _on_tool_call(self, name: str, args: dict):
         if name == "submit_booking_request":
+            from services import confirm_token, security
+            args = args or {}
             self._pending_action = {"type": "book_flight",
-                                    **{k: v for k, v in (args or {}).items() if k != ""}}
+                                    **{k: v for k, v in args.items() if k != ""}}
+            issued = confirm_token.issue("book", security.get_current_member() or "",
+                                        target="", params=args)
+            if issued.get("confirm_token"):
+                self._pending_action["confirm_token"] = issued["confirm_token"]
             return (True, {"status": "awaiting_user_confirmation",
                            "message": "已根据行程方案生成订票确认请求。请向用户复述航班号/日期/舱位/人数，"
                                       "并提示用户点击页面上的\"确认预订\"按钮完成下单，不要自称已下单。"})

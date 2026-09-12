@@ -134,6 +134,42 @@ def _require_member():
     return member, None
 
 
+# --- 服务端 HITL：一次性确认凭证（写操作必须先"确认"过） ---
+
+def _confirm_error(action: str, reason: str, target: str = ""):
+    """统一返回确认凭证校验失败（403），并落一条审计。"""
+    from services import audit
+    audit.denied(action, reason, target=target)
+    return jsonify({'error': reason, 'need_confirm': True}), 403
+
+
+def _require_confirm(data: dict, member: dict, action: str, target: str, params: dict = None):
+    """校验并消费一次性确认凭证。通过返回 None，否则返回 403 响应。
+
+    这是"HITL 服务端强制"的落点：没有凭证（用户没在页面上确认过）就直接拒绝，
+    不再依赖前端自觉。
+    """
+    from services import confirm_token
+    token = (data or {}).get('confirm_token') or (data or {}).get('confirmToken') or ''
+    result = confirm_token.consume(token, action, member.get('member_id'), target, params or data)
+    if result.get('error'):
+        return _confirm_error(action, result['error'], target=target)
+    return None
+
+
+def _issue_confirm(action: str, member: dict, target: str, params: dict, payload: dict):
+    """给准备接口的响应补上确认凭证（前端拿到后随写请求回传）。"""
+    try:
+        from services import confirm_token
+        issued = confirm_token.issue(action, member.get('member_id'), target, params)
+        if issued.get('confirm_token'):
+            payload['confirm_token'] = issued['confirm_token']
+            payload['confirm_expires_at'] = issued.get('expires_at')
+    except Exception as e:
+        print(f"⚠️ 签发确认凭证失败：{e}")
+    return payload
+
+
 def _local_chat_response(user_message: str, session_id: str):
     """LangGraph 服务未启动时，回退到本地多智能体流程。"""
     try:
@@ -412,18 +448,26 @@ def demo_accounts():
 
 @app.route('/api/booking_quote')
 def booking_quote():
-    """订票报价（确认卡片展示用）。"""
+    """订票报价（确认卡片展示用）。同时签发一次性确认凭证（下单时回传）。"""
     try:
         member, denied = _require_member()
         if denied:
             return denied
         from services import flight_repo
+        passengers = request.args.get('passengers', 1)
         result = flight_repo.booking_quote(
             request.args.get('flight_no', ''),
             request.args.get('flight_date', ''),
             request.args.get('cabin', ''),
-            request.args.get('passengers', 1),
+            passengers,
         )
+        if not result.get('error'):
+            result = _issue_confirm('book', member, '', {
+                'flight_no': result.get('flight_no'),
+                'flight_date': result.get('flight_date'),
+                'cabin': result.get('cabin'),
+                'passengers': result.get('passengers', passengers),
+            }, result)
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': f'报价失败: {str(e)}'}), 500
@@ -431,13 +475,24 @@ def booking_quote():
 
 @app.route('/api/book', methods=['POST'])
 def book():
-    """创建订单（待支付）。member_id 以登录身份为准。"""
+    """创建订单（待支付）。member_id 以登录身份为准。
+
+    必须携带用户在页面上确认后回传的 confirm_token（服务端 HITL 强制）。
+    """
     try:
         member, denied = _require_member()
         if denied:
             return denied
         data = request.get_json() or {}
-        from services import flight_repo
+        bad = _require_confirm(data, member, 'book', '', {
+            'flight_no': data.get('flight_no', ''),
+            'flight_date': data.get('flight_date', ''),
+            'cabin': data.get('cabin', ''),
+            'passengers': data.get('passengers', 1),
+        })
+        if bad:
+            return bad
+        from services import audit, flight_repo
         result = flight_repo.book_flight(
             member_id=member['member_id'],
             flight_no=data.get('flight_no', ''),
@@ -446,7 +501,9 @@ def book():
             passengers=data.get('passengers', 1),
         )
         if result.get('error'):
+            audit.write_error('订票', result['error'])
             return jsonify(result), 400
+        audit.write_ok('订票', target=result.get('order_no'), detail=result)
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': f'下单失败: {str(e)}'}), 500
@@ -454,8 +511,9 @@ def book():
 
 @app.route('/api/pay', methods=['POST'])
 def pay():
-    """一步付讫（模拟支付，兼容既有单测与多端调用）。
+    """一步付讫（模拟支付）。
 
+    需先经 /api/pay/create 拿到一次性确认凭证（用户确认支付后回传）；
     真实渠道请走 /api/pay/create → 收银台 → /api/pay/confirm 或异步通知。
     """
     try:
@@ -463,10 +521,16 @@ def pay():
         if denied:
             return denied
         data = request.get_json() or {}
-        from services import flight_repo
-        result = flight_repo.pay_order(data.get('order_no', ''), member_id=member['member_id'])
+        order_no = data.get('order_no', '')
+        bad = _require_confirm(data, member, 'pay', order_no, {})
+        if bad:
+            return bad
+        from services import audit, flight_repo
+        result = flight_repo.pay_order(order_no, member_id=member['member_id'])
         if result.get('error'):
+            audit.write_error('支付', result['error'], target=order_no)
             return jsonify(result), 400
+        audit.write_ok('支付', target=order_no, detail=result)
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': f'支付失败: {str(e)}'}), 500
@@ -512,10 +576,12 @@ def _pay_urls(co_base: str) -> dict:
 
 @app.route('/api/pay/create', methods=['POST'])
 def pay_create():
-    """发起支付。
+    """发起支付（准备步骤）。
 
     返回 mode=redirect 时前端跳转 pay_url 并轮询 /api/pay/status；
     mode=direct 表示站内可直接确认，调 /api/pay/confirm。
+    本接口签发一次性确认凭证：真正的落账动作（/api/pay 或 /api/pay/confirm）
+    必须带它，确保"用户确认过支付"。
     """
     try:
         member, denied = _require_member()
@@ -533,6 +599,7 @@ def pay_create():
         )
         if result.get('error'):
             return jsonify(result), 400
+        result = _issue_confirm('pay', member, result.get('order_no', ''), {}, result)
         # redirect 模式改走本站中转页：由它表单 POST 到网关。
         # 直接 GET 跳转在沙箱环境常因缺少 Referer 被拦（RefererCheckFailed），
         # 经本站中转可保证 Referer 恒为本站点。
@@ -601,17 +668,28 @@ def pay_gateway(pay_no):
 
 @app.route('/api/pay/confirm', methods=['POST'])
 def pay_confirm():
-    """站内确认支付（direct 模式，目前仅模拟渠道使用）。"""
+    """站内确认支付（direct 模式，目前仅模拟渠道使用）。
+
+    确认凭证由 /api/pay/create 签发（绑定在订单号上），这里按 pay_no 反查订单号后校验。
+    """
     try:
         member, denied = _require_member()
         if denied:
             return denied
         data = request.get_json() or {}
-        from services import payment_service
-        result = payment_service.confirm_payment(data.get('pay_no', ''),
-                                                 member_id=member['member_id'])
+        from services import audit, payment_repo, payment_service
+        pay_no = data.get('pay_no', '')
+        payment = payment_repo.get_payment(pay_no)
+        if not payment:
+            return jsonify({'error': f'支付流水不存在：{pay_no}'}), 400
+        bad = _require_confirm(data, member, 'pay', payment['order_no'], {})
+        if bad:
+            return bad
+        result = payment_service.confirm_payment(pay_no, member_id=member['member_id'])
         if result.get('error'):
+            audit.write_error('支付', result['error'], target=payment['order_no'])
             return jsonify(result), 400
+        audit.write_ok('支付', target=payment['order_no'], detail=result)
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': f'确认支付失败: {str(e)}'}), 500
@@ -713,7 +791,7 @@ def pay_return_alipay():
 
 @app.route('/api/change_quote')
 def change_quote():
-    """改签报价（确认卡片展示：新航班信息/差价）。"""
+    """改签报价（确认卡片展示：新航班信息/差价）。同时签发一次性确认凭证。"""
     try:
         member, denied = _require_member()
         if denied:
@@ -723,6 +801,13 @@ def change_quote():
             request.args.get('order_no', ''), member['member_id'],
             request.args.get('new_flight_no', ''), request.args.get('new_date', ''),
             request.args.get('new_cabin', ''))
+        if not result.get('error'):
+            new = result.get('new') or {}
+            result = _issue_confirm('change', member, result.get('order_no', ''), {
+                'new_flight_no': new.get('flight_no'),
+                'new_date': new.get('date'),
+                'new_cabin': new.get('cabin'),
+            }, result)
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': f'改签报价失败: {str(e)}'}), 500
@@ -730,17 +815,28 @@ def change_quote():
 
 @app.route('/api/change', methods=['POST'])
 def change():
-    """执行改签（免改签费，差价多退少补；代码层校验，LLM 只能发起卡片）。"""
+    """执行改签（免改签费，差价多退少补；代码层校验，LLM 只能发起卡片）。
+
+    必须携带用户在页面上确认后回传的 confirm_token。
+    """
     try:
         member, denied = _require_member()
         if denied:
             return denied
         data = request.get_json() or {}
-        from services import flight_repo
+        bad = _require_confirm(data, member, 'change', data.get('order_no', ''), {
+            'new_flight_no': data.get('new_flight_no', ''),
+            'new_date': data.get('new_date', ''),
+            'new_cabin': data.get('new_cabin', ''),
+        })
+        if bad:
+            return bad
+        from services import audit, flight_repo
         result = flight_repo.change_order(
             data.get('order_no', ''), member['member_id'], data.get('new_flight_no', ''),
             data.get('new_date', ''), data.get('new_cabin', ''))
         if result.get('error'):
+            audit.write_error('改签', result['error'], target=data.get('order_no', ''))
             return jsonify(result), 400
         return jsonify(result)
     except Exception as e:
@@ -749,14 +845,26 @@ def change():
 
 @app.route('/api/refund_quote')
 def refund_quote():
-    """自愿退票报价（确认卡片展示：手续费/预计到账）。"""
+    """退票报价（确认卡片展示：手续费/预计到账）。同时签发一次性确认凭证。
+
+    `refund_type` 参与凭证指纹：确认的是自愿退票就不能提交特殊退票，反之亦然。
+    特殊退票（special）不走费率计算，这里只做可退性校验与凭证签发。
+    """
     try:
         member, denied = _require_member()
         if denied:
             return denied
         from services import flight_repo
-        result = flight_repo.refund_quote(request.args.get('order_no', ''),
-                                          member_id=member['member_id'])
+        refund_type = (request.args.get('refund_type') or 'voluntary').strip()
+        if refund_type not in ('voluntary', 'special'):
+            refund_type = 'voluntary'
+        order_no = request.args.get('order_no', '')
+        result = flight_repo.refund_quote(order_no, member_id=member['member_id'])
+        if result.get('error'):
+            return jsonify(result)
+        result = _issue_confirm('refund', member, result.get('order_no', order_no),
+                                {'refund_type': refund_type}, result)
+        result['refund_type'] = refund_type
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': f'报价失败: {str(e)}'}), 500
@@ -764,22 +872,50 @@ def refund_quote():
 
 @app.route('/api/refund', methods=['POST'])
 def refund():
-    """退票：voluntary=自愿（规则费率即时退款）；special=非自愿特殊通道（退票中，管理端审批）。"""
+    """退票：voluntary=自愿（规则费率即时退款）；special=非自愿特殊通道（退票中，管理端审批）。
+
+    必须携带用户在页面上确认后回传的 confirm_token；
+    `requestId` 是幂等键，同一请求重放只退一次（防重复退款）。
+    """
     try:
         member, denied = _require_member()
         if denied:
             return denied
         data = request.get_json() or {}
-        from services import flight_repo
+        from services import audit, flight_repo
         refund_type = (data.get('refund_type') or 'voluntary').strip()
+        order_no = data.get('order_no', '')
+        request_id = (data.get('requestId') or data.get('request_id') or '').strip() or None
+
+        # 幂等第一优先：同一 requestId 重复提交，直接返回首次结果（不消费凭证、不再动订单）
+        if request_id:
+            existing = flight_repo.get_refund_by_request(request_id)
+            if existing:
+                audit.idempotent('退票', target=existing['order_no'], request_id=request_id)
+                return jsonify({
+                    'success': True, 'idempotent': True, 'order_no': existing['order_no'],
+                    'status': existing['status'], 'refund_amount': existing['amount'],
+                    'fee': existing['fee'],
+                    'message': f"该退票请求已处理（订单 {existing['order_no']} 已{existing['status']}），无需重复提交",
+                })
+
+        bad = _require_confirm(data, member, 'refund', order_no,
+                               {'refund_type': refund_type})
+        if bad:
+            return bad
+
         if refund_type == 'special':
-            result = flight_repo.refund_order(data.get('order_no', ''), member_id=member['member_id'])
+            result = flight_repo.refund_order(order_no, member_id=member['member_id'],
+                                              request_id=request_id)
             if result.get('error'):
+                audit.write_error('退票(特殊)', result['error'], target=order_no)
                 return jsonify(result), 400
             result['message'] = result.get('message', '') + '（特殊退票已受理，人工审核中）'
             return jsonify(result)
-        result = flight_repo.refund_order_instant(data.get('order_no', ''), member_id=member['member_id'])
+        result = flight_repo.refund_order_instant(order_no, member_id=member['member_id'],
+                                                  request_id=request_id)
         if result.get('error'):
+            audit.write_error('退票', result['error'], target=order_no)
             return jsonify(result), 400
         return jsonify(result)
     except Exception as e:
@@ -825,15 +961,18 @@ def api_flights_search():
 
 @app.route('/api/checkin/seats')
 def checkin_seats():
-    """座位图（可带 order_no 标注本订单已选座位）。"""
+    """座位图（可带 order_no 标注本订单已选座位）。带订单号时签发值机确认凭证。"""
     try:
         member, denied = _require_member()
         if denied:
             return denied
         from services import checkin_repo
+        order_no = request.args.get('order_no', '')
         result = checkin_repo.seat_map(request.args.get('flight_no', ''),
                                        request.args.get('flight_date', ''),
-                                       order_no=request.args.get('order_no', ''))
+                                       order_no=order_no)
+        if order_no and not result.get('error'):
+            result = _issue_confirm('checkin', member, order_no, {}, result)
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': f'座位图查询失败: {str(e)}'}), 500
@@ -841,16 +980,23 @@ def checkin_seats():
 
 @app.route('/api/checkin', methods=['POST'])
 def do_checkin():
-    """值机/改座：校验窗口/归属/舱位，原子占座，返回登机牌数据。"""
+    """值机/改座：校验窗口/归属/舱位，原子占座，返回登机牌数据。
+
+    必须携带用户选座确认后回传的 confirm_token。
+    """
     try:
         member, denied = _require_member()
         if denied:
             return denied
         data = request.get_json() or {}
-        from services import checkin_repo
-        result = checkin_repo.do_checkin(data.get('order_no', ''),
-                                         member['member_id'], data.get('seat_no', ''))
+        order_no = data.get('order_no', '')
+        bad = _require_confirm(data, member, 'checkin', order_no, {})
+        if bad:
+            return bad
+        from services import audit, checkin_repo
+        result = checkin_repo.do_checkin(order_no, member['member_id'], data.get('seat_no', ''))
         if result.get('error'):
+            audit.write_error('值机选座', result['error'], target=order_no)
             return jsonify(result), 400
         return jsonify(result)
     except Exception as e:
@@ -1018,6 +1164,25 @@ def admin_me():
     info = dict(admin)
     info['must_change_password'] = bool(row['must_change_password']) if row else False
     return jsonify({'admin': info})
+
+
+@app.route('/admin/api/audits')
+def admin_audits():
+    """审计日志查询（管理端排查用）：支持按 event/action 过滤。
+
+    这是验收里"审计日志完整留痕"的查看入口：越权尝试、高危拦截、
+    每笔写操作与幂等命中都在这里可查。
+    """
+    admin, denied = admin_required()
+    if denied:
+        return denied
+    from services import audit
+    return jsonify({
+        'logs': audit.recent(limit=request.args.get('limit', 100),
+                             event=request.args.get('event') or None,
+                             action=request.args.get('action') or None),
+        'stats': audit.stats(days=request.args.get('days', 7)),
+    })
 
 
 def _admin_must_change_password(username: str) -> bool:

@@ -165,24 +165,43 @@ results.append(check("12.订票卡片: submit_booking_request→pending_action",
                      any(x["name"] == "submit_booking_request" for x in tools) and has_card,
                      f"| 工具={[x['name'] for x in tools]} | pending={json.dumps(pending, ensure_ascii=False)}"))
 
-# ---- 13. REST 闭环: 报价→下单→支付→退票 ----
+# ---- 13. REST 闭环: 报价→下单→支付→退票（写接口需带一次性确认凭证） ----
+# 准备接口（报价/发起支付/座位图）签发 confirm_token，写接口必须回传，
+# 这是"HITL 服务端强制"：没有用户确认凭证，裸调写接口会被 403 拒绝。
 quote = get_json("/api/booking_quote?flight_no=CA1061&flight_date=2026-08-31&cabin=%E7%BB%8F%E6%B5%8E&passengers=2")
 results.append(check("13a.报价", quote.get("total_amount") == quote.get("unit_price", 0) * 2,
                      f"| 单价={quote.get('unit_price')} 总价={quote.get('total_amount')}"))
+
+# 13a2. 服务端 HITL：不带确认凭证的裸调必须被拒
+bare = post_json("/api/book", {"flight_no": "CA1061", "flight_date": FUTURE_DATE,
+                               "cabin": "经济", "passengers": 2}, expect_error=True)
+results.append(check("13a2.无确认凭证下单被服务端拒绝(403)", bare.get("_status") == 403))
+
+book_quote = get_json("/api/booking_quote?flight_no=CA1061&flight_date=" + FUTURE_DATE + "&cabin=%E7%BB%8F%E6%B5%8E&passengers=2")
 booked = post_json("/api/book", {"flight_no": "CA1061", "flight_date": FUTURE_DATE,
-                                 "cabin": "经济", "passengers": 2})
+                                 "cabin": "经济", "passengers": 2,
+                                 "confirm_token": book_quote.get("confirm_token")})
 order_no = booked.get("order_no")
 results.append(check("13b.下单(待支付)", booked.get("success") and booked.get("status") == "待支付" and bool(order_no),
                      f"| 订单号={order_no}"))
-paid = post_json("/api/pay", {"order_no": order_no})
+pay_created = post_json("/api/pay/create", {"order_no": order_no})
+paid = post_json("/api/pay", {"order_no": order_no, "confirm_token": pay_created.get("confirm_token")})
 results.append(check("13c.支付(已出票)", paid.get("status") == "已出票"))
-quote_r = get_json("/api/refund_quote?order_no=" + order_no)
+quote_r = get_json("/api/refund_quote?order_no=" + order_no + "&refund_type=voluntary")
 results.append(check("13d.退票报价(手续费/到账)", quote_r.get("predict_amount") == quote_r.get("amount", 0) - quote_r.get("fee", 0),
                      f"| 票面={quote_r.get('amount')} 手续费={quote_r.get('fee')} 档位={quote_r.get('fee_tier')}"))
-refunded = post_json("/api/refund", {"order_no": order_no, "refund_type": "voluntary"})
+_refund_req = "reg-" + order_no
+refunded = post_json("/api/refund", {"order_no": order_no, "refund_type": "voluntary",
+                                     "requestId": _refund_req,
+                                     "confirm_token": quote_r.get("confirm_token")})
 results.append(check("13e.自愿退票即时退款(已退款)", refunded.get("status") == "已退款"
                      and refunded.get("refund_amount") == quote_r.get("predict_amount"),
                      f"| 到账={refunded.get('refund_amount')}"))
+
+# 13f. 幂等：同一 requestId 重放不会重复退款
+replay = post_json("/api/refund", {"order_no": order_no, "refund_type": "voluntary",
+                                   "requestId": _refund_req, "confirm_token": ""})
+results.append(check("13f.重复退款请求被幂等拦下", replay.get("idempotent") is True))
 
 # ---- 14. 我的数据面板 ----
 my_orders = get_json("/api/my/orders")

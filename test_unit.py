@@ -372,6 +372,10 @@ class TestRefundFeeRate:
 # ---------------------------------------------------------------- 状态机
 
 class TestTransition:
+    def setup_method(self):
+        # 状态流转现在从订单反查归属再走受信通道；用例需带登录身份
+        security.set_current_member("M1001")
+
     def test_pay_transition(self):
         from services import flight_repo
         _insert_order("OTEST02", status="待支付")
@@ -1012,6 +1016,10 @@ class TestCheckinWindow:
 class TestCheckinFlow:
     """座位图生成 + 值机/改座/取消/登机牌（独立临时库）。"""
 
+    def setup_method(self):
+        # 仓储层写操作现在统一从订单反查归属再走受信通道，用例需要提供登录身份
+        security.set_current_member("M1001")
+
     def _add_flight_order(self, order_no, member_id="M1001", status="已出票",
                           hours_ahead=3.0, cabin="经济", flight_no="CA9001"):
         """插入一个落在值机窗口内的航班+订单（航班幂等，可多次调用加订单），返回 (flight_no, flight_date)。"""
@@ -1075,7 +1083,9 @@ class TestCheckinFlow:
         seat = self._pick_seat(flight_no, fdate, want="free")
         r1 = checkin_repo.do_checkin("K3", "M1001", seat)
         assert r1.get("success"), r1
+        # 同航班另一位会员抢同一个座位：需切到该会员身份（跨会员操作现在会被硬拒）
         self._add_flight_order("K3B", member_id="M1002", flight_no=flight_no)
+        security.set_current_member("M1002")
         r2 = checkin_repo.do_checkin("K3B", "M1002", seat)
         assert "已被占用" in r2["error"]
 
@@ -1149,6 +1159,7 @@ class TestCheckinFlow:
         flight_no, fdate = self._add_flight_order("K14")
         self._add_flight_order("K15", member_id="M1002")   # 同一航班第二张订单
         r1 = checkin_repo.do_checkin("K14", "M1001", self._pick_seat(flight_no, fdate))
+        security.set_current_member("M1002")   # 同一航班第二位旅客（跨会员操作需切身份）
         r2 = checkin_repo.do_checkin("K15", "M1002", self._pick_seat(flight_no, fdate))
         assert r1.get("success") and r2.get("success"), (r1, r2)
         assert r1["gate"] == r2["gate"]
@@ -1543,6 +1554,10 @@ class TestPayment:
     重点是「不重复出票」：异步通知会重投多次，只有首次翻转才允许推进订单。
     """
 
+    def setup_method(self):
+        # 支付编排的归属校验现在从订单反查走受信通道；用例需带登录身份
+        security.set_current_member("M1001")
+
     @staticmethod
     def _new_order(order_no="PA1", member="M1001", amount=600, status="待支付"):
         from services import db
@@ -1586,10 +1601,12 @@ class TestPayment:
         assert "error" in r and "无需支付" in r["error"]
 
     def test_start_payment_rejects_other_member(self):
+        """归属以「登录身份 vs 订单归属」为准，传参不再是信任来源。"""
         from services import payment_service
         self._new_order("PA3", member="M1001")
+        security.set_current_member("M1002")   # 以别的人身份去支付 M1001 的订单
         r = payment_service.start_payment("PA3", member_id="M1002", provider_name="mock")
-        assert "error" in r and "不属于" in r["error"]
+        assert "error" in r and "不一致" in r["error"]
 
     def test_pending_payment_is_reused(self):
         """反复点「去支付」不应堆出一串悬挂流水。"""
@@ -1817,6 +1834,234 @@ class TestPayment:
         src = open("frontend/src/client/components/PayResultView.vue",
                    encoding="utf-8").read()
         assert "route.query.order_no" in src
+
+
+# ---------------------------------------------------------------- 阶段二：确认凭证 / 退款幂等 / 审计 / 归属硬化
+
+class TestConfirmToken:
+    """一次性确认凭证：没有它写接口不能执行；跨会员/跨动作/跨目标/重放/篡改都无效。"""
+
+    def test_issue_then_consume_ok(self):
+        from services import confirm_token
+        security.set_current_member("M1001")
+        tok = confirm_token.issue("refund", "M1001", "OTEST01", {"refund_type": "voluntary"})
+        assert tok.get("confirm_token")
+        r = confirm_token.consume(tok["confirm_token"], "refund", "M1001", "OTEST01",
+                                  {"refund_type": "voluntary"})
+        assert r.get("ok")
+
+    def test_missing_token_rejected(self):
+        from services import confirm_token
+        security.set_current_member("M1001")
+        r = confirm_token.consume("", "refund", "M1001", "OTEST01", {"refund_type": "voluntary"})
+        assert "缺少确认凭证" in r["error"]
+
+    def test_token_is_one_time(self):
+        from services import confirm_token
+        security.set_current_member("M1001")
+        tok = confirm_token.issue("refund", "M1001", "OTEST01", {"refund_type": "voluntary"})["confirm_token"]
+        assert confirm_token.consume(tok, "refund", "M1001", "OTEST01",
+                                     {"refund_type": "voluntary"}).get("ok")
+        again = confirm_token.consume(tok, "refund", "M1001", "OTEST01",
+                                      {"refund_type": "voluntary"})
+        assert "已被使用" in again["error"]
+
+    def test_token_bound_to_member(self):
+        from services import confirm_token
+        security.set_current_member("M1001")
+        tok = confirm_token.issue("refund", "M1001", "OTEST01", {"refund_type": "voluntary"})["confirm_token"]
+        r = confirm_token.consume(tok, "refund", "M1002", "OTEST01", {"refund_type": "voluntary"})
+        assert "不属于当前登录会员" in r["error"]
+
+    def test_token_bound_to_action_and_target(self):
+        from services import confirm_token
+        security.set_current_member("M1001")
+        tok = confirm_token.issue("refund", "M1001", "OTEST01", {"refund_type": "voluntary"})["confirm_token"]
+        assert "与操作不符" in confirm_token.consume(
+            tok, "change", "M1001", "OTEST01", {})["error"]
+        tok2 = confirm_token.issue("refund", "M1001", "OTEST01", {"refund_type": "voluntary"})["confirm_token"]
+        assert "与目标不符" in confirm_token.consume(
+            tok2, "refund", "M1001", "OTEST99", {"refund_type": "voluntary"})["error"]
+
+    def test_tampered_params_rejected(self):
+        """确认的是自愿退票，就不能提交特殊退票。"""
+        from services import confirm_token
+        security.set_current_member("M1001")
+        tok = confirm_token.issue("refund", "M1001", "OTEST01", {"refund_type": "voluntary"})["confirm_token"]
+        r = confirm_token.consume(tok, "refund", "M1001", "OTEST01", {"refund_type": "special"})
+        assert "与确认时不一致" in r["error"]
+
+    def test_expired_token_rejected(self):
+        from services import confirm_token, db
+        security.set_current_member("M1001")
+        tok = confirm_token.issue("refund", "M1001", "OTEST01", {"refund_type": "voluntary"})["confirm_token"]
+        conn = db.get_connection()
+        conn.execute("UPDATE confirm_tokens SET expires_at = '2000-01-01 00:00:00' WHERE token = ?", (tok,))
+        conn.commit()
+        conn.close()
+        assert "已过期" in confirm_token.consume(tok, "refund", "M1001", "OTEST01",
+                                                {"refund_type": "voluntary"})["error"]
+
+    def test_fingerprint_ignores_formatting(self):
+        from services import confirm_token
+        assert confirm_token.fingerprint("book", {"cabin": "经济舱", "passengers": 1}) == \
+            confirm_token.fingerprint("book", {"cabin": "经济", "passengers": "1"})
+
+
+class TestRefundIdempotency:
+    """requestId 防重复退款：同一请求只退一次，订单也只翻转一次。"""
+
+    def setup_method(self):
+        security.set_current_member("M1001")
+
+    def test_same_request_id_refunds_once(self):
+        from services import flight_repo
+        _insert_order("OIDEM1", amount=1000)
+        first = flight_repo.refund_order_instant("OIDEM1", "M1001", request_id="R-1")
+        assert first.get("success") and first.get("status") == "已退款"
+        again = flight_repo.refund_order_instant("OIDEM1", "M1001", request_id="R-1")
+        assert again.get("idempotent") is True
+        assert again.get("refund_amount") == first.get("refund_amount")
+
+    def test_new_request_id_on_refunded_order_rejected(self):
+        """换了 requestId 也不能重复退款：状态守卫会把第二笔挡住。"""
+        from services import flight_repo
+        _insert_order("OIDEM2", amount=1000)
+        assert flight_repo.refund_order_instant("OIDEM2", "M1001", request_id="R-2a").get("success")
+        second = flight_repo.refund_order_instant("OIDEM2", "M1001", request_id="R-2b")
+        assert second.get("error")
+        conn = db.get_connection()
+        n = conn.execute("SELECT COUNT(*) c FROM refunds WHERE order_no='OIDEM2'").fetchone()["c"]
+        conn.close()
+        assert n == 1          # 只有一笔退款流水
+
+    def test_refund_records_flow_row(self):
+        from services import flight_repo
+        _insert_order("OIDEM3", amount=1000)
+        flight_repo.refund_order_instant("OIDEM3", "M1001", request_id="R-3")
+        row = flight_repo.get_refund_by_request("R-3")
+        assert row and row["order_no"] == "OIDEM3" and row["status"] == "已退款"
+        assert row["amount"] == 950          # 1000 - 5%（>72h）
+
+    def test_special_refund_is_idempotent_too(self):
+        from services import flight_repo
+        _insert_order("OIDEM4", amount=1000)
+        first = flight_repo.refund_order("OIDEM4", "M1001", request_id="R-4")
+        assert first.get("success")
+        again = flight_repo.refund_order("OIDEM4", "M1001", request_id="R-4")
+        assert again.get("idempotent") is True
+
+
+class TestOwnershipHardening:
+    """归属校验不再"传 None 就放行"：无身份一律拒绝，系统内部流程需显式声明。"""
+
+    def test_write_without_login_is_rejected(self):
+        from services import flight_repo
+        _insert_order("OHARD1", amount=1000)
+        assert "未登录" in flight_repo.refund_order_instant("OHARD1", member_id="M1001")["error"]
+        assert "未登录" in flight_repo.pay_order("OHARD1", member_id="M1001")["error"]
+
+    def test_checkin_without_login_is_rejected(self):
+        from services import checkin_repo
+        _insert_order("OHARD2", amount=800)
+        assert "未登录" in checkin_repo.cancel_checkin("OHARD2")["error"]
+
+    def test_system_context_allows_internal_flow(self):
+        """支付异步回调/后台任务没有登录身份，用 system_context 显式放行。"""
+        from services import flight_repo
+        _insert_order("OHARD3", status="待支付")
+        with security.system_context("单元测试模拟回调"):
+            assert flight_repo.pay_order("OHARD3")["success"] is True
+        assert security.get_current_system() is None       # 用完自动复位
+
+    def test_other_member_write_rejected(self):
+        from services import flight_repo
+        _insert_order("OHARD4", member_id="M1002", amount=1000)
+        security.set_current_member("M1001")
+        assert "无权限" in flight_repo.refund_order_instant("OHARD4", "M1001")["error"]
+
+
+class TestAuditLog:
+    """审计留痕：越权尝试、写操作、幂等命中都可查可统计。"""
+
+    def test_write_recorded(self):
+        from services import audit, flight_repo
+        security.set_current_member("M1001")
+        _insert_order("OAUD1", amount=1000)
+        flight_repo.refund_order_instant("OAUD1", "M1001", request_id="AR-1")
+        logs = audit.recent(limit=20, event="write")
+        assert any(l["action"] == "退票" and l["target"] == "OAUD1"
+                   and l["result"] == "success" for l in logs)
+
+    def test_denied_attempt_recorded(self):
+        from services import audit, flight_repo
+        _insert_order("OAUD2", member_id="M1002", amount=1000)
+        security.set_current_member("M1001")
+        flight_repo.refund_order_instant("OAUD2", "M1001")
+        logs = audit.recent(limit=20, event="denied")
+        assert any(l["result"] == "denied" for l in logs)
+        assert logs[0]["actor"] == "M1001"
+
+    def test_idempotent_hit_recorded(self):
+        from services import audit, flight_repo
+        security.set_current_member("M1001")
+        _insert_order("OAUD3", amount=1000)
+        flight_repo.refund_order_instant("OAUD3", "M1001", request_id="AR-3")
+        flight_repo.refund_order_instant("OAUD3", "M1001", request_id="AR-3")
+        assert any(l["event"] == "idempotent" for l in audit.recent(limit=20))
+
+    def test_stats_reports_denied_rate(self):
+        from services import audit, flight_repo
+        _insert_order("OAUD4", member_id="M1002", amount=1000)
+        security.set_current_member("M1001")
+        flight_repo.refund_order_instant("OAUD4", "M1001")
+        st = audit.stats(days=1)
+        assert st["denied_attempts"] >= 1 and st["denied_rate"] == 1.0
+
+    def test_audit_never_breaks_business(self):
+        """审计写入失败不能影响业务（这里直接传不可序列化的细节也不该抛异常）。"""
+        from services import audit
+        audit.log("write", "测试", "success", detail={"weird": object()})
+        assert True
+
+
+class TestCardTokenWiring:
+    """聊天确认卡片必须带上服务端签发的凭证——否则用户点了卡片写接口也会被拒。"""
+
+    def setup_method(self):
+        security.set_current_member("M1001")
+
+    def test_refund_card_carries_usable_token(self):
+        from agents.billing_agent import BillingAgent
+        from services import confirm_token
+        a = BillingAgent()
+        hit, _ = a._on_tool_call("refund_request", {"order_no": "OTOK1", "refund_type": "voluntary"})
+        assert hit and a._pending_action["type"] == "refund"
+        tok = a._pending_action.get("confirm_token")
+        assert tok, "退票卡片没有携带确认凭证"
+        assert confirm_token.consume(tok, "refund", "M1001", "OTOK1",
+                                     {"refund_type": "voluntary"}).get("ok")
+
+    def test_change_card_carries_usable_token(self):
+        from agents.billing_agent import BillingAgent
+        from services import confirm_token
+        a = BillingAgent()
+        args = {"order_no": "OTOK2", "new_flight_no": "MU1074",
+                "new_date": FUTURE, "new_cabin": "经济"}
+        hit, _ = a._on_tool_call("change_request", args)
+        assert hit and a._pending_action["type"] == "change_flight"
+        tok = a._pending_action.get("confirm_token")
+        assert confirm_token.consume(tok, "change", "M1001", "OTOK2", args).get("ok")
+
+    def test_booking_card_carries_usable_token(self):
+        from agents.product_agent import ProductAgent
+        from services import confirm_token
+        a = ProductAgent()
+        args = {"flight_no": "CA1061", "flight_date": FUTURE, "cabin": "经济", "passengers": 2}
+        hit, _ = a._on_tool_call("submit_booking_request", args)
+        assert hit and a._pending_action["type"] == "book_flight"
+        tok = a._pending_action.get("confirm_token")
+        assert confirm_token.consume(tok, "book", "M1001", "", args).get("ok")
 
 
 # ---------------------------------------------------------------- 直接运行入口

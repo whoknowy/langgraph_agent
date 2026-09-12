@@ -198,6 +198,51 @@ CREATE TABLE IF NOT EXISTS payments (
 
 CREATE INDEX IF NOT EXISTS idx_payments_order  ON payments(order_no);
 CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
+
+-- 审计日志：越权尝试、注入/高危拦截、每笔写操作的执行与拒绝都落这里。
+-- 刻意不参与 reset_database 的清库（审计必须留痕），也不被业务代码修改。
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    event      TEXT NOT NULL,          -- write / denied / blocked / idempotent
+    action     TEXT NOT NULL,          -- 订票/退票/改签/支付/值机/查询...
+    actor      TEXT,                   -- 登录会员号 / admin:xxx / system
+    target     TEXT,                   -- 订单号 / 投诉单号 / 航班号
+    result     TEXT NOT NULL,          -- success / denied / error / replay
+    request_id TEXT,                   -- 幂等键
+    ip         TEXT,
+    detail     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_event   ON audit_logs(event, result);
+
+-- 退款流水：request_id 是幂等键，防重复退款（同一请求重放只落一次）
+CREATE TABLE IF NOT EXISTS refunds (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id  TEXT UNIQUE NOT NULL,
+    order_no    TEXT NOT NULL,
+    member_id   TEXT NOT NULL,
+    refund_type TEXT NOT NULL,         -- voluntary / special
+    amount      INTEGER NOT NULL DEFAULT 0,
+    fee         INTEGER NOT NULL DEFAULT 0,
+    status      TEXT NOT NULL,         -- 已退款 / 退票中
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_refunds_order ON refunds(order_no);
+
+-- 一次性确认凭证：写操作必须先拿到它（用户确认过），服务端消费后才执行。
+-- 绑定 会员+动作+目标+参数指纹，用完即废，过期作废。
+CREATE TABLE IF NOT EXISTS confirm_tokens (
+    token       TEXT PRIMARY KEY,
+    member_id   TEXT NOT NULL,
+    action      TEXT NOT NULL,         -- book / pay / change / refund / checkin
+    target      TEXT,
+    fingerprint TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT NOT NULL,
+    used_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_confirm_tokens_member ON confirm_tokens(member_id);
 """
 
 

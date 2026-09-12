@@ -46,6 +46,54 @@
 3. **出错的统一格式**是 HTTP 状态码 + `{"error": "人话原因"}`。状态码含义：400 参数/业务不对、401 没登录或 token 失效、403 没权限、500 服务器内部错误。
 4. **金额都是整数元**（如 `720` 表示 720 元），日期格式 `YYYY-MM-DD`，时间格式 `HH:MM`（24 小时制）。
 
+### 1.2.1 写操作必须带「确认凭证」confirm_token（重要，先看这条）
+
+> **一句话：下单 / 支付 / 改签 / 退票 / 值机这五个写接口，必须先调对应的"准备接口"拿到
+> `confirm_token`，再把 token 放进写请求的 body 里，否则一律返回 `403`。**
+
+这是服务端的**人工确认（HITL）强制**：系统要确保"用户真的在界面上确认过"这件事在服务端可验证，
+而不是只靠前端自觉。所以流程被拆成两步：
+
+| 动作 | ① 准备接口（拿 `confirm_token`） | ② 写接口（回传 `confirm_token`） |
+|---|---|---|
+| 订票 | `GET /api/booking_quote` | `POST /api/book` |
+| 支付 | `POST /api/pay/create` | `POST /api/pay` 或 `POST /api/pay/confirm` |
+| 改签 | `GET /api/change_quote` | `POST /api/change` |
+| 退票 | `GET /api/refund_quote` | `POST /api/refund` |
+| 值机选座 | `GET /api/checkin/seats`（带 `order_no`） | `POST /api/checkin` |
+
+```bash
+# ① 拿凭证
+curl -H "Authorization: Bearer $TK" \
+  "http://127.0.0.1:5000/api/booking_quote?flight_no=CA1061&flight_date=2026-09-18&cabin=%E7%BB%8F%E6%B5%8E&passengers=1"
+# → { ..., "confirm_token": "xxxxx", "confirm_expires_at": "2026-09-12 12:40:00" }
+
+# ② 带凭证写
+curl -X POST -H "Authorization: Bearer $TK" -H "Content-Type: application/json" \
+  -d '{"flight_no":"CA1061","flight_date":"2026-09-18","cabin":"经济","passengers":1,"confirm_token":"xxxxx"}' \
+  "http://127.0.0.1:5000/api/book"
+```
+
+凭证的约束（都会返回 403，`error` 里说明原因）：
+
+- **一次性**：用过即废，同一个 token 不能提交两次；
+- **有时效**：默认 15 分钟（响应里的 `confirm_expires_at`），过期要重新走准备接口；
+- **绑定身份与目标**：只能给签发它的那个会员、那个动作、那个订单号用；
+- **绑定关键参数**：比如确认的是"自愿退票"，就不能改成"特殊退票"提交；
+  确认改签到 A 航班，也不能提交 B 航班。
+
+**聊天通道也一样**：`/api/chat` 与 `/api/chat/stream` 下发的 `pending_action` 里
+**已经带了 `confirm_token`**（见第 5 章），客户端把它原样放进写请求即可，不需要自己再调准备接口。
+
+### 1.2.2 退票要带 requestId（防重复退款）
+
+`POST /api/refund` 的 body 里请带一个**唯一 `requestId`**（自己生成，例如 UUID）。
+它是幂等键：**同一个 `requestId` 重复提交只会退一次**，第二次直接返回首次结果
+（响应里 `idempotent: true`），不会重复扣款。
+
+> 页面上的"确认退票"按钮被双击、或网络超时后重试，都应该**沿用同一个 `requestId`**；
+> 用户重新发起一次新的退票动作时，才换新的 `requestId`。
+
 ### 1.3 推荐调试工具
 
 - **Apifox / Postman**：图形化调试，把本文档的请求直接抄进去。
@@ -442,8 +490,11 @@ while (source.readUtf8Line()?.also { line ->
 
 #### 4.4.2 创建订单 `POST /api/book`
 
+> ⚠️ **必须带 `confirm_token`**（由 `GET /api/booking_quote` 签发，见 1.2.1）。缺凭证返回 `403`。
+
 ```json
-{ "flight_no": "CA1061", "flight_date": "2026-09-08", "cabin": "经济", "passengers": 1 }
+{ "flight_no": "CA1061", "flight_date": "2026-09-08", "cabin": "经济", "passengers": 1,
+  "confirm_token": "上一步报价接口返回的 confirm_token" }
 ```
 
 成功：
@@ -583,8 +634,12 @@ while (source.readUtf8Line()?.also { line ->
 
 #### 4.4.5 执行改签 `POST /api/change`
 
+> ⚠️ **必须带 `confirm_token`**（由 `GET /api/change_quote` 签发）。新航班/日期/舱位参与凭证指纹，
+> 与报价时不一致会被拒。
+
 ```json
-{ "order_no": "O4832015", "new_flight_no": "MU5101", "new_date": "2026-09-09", "new_cabin": "经济" }
+{ "order_no": "O4832015", "new_flight_no": "MU5101", "new_date": "2026-09-09", "new_cabin": "经济",
+  "confirm_token": "上一步改签报价接口返回的 confirm_token" }
 ```
 
 成功：`{"success": true, "order_no": "...", "status": "已改签", "old": {...}, "new": {...}, "fare_diff": 20, "message": "...原值机已取消，请重新值机"}`
@@ -610,8 +665,29 @@ while (source.readUtf8Line()?.also { line ->
 
 #### 4.4.7 执行退票 `POST /api/refund`
 
+> ⚠️ **必须带 `confirm_token`**（由 `GET /api/refund_quote` 签发，见 1.2.1）。
+> ⚠️ **建议带 `requestId`**（唯一字符串）作幂等键，防重复退款（见 1.2.2）。
+
 ```json
-{ "order_no": "O4832015", "refund_type": "voluntary" }
+{ "order_no": "O4832015", "refund_type": "voluntary",
+  "requestId": "refund_9f2c1e04", "confirm_token": "上一步报价接口返回的 confirm_token" }
+```
+
+`refund_type` 要参与凭证指纹：**报价时用的哪个 `refund_type`，提交时就必须是同一个**。
+所以两种退票都要先调一次报价接口（`special` 也调，只是不需要看费率明细）：
+
+```bash
+# 自愿退票
+curl -H "Authorization: Bearer $TK" "…/api/refund_quote?order_no=O4832015&refund_type=voluntary"
+# 特殊退票（同样先取凭证）
+curl -H "Authorization: Bearer $TK" "…/api/refund_quote?order_no=O4832015&refund_type=special"
+```
+
+重复提交同一 `requestId` 的响应（幂等，不重复退款）：
+
+```json
+{ "success": true, "idempotent": true, "order_no": "O4832015", "status": "已退款",
+  "refund_amount": 540, "fee": 60, "message": "该退票请求已处理…无需重复提交" }
 ```
 
 | refund_type | 含义 | 流程 |
@@ -621,6 +697,15 @@ while (source.readUtf8Line()?.also { line ->
 
 voluntary 成功：`{"success": true, "order_no": "...", "status": "已退款", "refund_amount": 540, "fee": 60, "message": "..."}`
 special 成功：状态变「退票中」，message 末尾会带「（特殊退票已受理，人工审核中）」；之后可在「我的订单」里看到状态，管理端驳回后会恢复原状态。
+
+可能遇到的 `403`（都属于正常防护，不是 bug）：
+
+| error 文案 | 原因 |
+|---|---|
+| `退票需要用户确认：缺少确认凭证（confirm_token）` | 没带 token |
+| `该确认凭证已被使用：请重新发起退票并再次确认` | 同一个 token 提交了两次 |
+| `确认凭证已过期：请重新发起退票并再次确认` | 超过 15 分钟 |
+| `提交内容与确认时不一致：请重新发起退票并确认` | 报价用 voluntary、提交用 special（或反向） |
 
 ### 4.5 值机选座 / 登机牌
 
@@ -655,8 +740,12 @@ special 成功：状态变「退票中」，message 末尾会带「（特殊退�
 
 #### 4.5.2 值机 / 改座 `POST /api/checkin`
 
+> ⚠️ **必须带 `confirm_token`**（由 `GET /api/checkin/seats?...&order_no=xxx` 签发）。
+> 座位号 `seat_no` 不参与凭证指纹——用户是"看完座位图之后"才选座的，所以照样是一次有效确认。
+
 ```json
-{ "order_no": "O4832015", "seat_no": "31A" }
+{ "order_no": "O4832015", "seat_no": "31A",
+  "confirm_token": "座位图接口返回的 confirm_token" }
 ```
 
 成功直接返回登机牌数据：
@@ -744,13 +833,17 @@ AI 客服在聊天中替用户发起操作时，**不会直接写数据库**，�
 | `change_flight` | 用户想改签 | `order_no`、`new_flight_no`、`new_date`、`new_cabin` | `POST /api/change` |
 | `seat_map` | 用户要值机选座 | `order_no`、`flight_no`、`flight_date` | 打开选座面板：`GET /api/checkin/seats` → `POST /api/checkin` |
 
+> 🔑 **每种卡片都额外带一个 `confirm_token`**（服务端签发的一次性确认凭证）。
+> 用户点确认后，**把这个 token 原样放进写请求的 body**，写接口才放行——这是服务端强制人工确认的凭据。
+> token 只对"这张卡片描述的那个操作"有效，过期（15 分钟）或用过一次就作废，需要重新对话发起。
+
 客户端渲染卡片的标准姿势（以订票为例）：
 
 1. 收到 `pending_action.type == "book_flight"`；
-2. 调 `GET /api/booking_quote?flight_no=...&flight_date=...&cabin=...&passengers=...` 拿**服务端实时报价**（不要信卡片里 AI 报的价，报价接口才是准的）；
+2. 调 `GET /api/booking_quote?flight_no=...&flight_date=...&cabin=...&passengers=...` 拿**服务端实时报价**（不要信卡片里 AI 报的价，报价接口才是准的）；**它会返回一个新的 `confirm_token`，以它为准**（卡片里那个也能用，两者等价）；
 3. 展示卡片：航班信息 + 单价 × 人数 = 总价 + 「确认预订」「取消」两个按钮；
-4. 用户点确认 → `POST /api/book`（参数用卡片字段）→ 成功后提示订单号，并引导支付 `POST /api/pay`；
-5. 支付完成可顺带提示「可以去值机了」。退票/改签卡片同理先调对应 `*_quote` 再执行。
+4. 用户点确认 → `POST /api/book`（参数用卡片字段 + **上一步拿到的 `confirm_token`**）→ 成功后提示订单号，并引导支付：先 `POST /api/pay/create` 拿支付凭证，再 `POST /api/pay`（或跳收银台后 `/api/pay/confirm`）；
+5. 支付完成可顺带提示「可以去值机了」。退票/改签卡片同理先调对应 `*_quote` 再执行，退票还要带上 `requestId`。
 
 > 卡片字段来自 AI 的工具调用参数，个别字段可能缺失或格式不规整（比如人数传了字符串）。**客户端只把它们当「预填值」**，提交前用报价接口校验，业务错误后端会返回 400 + 人话提示，展示给用户即可。
 
@@ -860,6 +953,11 @@ POST /api/checkin {order_no, seat_no:"31A"}
 | GET | `/admin/api/complaints` + POST resolve/escalate/reopen | 投诉处理 |
 | GET/POST | `/admin/api/flights`、`/admin/api/flights/gate` | 航班管理 / 登机口指派 |
 | GET | `/admin/api/orders`、`/admin/api/customers` | 订单 / 客户查询 |
+| GET | `/admin/api/audits` | **审计日志**：`?limit=100&event=denied&action=退票&days=7`，同时返回 `stats`（越权尝试拦截数/写操作数/幂等命中数） |
+
+> **审计日志**记录四类事件：`write`（每笔写操作，含被拒的）、`denied`（越权尝试被拒）、
+> `blocked`（敏感词/高危输入拦截）、`idempotent`（重复请求被幂等拦下）。
+> 每条含 时间 / 动作 / 操作者（会员号或 `admin:xxx`）/ 目标订单号 / 结果 / requestId / IP / 详情。
 
 **首次登录强制改密**：登录后调除 `me`/`change_password` 外的接口都会 403 `{"error": "首次登录必须先修改密码", "must_change_password": true}` —— 客户端检测到 `must_change_password: true` 时弹出改密页，走 `/admin/api/change_password`（body: `{old_password, new_password}`，新密码 ≥8 位且不能是常见弱口令）。
 
@@ -867,6 +965,8 @@ POST /api/checkin {order_no, seat_no:"31A"}
 
 ## 10. 文档更新记录
 
+- 2026-09-12：**写接口改为服务端强制人工确认**——`/api/book`、`/api/pay`、`/api/pay/confirm`、`/api/change`、`/api/refund`、`/api/checkin` 必须带 `confirm_token`（由对应准备接口或聊天卡片的 `pending_action` 签发），否则一律 403；`/api/refund` 新增 `requestId` 幂等键防重复退款。**旧版不带凭证的调用会失败，请按 1.2.1 / 1.2.2 改造。**
+- 2026-09-12：新增管理端审计查询 `GET /admin/api/audits`（越权尝试、高危拦截、写操作与幂等命中）。
 - 2026-09-09：会话列表补充 `created_at_ts`；修复 LangGraph `/state` 重启后偶发为空导致聊天记录/会话预览丢失的问题。
 - 2026-09-09：修复 LangGraph 重启后旧线程 checkpoint 丢失、继续对话时覆盖历史的问题（发送前自动回填线程 values 中的历史消息）。
 - 2026-09-09：座位图改为「初始全部可选、真实值机后才占用」，不再随机模拟预占座位；补充 `free` / `total` 为全舱位统计说明。

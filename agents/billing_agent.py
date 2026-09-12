@@ -26,9 +26,16 @@ class BillingAgent(BaseAgent):
 
     def _on_tool_call(self, name: str, args: dict):
         if name == "refund_request":
-            refund_type = "special" if str((args or {}).get("refund_type", "")).strip() == "special" else "voluntary"
+            from services import confirm_token, security
+            args = args or {}
+            refund_type = "special" if str(args.get("refund_type", "")).strip() == "special" else "voluntary"
             self._pending_action = {"type": "refund", "refund_type": refund_type,
-                                    **{k: v for k, v in (args or {}).items() if k not in ("", "refund_type")}}
+                                    **{k: v for k, v in args.items() if k not in ("", "refund_type")}}
+            issued = confirm_token.issue("refund", security.get_current_member() or "",
+                                        target=args.get("order_no", ""),
+                                        params={"refund_type": refund_type})
+            if issued.get("confirm_token"):
+                self._pending_action["confirm_token"] = issued["confirm_token"]
             tip = ("已生成自愿退票确认请求，卡片会显示手续费与预计到账金额。"
                    "请复述订单信息，提示用户点击页面上的\"确认退票\"按钮，不要自称已退票。"
                    if refund_type == "voluntary" else
@@ -36,18 +43,25 @@ class BillingAgent(BaseAgent):
                    "请复述订单信息与用户所述原因，提示用户点击\"确认退票\"提交审核，不要自称已退票。")
             return (True, {"status": "awaiting_user_confirmation", "message": tip})
         if name == "change_request":
+            from services import confirm_token, security
+            args = args or {}
             self._pending_action = {"type": "change_flight",
-                                    **{k: v for k, v in (args or {}).items() if k != ""}}
+                                    **{k: v for k, v in args.items() if k != ""}}
+            issued = confirm_token.issue("change", security.get_current_member() or "",
+                                        target=args.get("order_no", ""), params=args)
+            if issued.get("confirm_token"):
+                self._pending_action["confirm_token"] = issued["confirm_token"]
             return (True, {"status": "awaiting_user_confirmation",
                            "message": "已生成改签确认请求，卡片会显示新旧航班与差价明细。"
                                       "请复述改签方案（原航班→新航班/日期/舱位，免改签费、差价多退少补），"
                                       "提示用户点击\"确认改签\"，不要自称已改签成功。"})
         if name == "open_seat_map":
-            from services import checkin_repo, security
+            from services import checkin_repo, confirm_token, security
+            args = args or {}
             member_id = security.get_current_member()
             if not member_id:
                 return (True, {"error": "未登录：请先登录会员账号后再值机选座"})
-            info = checkin_repo.checkin_info((args or {}).get("order_no", ""), member_id)
+            info = checkin_repo.checkin_info(args.get("order_no", ""), member_id)
             if info.get("error"):
                 return (True, info)
             if not info.get("window_open"):
@@ -56,6 +70,9 @@ class BillingAgent(BaseAgent):
                                     "order_no": info["order_no"],
                                     "flight_no": info["flight_no"],
                                     "flight_date": info["flight_date"]}
+            issued = confirm_token.issue("checkin", member_id, target=info["order_no"], params={})
+            if issued.get("confirm_token"):
+                self._pending_action["confirm_token"] = issued["confirm_token"]
             return (True, {"status": "awaiting_user_confirmation",
                            "message": "已向用户展示座位图选座卡片。请提示用户点击座位并按\"确认值机\"，"
                                       "值机成功后系统会生成电子登机牌；不要自称已值机。"})

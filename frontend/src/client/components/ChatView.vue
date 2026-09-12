@@ -127,7 +127,7 @@
 import { ref, computed, onMounted, nextTick, reactive } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { api, qs, getMemberToken } from '../../api.js'
+import { api, qs, getMemberToken, newRequestId } from '../../api.js'
 import { toastError, toastSuccess, confirmDialog } from '../../ui.js'
 import { usePay } from '../composables/usePay.js'
 
@@ -447,6 +447,46 @@ async function syncChat(message) {
   if (d.pending_action) pendingAction.value = d.pending_action
 }
 
+/**
+ * 取写操作所需的一次性确认凭证。
+ * 正常情况卡片里就带着（智能体签发）；卡片没有时（旧版本服务端、或凭证过期后重新点击）
+ * 回到对应的准备接口现取一张——保证「用户点了确认」这件事总能在服务端被证明。
+ */
+async function ensureToken(a) {
+  if (a.confirm_token) return a.confirm_token
+  try {
+    if (a.type === 'book_flight') {
+      const q = await api('/api/booking_quote' + qs({
+        flight_no: a.flight_no, flight_date: a.flight_date,
+        cabin: a.cabin, passengers: Number(a.passengers || 1)
+      }))
+      return q.confirm_token
+    }
+    if (a.type === 'refund') {
+      const q = await api('/api/refund_quote' + qs({
+        order_no: a.order_no, refund_type: a.refund_type || 'voluntary'
+      }))
+      return q.confirm_token
+    }
+    if (a.type === 'change_flight') {
+      const q = await api('/api/change_quote' + qs({
+        order_no: a.order_no, new_flight_no: a.new_flight_no,
+        new_date: a.new_date, new_cabin: a.new_cabin
+      }))
+      return q.confirm_token
+    }
+    if (a.type === 'seat_map') {
+      const q = await api('/api/checkin/seats' + qs({
+        flight_no: a.flight_no, flight_date: a.flight_date, order_no: a.order_no
+      }))
+      return q.confirm_token
+    }
+  } catch (e) {
+    // 取不到就让写接口按「缺少确认凭证」报错，前端提示用户重新发起
+  }
+  return ''
+}
+
 async function confirmAction() {
   const a = pendingAction.value
   if (!a) return
@@ -455,7 +495,8 @@ async function confirmAction() {
     if (a.type === 'book_flight') {
       const d = await api('/api/book', { method: 'POST', body: {
         flight_no: a.flight_no, flight_date: a.flight_date,
-        cabin: a.cabin, passengers: Number(a.passengers || 1)
+        cabin: a.cabin, passengers: Number(a.passengers || 1),
+        confirm_token: await ensureToken(a)
       }})
       messages.value.push({ role: 'assistant', content: `✅ 订单 ${d.order_no} 已创建（待支付），金额 ¥${d.total_amount}`, toolChips: [] })
       pendingAction.value = null
@@ -473,20 +514,24 @@ async function confirmAction() {
       }
     } else if (a.type === 'refund') {
       const d = await api('/api/refund', { method: 'POST', body: {
-        order_no: a.order_no, refund_type: a.refund_type || 'voluntary'
+        order_no: a.order_no, refund_type: a.refund_type || 'voluntary',
+        requestId: newRequestId('refund'), confirm_token: await ensureToken(a)
       }})
       messages.value.push({ role: 'assistant', content: `✅ ${d.message || '退票已提交'}`, toolChips: [] })
       pendingAction.value = null
     } else if (a.type === 'change_flight') {
       const d = await api('/api/change', { method: 'POST', body: {
         order_no: a.order_no, new_flight_no: a.new_flight_no,
-        new_date: a.new_date, new_cabin: a.new_cabin
+        new_date: a.new_date, new_cabin: a.new_cabin,
+        confirm_token: await ensureToken(a)
       }})
       messages.value.push({ role: 'assistant', content: `✅ ${d.message || '改签成功'}`, toolChips: [] })
       pendingAction.value = null
     } else if (a.type === 'seat_map') {
       const d = await api('/api/checkin/seats' + qs({ flight_no: a.flight_no, flight_date: a.flight_date, order_no: a.order_no }))
-      seatModal.value = { show: true, map: d.cabins || {}, selected: '', error: '', loading: false, action: a }
+      // 座位图接口会签发该订单的值机确认凭证，选座确认时回传
+      seatModal.value = { show: true, map: d.cabins || {}, selected: '', error: '', loading: false,
+                          action: { ...a, confirm_token: d.confirm_token || a.confirm_token } }
     }
   } catch (e) {
     toastError(e.message)
@@ -505,7 +550,8 @@ async function confirmSeat() {
   if (!a || !seat) return
   seatModal.value.loading = true
   try {
-    const d = await api('/api/checkin', { method: 'POST', body: { order_no: a.order_no, seat_no: seat } })
+    const d = await api('/api/checkin', { method: 'POST', body: {
+      order_no: a.order_no, seat_no: seat, confirm_token: a.confirm_token } })
     seatModal.value.show = false
     messages.value.push({ role: 'assistant', content: `✅ 值机成功：${d.airline} ${d.flight_no} 座位 ${d.seat_no} 登机口 ${d.gate}`, toolChips: [] })
     pendingAction.value = null

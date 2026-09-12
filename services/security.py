@@ -4,17 +4,21 @@
 登录会员身份通过 ContextVar（受信通道）传入工具执行上下文：
 - web 层在请求开始时从服务端 session 绑定（web_app.before_request）；
 - 图节点在执行 Agent 前从 state.member_id 绑定（BaseAgent._run）；
-- 仓库层（flight_repo）读写会员数据前用 enforce_owner 校验归属。
+- 仓库层（flight_repo / checkin_repo）的每个**写操作**都从订单反查归属再 enforce_owner，
+  不再依赖调用方传进来的 member_id（传 None 也不再静默放行）。
 
 关键点：身份不经过 LLM 决定的工具参数，模型无法通过提示词诱导越权——
 即使模型把别人的会员号传给工具，仓库层也会在代码层拒绝。
 """
 
 from contextvars import ContextVar
+from contextlib import contextmanager
 from typing import Optional
 
 _current_member_id: ContextVar = ContextVar("current_member_id", default=None)
 _current_admin_id: ContextVar = ContextVar("current_admin_id", default=None)
+# 系统内部流程标记（后台任务、支付异步回调等"没有人"的场景）
+_current_system: ContextVar = ContextVar("current_system", default=None)
 
 
 def set_current_member(member_id: Optional[str]):
@@ -43,6 +47,36 @@ def get_current_admin() -> Optional[str]:
     return _current_admin_id.get()
 
 
+@contextmanager
+def system_context(reason: str = "系统内部流程"):
+    """标记"这是系统内部流程"（后台生命周期、支付异步回调等没有登录身份的场景）。
+
+    只在确实没有用户身份、且业务上必须推进时才用；用它能通过 enforce_owner，
+    所以每一处都要写清 reason，方便审计追溯。用完自动复位。
+    """
+    token = _current_system.set(reason or "system")
+    try:
+        yield
+    finally:
+        _current_system.reset(token)
+
+
+def get_current_system() -> Optional[str]:
+    return _current_system.get()
+
+
+def current_actor() -> str:
+    """当前操作者标识（写审计日志用）。"""
+    admin = get_current_admin()
+    if admin:
+        return f"admin:{admin}"
+    member = get_current_member()
+    if member:
+        return member
+    sys_reason = get_current_system()
+    return f"system:{sys_reason}" if sys_reason else "anonymous"
+
+
 def normalize(member_id: Optional[str]) -> str:
     return (member_id or "").strip().upper()
 
@@ -50,12 +84,16 @@ def normalize(member_id: Optional[str]) -> str:
 def enforce_owner(member_id: Optional[str], action: str = "查询") -> Optional[dict]:
     """校验目标 member_id 与登录身份一致。
 
-    管理员上下文绑定时不做归属限制（运营平台的职责即跨会员处理）。
+    - 管理员上下文：不限制（运营平台的职责即跨会员处理）；
+    - 系统内部流程（system_context）：不限制（后台任务/异步回调）；
+    - 未登录且非上述两种：拒绝——**不再静默放行**。
 
     Returns:
         None 表示通过；否则返回可直接作为工具结果的错误 dict。
     """
     if get_current_admin():
+        return None
+    if get_current_system():
         return None
     login_id = get_current_member()
     if not login_id:

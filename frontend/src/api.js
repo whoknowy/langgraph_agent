@@ -62,3 +62,15 @@ export function qs(params = {}) {
   const s = usp.toString()
   return s ? '?' + s : ''
 }
+
+/**
+ * 生成幂等键（requestId）：同一笔退票/改签请求重放时服务端只执行一次。
+ * 必须"一次业务动作一个 id"，不要每次重试都换——否则防重复就失效了。
+ */
+export function newRequestId(prefix = 'req') {
+  try {
+    if (window.crypto && window.crypto.randomUUID) return `${prefix}_${window.crypto.randomUUID()}`
+  } catch (e) { /* 老浏览器回退 */ }
+  const rnd = () => Math.random().toString(36).slice(2, 10)
+  return `${prefix}_${Date.now().toString(36)}_${rnd()}${rnd()}`
+}

@@ -99,7 +99,8 @@ export function usePay({ onPaid, onStateChange } = {}) {
 
       // direct 模式：站内一步确认（mock 渠道）
       if (win) win.close()
-      const r = await api('/api/pay/confirm', { method: 'POST', body: { pay_no: d.pay_no } })
+      // confirm_token 由 /api/pay/create 签发：服务端要求"用户确认过支付"才允许落账
+      const r = await api('/api/pay/confirm', { method: 'POST', body: { pay_no: d.pay_no, confirm_token: d.confirm_token } })
       toastSuccess(r.message || '支付成功，已出票')
       if (onPaid) await onPaid(orderNo)
       return true

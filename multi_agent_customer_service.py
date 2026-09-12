@@ -92,6 +92,13 @@ def sensitive_guard_node(state: AgentState) -> AgentState:
     new_state["guard_response"] = result["response"]
     if result["blocked"]:
         print(f"[守卫] 高危输入已拦截: {result['matched_words']}")
+        # 高危拦截落审计（验收要求"审计日志完整留痕"）
+        try:
+            from services import audit
+            audit.blocked("输入守卫", f"高危词命中：{result['matched_words']}",
+                          detail={"query": (query or "")[:200]})
+        except Exception as e:
+            print(f"⚠️ [守卫] 审计写入失败：{e}")
     elif result["has_sensitive"]:
         print(f"[守卫] 低危敏感词放行: {result['matched_words']}")
     return new_state

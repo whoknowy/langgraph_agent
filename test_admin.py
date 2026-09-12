@@ -53,6 +53,57 @@ def check(name, cond, detail=""):
     return bool(cond)
 
 
+# ---- 会员端写操作必须走"确认凭证"流程（服务端强制 HITL） ----
+# 准备接口（报价/发起支付）签发一次性 confirm_token，写接口带上它才允许执行。
+# 本回归不再裸调写接口——那正是被测特性要拒绝的行为。
+
+def member_quote_book(flight_no, flight_date, cabin="经济", passengers=1):
+    return req(member_op, "GET",
+               f"/api/booking_quote?flight_no={flight_no}&flight_date={flight_date}"
+               f"&cabin={urllib.parse.quote(cabin)}&passengers={passengers}")
+
+
+def member_book(flight_no, flight_date, cabin="经济", passengers=1):
+    q, _ = member_quote_book(flight_no, flight_date, cabin, passengers)
+    return req(member_op, "POST", "/api/book",
+               {"flight_no": flight_no, "flight_date": flight_date, "cabin": cabin,
+                "passengers": passengers, "confirm_token": q.get("confirm_token")})
+
+
+def member_pay(order_no):
+    c, _ = req(member_op, "POST", "/api/pay/create", {"order_no": order_no})
+    return req(member_op, "POST", "/api/pay",
+               {"order_no": order_no, "confirm_token": c.get("confirm_token")})
+
+
+def member_quote_refund(order_no, refund_type="voluntary"):
+    return req(member_op, "GET",
+               f"/api/refund_quote?order_no={order_no}&refund_type={refund_type}")
+
+
+def member_refund(order_no, refund_type="voluntary", request_id=None):
+    q, _ = member_quote_refund(order_no, refund_type)
+    return req(member_op, "POST", "/api/refund",
+               {"order_no": order_no, "refund_type": refund_type,
+                "requestId": request_id or f"adm-{order_no}-{refund_type}",
+                "confirm_token": q.get("confirm_token")})
+
+
+def member_quote_change(order_no, new_flight_no, new_date, new_cabin="经济"):
+    return req(member_op, "GET",
+               f"/api/change_quote?order_no={order_no}&new_flight_no={new_flight_no}"
+               f"&new_date={new_date}&new_cabin={urllib.parse.quote(new_cabin)}")
+
+
+def member_change(order_no, new_flight_no, new_date, new_cabin="经济", token=None):
+    if token is None:
+        q, _ = member_quote_change(order_no, new_flight_no, new_date, new_cabin)
+        token = q.get("confirm_token")
+    return req(member_op, "POST", "/api/change",
+               {"order_no": order_no, "new_flight_no": new_flight_no, "new_date": new_date,
+                "new_cabin": new_cabin, "confirm_token": token})
+
+
 results = []
 
 # ---- 登录与门禁 ----
@@ -90,11 +141,10 @@ assert code is None, "会员登录失败"
 
 
 def create_pending_refund():
-    d, code = req(member_op, "POST", "/api/book",
-                  {"flight_no": "CA1061", "flight_date": FUTURE_DATE, "cabin": "经济", "passengers": 1})
+    d, code = member_book("CA1061", FUTURE_DATE, "经济", 1)
     order_no = d["order_no"]
-    req(member_op, "POST", "/api/pay", {"order_no": order_no})
-    d, _ = req(member_op, "POST", "/api/refund", {"order_no": order_no, "refund_type": "special"})
+    member_pay(order_no)
+    d, _ = member_refund(order_no, "special")
     assert d.get("status") == "退票中"
     return order_no
 
@@ -209,21 +259,20 @@ d, _ = req(admin_op, "GET", "/admin/api/customers?q=M1001")
 results.append(check("12.会员查询", d.get("count", 0) >= 1 and d["customers"][0]["name"] == "李磊"))
 
 # ---- 改签闭环（免改签费，差价多退少补） ----
-d, code = req(member_op, "POST", "/api/book",
-              {"flight_no": "CA1061", "flight_date": FUTURE_DATE, "cabin": "经济", "passengers": 2})
+d, code = member_book("CA1061", FUTURE_DATE, "经济", 2)
 chg_order = d["order_no"]
 results.append(check("14a.下单passengers落库", d.get("passengers") == 2))
-req(member_op, "POST", "/api/pay", {"order_no": chg_order})
+member_pay(chg_order)
 # 新航班：同航线（北京-上海）任意航司，晚一周
 import datetime as _dt
 new_date = (_dt.date.today() + _dt.timedelta(days=7)).isoformat()
-d, code = req(member_op, "GET", f"/api/change_quote?order_no={chg_order}&new_flight_no=MU1074&new_date={new_date}&new_cabin={urllib.parse.quote('经济')}")
+d, code = member_quote_change(chg_order, "MU1074", new_date, "经济")
 results.append(check("14b.改签报价(差价=新总价-原金额)",
                      code is None and d.get("fare_diff") == d.get("new", {}).get("amount", 0) - d.get("old", {}).get("amount", 0)
                      and d.get("change_fee") == 0,
                      f"| 原金额={d.get('old', {}).get('amount')} 新总额={d.get('new', {}).get('amount')} 差价={d.get('fare_diff')}"))
-d, code = req(member_op, "POST", "/api/change", {"order_no": chg_order, "new_flight_no": "MU1074",
-                                                 "new_date": new_date, "new_cabin": "经济"})
+_token_c = d.get("confirm_token")
+d, code = member_change(chg_order, "MU1074", new_date, "经济", token=_token_c)
 results.append(check("14c.执行改签(已改签)", code is None and d.get("status") == "已改签",
                      f"| {d.get('message', d.get('error'))}"))
 d, _ = req(member_op, "GET", "/api/my/orders")
@@ -231,17 +280,18 @@ row = next((o for o in d.get("orders", []) if o["order_no"] == chg_order), {})
 results.append(check("14d.订单数据已更新为新航班",
                      row.get("flight") == "东方航空MU1074" and row.get("flight_date") == new_date
                      and row.get("status") == "已改签"))
-# 越权：他人改签应拒绝
-d, code = req(member_op, "POST", "/api/change", {"order_no": "O1889686", "new_flight_no": "MU1074",
-                                                 "new_date": new_date, "new_cabin": "经济"})
-results.append(check("14e.改签他人订单被拒绝", code == 400))
+# 越权：他人改签在报价阶段就被归属校验挡下；写接口再挡一次（无凭证 → 403）
+q, qcode = member_quote_change("O1889686", "MU1074", new_date, "经济")
+results.append(check("14e.改签他人订单被拒绝(归属校验)",
+                     qcode is None and "无权限" in (q.get("error") or "")))
+d, code = member_change("O1889686", "MU1074", new_date, "经济", token="")
+results.append(check("14f.无确认凭证的改签被服务端拒绝", code == 403))
 
 # ---- 生命周期：起飞后自动「已使用」，退票被状态机拒绝 ----
 conn = __import__("sqlite3").connect("data/flight_system.db")
-d, code = req(member_op, "POST", "/api/book",
-              {"flight_no": "CA1061", "flight_date": FUTURE_DATE, "cabin": "经济", "passengers": 1})
+d, code = member_book("CA1061", FUTURE_DATE, "经济", 1)
 fly_order = d["order_no"]
-req(member_op, "POST", "/api/pay", {"order_no": fly_order})
+member_pay(fly_order)
 conn.execute("UPDATE orders SET flight_date = ?, dep_time2 = ? WHERE order_no = ?" if False else
              "UPDATE orders SET flight_date = ? WHERE order_no = ?",
              ((_dt.date.today() - _dt.timedelta(days=1)).isoformat(), fly_order))
@@ -251,23 +301,22 @@ mark_flown_orders()
 d, _ = req(member_op, "GET", "/api/my/orders")
 row = next((o for o in d.get("orders", []) if o["order_no"] == fly_order), {})
 results.append(check("15a.起飞后订单自动「已使用」", row.get("status") == "已使用"))
-d, code = req(member_op, "POST", "/api/refund", {"order_no": fly_order, "refund_type": "voluntary"})
-results.append(check("15b.已使用订单退票被状态机拒绝", code == 400))
-d, code = req(member_op, "POST", "/api/change", {"order_no": fly_order, "new_flight_no": "MU1074",
-                                                 "new_date": new_date, "new_cabin": "经济"})
-results.append(check("15c.已使用订单改签被状态机拒绝", code == 400))
+d, code = member_refund(fly_order, "voluntary")
+results.append(check("15b.已使用订单退票被状态机拒绝", code in (400, 403)))
+d, code = member_change(fly_order, "MU1074", new_date, "经济", token="")
+results.append(check("15c.已使用订单改签被拒绝", code in (400, 403)))
 
 # ---- 改签后的票可退（自愿即时退 + 特殊驳回恢复已改签） ----
-d, code = req(member_op, "POST", "/api/refund", {"order_no": chg_order, "refund_type": "special"})
+d, code = member_refund(chg_order, "special")
 results.append(check("16a.改签单特殊退票进入审批(退票中)", code is None and d.get("status") == "退票中"))
 d, code = req(admin_op, "POST", "/admin/api/refunds/reject", {"order_no": chg_order, "admin_note": "证据不足"})
 results.append(check("16b.驳回后恢复「已改签」而非已出票", code is None and d.get("status") == "已改签",
                      f"| 恢复为={d.get('status')}"))
-quote_c, code = req(member_op, "GET", "/api/refund_quote?order_no=" + chg_order)
+quote_c, code = member_quote_refund(chg_order, "voluntary")
 results.append(check("16c.改签单自愿退票可报价", code is None and quote_c.get("predict_amount", 0) > 0,
                      f"| 票面={quote_c.get('amount')} 手续费={quote_c.get('fee')} 档位={quote_c.get('fee_tier')}"))
 predict = quote_c.get("predict_amount")
-d, code = req(member_op, "POST", "/api/refund", {"order_no": chg_order, "refund_type": "voluntary"})
+d, code = member_refund(chg_order, "voluntary")
 results.append(check("16d.改签单自愿退票即时退款", code is None and d.get("status") == "已退款"
                      and d.get("refund_amount") == predict,
                      f"| 到账={d.get('refund_amount')} 预计={predict}"))
@@ -300,8 +349,7 @@ results.append(check("17e.已读后未读数为0", d.get("unread_count") == 0,
                      f"| 未读={d.get('unread_count')}"))
 
 # ---- 待支付超时自动取消（回拨创建时间触发扫描） ----
-d, _ = req(member_op, "POST", "/api/book",
-           {"flight_no": "CA1061", "flight_date": FUTURE_DATE, "cabin": "经济", "passengers": 1})
+d, _ = member_book("CA1061", FUTURE_DATE, "经济", 1)
 _t_order = d["order_no"]
 import sqlite3 as _sq2
 import datetime as _dt2
@@ -315,8 +363,8 @@ d, _ = req(member_op, "GET", "/api/my/orders")
 _row = next((o for o in d.get("orders", []) if o["order_no"] == _t_order), {})
 results.append(check("18a.超时待支付自动「已取消」", _row.get("status") == "已取消",
                      f"| 本次取消={_ncanceled}"))
-d, code = req(member_op, "POST", "/api/pay", {"order_no": _t_order})
-results.append(check("18b.已取消订单不可支付", code == 400))
+d, code = member_pay(_t_order)
+results.append(check("18b.已取消订单不可支付", code in (400, 403)))
 d, _ = req(member_op, "GET", "/api/my/notifications")
 results.append(check("18c.自动取消生成站内通知",
                      any(_t_order in n.get("content", "") and n.get("title") == "订单已自动取消"
