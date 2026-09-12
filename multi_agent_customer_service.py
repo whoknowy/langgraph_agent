@@ -116,7 +116,12 @@ def _history_without_current(state: AgentState) -> List[Dict]:
 def intent_classifier_node(state: AgentState) -> AgentState:
     """意图分类节点：单次 LLM 调用，4 选 1。"""
     query = state.get("customer_query", "")
-    result = classify_intent(query, _history_without_current(state))
+    result = classify_intent(
+        query,
+        _history_without_current(state),
+        session_id=state.get("session_id"),
+        member_id=state.get("member_id"),
+    )
 
     agent_map = {
         "product": "product_agent",

@@ -83,26 +83,38 @@ def fallback_title(first_user_message: str) -> str:
 
 # ---------------------------------------------------------------- 生成层
 
-def _invoke_llm(text: str) -> str:
-    """轻量 LLM 生成标题（延迟导入 LLM 栈；模块级函数便于单测注入失败场景）。"""
+def _invoke_llm(text: str, session_id: str = None) -> str:
+    """轻量 LLM 生成标题（延迟导入 LLM 栈；模块级函数便于单测注入失败场景）。
+
+    session_id 仅用于把这次调用纳入 Langfuse trace（按会话分组回放），
+    未启用 Langfuse 时不影响行为。
+    """
+    from services import langfuse_setup
     from agents import create_llm
     from langchain_core.messages import HumanMessage, SystemMessage
     llm = create_llm()
-    resp = llm.invoke([
-        SystemMessage(content="你是会话标题生成器。根据用户第一句话生成一个 6~10 字的对话标题，"
-                             "概括核心诉求。只输出标题本身，不要标点结尾、不要引号、不要解释。"),
-        HumanMessage(content=text),
-    ])
+    with langfuse_setup.trace(name="session_title", session_id=session_id,
+                              tags=["async"]) as handler:
+        cfg = langfuse_setup.llm_config(handler)
+        resp = (llm.invoke([
+            SystemMessage(content="你是会话标题生成器。根据用户第一句话生成一个 6~10 字的对话标题，"
+                                 "概括核心诉求。只输出标题本身，不要标点结尾、不要引号、不要解释。"),
+            HumanMessage(content=text),
+        ], config=cfg) if cfg else llm.invoke([
+            SystemMessage(content="你是会话标题生成器。根据用户第一句话生成一个 6~10 字的对话标题，"
+                                 "概括核心诉求。只输出标题本身，不要标点结尾、不要引号、不要解释。"),
+            HumanMessage(content=text),
+        ]))
     return clean_title(getattr(resp, "content", "") or "")
 
 
-def generate_title(first_user_message: str) -> str:
+def generate_title(first_user_message: str, session_id: str = None) -> str:
     """同步生成标题：轻量 LLM 优先，任何异常兜底为首条消息截断。"""
     text = (first_user_message or "").strip()
     if not text:
         return ""
     try:
-        title = _invoke_llm(text[:200])
+        title = _invoke_llm(text[:200], session_id=session_id)
         if title:
             return title
     except Exception as e:
@@ -120,7 +132,7 @@ def generate_title_async(thread_id: str, first_user_message: str) -> threading.T
 
     def _work():
         try:
-            title = generate_title(first_user_message)
+            title = generate_title(first_user_message, session_id=tid)
             try:
                 from skills import mask_sensitive
                 title = mask_sensitive(title)

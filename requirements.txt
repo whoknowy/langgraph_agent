@@ -11,5 +11,8 @@ langgraph-checkpoint-sqlite>=3.0  # 本地兜底路径的对话持久化
 # LLM 兼容接口 / 天气 / LangGraph 通信
 requests>=2.31
 
+# LLM 轨迹观测（自建 Langfuse，可选启用）
+langfuse>=3.0
+
 # 环境变量
 python-dotenv>=1.0
