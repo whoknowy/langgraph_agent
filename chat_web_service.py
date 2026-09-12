@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 
 from skills import StreamMasker, mask_sensitive
 from services import session_owners, session_titles
+from services.trace_events import RunTrace
 
 load_dotenv()
 
@@ -787,18 +788,25 @@ def _extract_stream_content(chunk: Any) -> str:
 
 
 def _local_stream_fallback(user_message: str, client_session_id: Optional[str] = None) -> Iterable[str]:
-    """LangGraph 不可达时：本地多智能体流程，仅能一次性输出整段文本（SSE 格式不变）。"""
+    """LangGraph 不可达时：本地多智能体流程，仅能一次性输出整段文本（SSE 格式不变）。
+    链路面板至少能看到"本地兜底链路"节点，不会是空白。"""
+    run_trace = RunTrace()
+    for ev in run_trace.start_node("local_fallback"):
+        yield _sse_line(ev)
     try:
         from multi_agent_customer_service import process_customer_query
         result = process_customer_query(user_message, client_session_id)
         text = result.get("response", "")
         yield _sse_line({"content": text})
+        for ev in run_trace.finish():
+            yield _sse_line(ev)
         yield _sse_line({
             "done": True,
             "session_id": client_session_id,
             "thread_id": client_session_id,
             "response": text,
             "local_fallback": True,
+            "trace": run_trace.summary(),
         })
     except Exception as e:
         print(f"❌ 本地流式客服处理失败: {e}")
@@ -868,6 +876,12 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
     msg_nodes: Dict[str, str] = {}  # 消息id -> 产生它的图节点（来自 messages/metadata 事件）
     masker = StreamMasker()  # 输出侧敏感词打码（跨 token 缓冲）
     masked_parts: List[str] = []
+
+    # 执行链路跟踪：节点事件实时下发（验收⑤ 状态机可观测）。
+    # sensitive_guard 不调 LLM、不产生 messages 事件，由这里按图结构合成。
+    run_trace = RunTrace()
+    for ev in run_trace.start_node("sensitive_guard"):
+        yield _sse_line(ev)
     try:
         for raw in response.iter_lines(decode_unicode=True):
             line = (raw or "").strip() if not isinstance(raw, bytes) else raw.decode("utf-8", "replace").strip()
@@ -902,6 +916,16 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
                 if current_event in ("messages", "messages/partial"):
                     msg = payload[0] if payload else None
                     msg_id = msg.get("id") if isinstance(msg, dict) else None
+                    # 分片携带的 metadata（第二个元素）含 langgraph_node；
+                    # 旧版本只有 messages/metadata 事件时回查 msg_nodes
+                    chunk_node = None
+                    if len(payload) > 1 and isinstance(payload[1], dict):
+                        chunk_node = payload[1].get("langgraph_node")
+                    if not chunk_node and msg_id:
+                        chunk_node = msg_nodes.get(msg_id)
+                    # 链路观测先于意图分类过滤：意图分类节点不进对话流，但要进链路
+                    for ev in run_trace.observe_message(chunk_node, msg_id):
+                        yield _sse_line(ev)
                     if msg_id and msg_nodes.get(msg_id) == "intent_classifier":
                         prev_content = ""
                         continue
@@ -923,6 +947,9 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
                                     tool_args[_name] = tc["args"]
                                 if _name not in emitted_tools:
                                     emitted_tools.add(_name)
+                                    for ev in run_trace.observe_tool(
+                                            _name, tool_args.get(_name) or {}, msg_id):
+                                        yield _sse_line(ev)
                                     yield _sse_line({"tool": {"name": _name,
                                                               "args": tool_args.get(_name) or {},
                                                               "status": "running"}})
@@ -937,6 +964,12 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
                 chunk = data_obj.get("chunk", {}) if isinstance(data_obj, dict) else None
                 meta = data_obj.get("metadata", {}) if isinstance(data_obj, dict) else {}
                 chunk_id = chunk.get("id") if isinstance(chunk, dict) else None
+                chunk_node = meta.get("langgraph_node") if isinstance(meta, dict) else None
+                if not chunk_node and chunk_id:
+                    chunk_node = msg_nodes.get(chunk_id)
+                # 链路观测先于意图分类过滤：意图分类节点不进对话流，但要进链路
+                for ev in run_trace.observe_message(chunk_node, chunk_id):
+                    yield _sse_line(ev)
                 if (isinstance(meta, dict) and meta.get("langgraph_node") == "intent_classifier") \
                         or (chunk_id and msg_nodes.get(chunk_id) == "intent_classifier"):
                     prev_content = ""
@@ -959,6 +992,9 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
                                 tool_args[_name] = tc["args"]
                             if _name not in emitted_tools:
                                 emitted_tools.add(_name)
+                                for ev in run_trace.observe_tool(
+                                        _name, tool_args.get(_name) or {}, chunk_id):
+                                    yield _sse_line(ev)
                                 yield _sse_line({"tool": {"name": _name,
                                                           "args": tool_args.get(_name) or {},
                                                           "status": "running"}})
@@ -990,6 +1026,17 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
     if final_state.get("pending_action"):
         yield _sse_line({"pending_action": final_state["pending_action"]})
 
+    # 链路收口：收掉仍在 running 的工具与节点，合成 final_response 节点
+    guard_blocked = bool(final_state.get("guard_blocked"))
+    for ev in run_trace.finish(blocked=guard_blocked):
+        yield _sse_line(ev)
+    trace_summary = run_trace.summary()
+    trace_summary["guard_blocked"] = guard_blocked
+    if final_state.get("target_agent"):
+        trace_summary["target_agent"] = final_state["target_agent"]
+    if final_state.get("current_agent"):
+        trace_summary["current_agent"] = final_state["current_agent"]
+
     # 会话标题：done 时后台线程生成（已有标题的线程内部直接跳过，不烧 token）
     session_titles.generate_title_async(tid, user_message)
 
@@ -1001,6 +1048,8 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
         "tools": sorted(emitted_tools),
         # 工具调用明细（名字+参数）：供评估统计"参数准确率"与前端展开调用链
         "tool_calls": [{"name": n, "args": tool_args.get(n) or {}} for n in sorted(emitted_tools)],
+        # 执行链路汇总（节点+工具+耗时）：前端"执行链路"面板据此渲染
+        "trace": trace_summary,
     })
     yield "data: [DONE]\n\n"
 
@@ -1014,7 +1063,7 @@ def _valid_pending_action(values: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def _fetch_thread_final(thread_id: str) -> Dict[str, Any]:
-    """回读线程状态中的最终响应与确认卡片请求。"""
+    """回读线程状态中的最终响应、确认卡片请求与路由结果（链路收口用）。"""
     try:
         response = requests.get(f"{LANGGRAPH_API_URL}/threads/{thread_id}/state", timeout=5)
         if response.status_code == 200:
@@ -1026,6 +1075,12 @@ def _fetch_thread_final(thread_id: str) -> Dict[str, Any]:
             pa = _valid_pending_action(values)
             if pa:
                 out["pending_action"] = pa
+            # 链路收口佐证：守卫是否拦截 / 最终路由到了哪个 Agent
+            if values.get("guard_blocked"):
+                out["guard_blocked"] = True
+            for key in ("target_agent", "current_agent"):
+                if values.get(key):
+                    out[key] = values.get(key)
             return out
     except Exception as e:
         print(f"⚠️ 回读线程状态失败: {e}")

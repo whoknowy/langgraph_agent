@@ -2064,6 +2064,125 @@ class TestCardTokenWiring:
         assert confirm_token.consume(tok, "book", "M1001", "", args).get("ok")
 
 
+class TestRunTrace:
+    """执行链路跟踪（SSE node/tool 事件 + done 汇总）——验收⑤ 状态机可观测。"""
+
+    def test_node_chain_events_and_summary(self):
+        from services.trace_events import RunTrace
+        rt = RunTrace()
+        evs = rt.start_node("sensitive_guard")
+        assert [e["node"]["name"] for e in evs] == ["sensitive_guard"]
+        assert evs[0]["node"]["status"] == "running"
+        assert evs[0]["node"]["duration_ms"] is None
+
+        # 意图分类消息流出：守卫收口 + 意图分类开跑
+        evs = rt.observe_message("intent_classifier", "m1")
+        names = [e["node"]["name"] for e in evs]
+        assert names == ["sensitive_guard", "intent_classifier"]
+        assert evs[0]["node"]["status"] == "done"
+        assert evs[0]["node"]["duration_ms"] >= 0
+        assert evs[1]["node"]["label"] == "意图分类"
+
+        # 路由到账单专家：意图分类收口
+        evs = rt.observe_message("billing_agent", "m2")
+        assert [e["node"]["name"] for e in evs] == ["intent_classifier", "billing_agent"]
+
+        # 流结束：合成最终响应节点
+        evs = rt.finish()
+        assert [e["node"]["name"] for e in evs] == ["billing_agent", "final_response", "final_response"]
+        s = rt.summary()
+        assert [n["name"] for n in s["nodes"]] == [
+            "sensitive_guard", "intent_classifier", "billing_agent", "final_response"]
+        assert all(n["status"] == "done" for n in s["nodes"])
+        assert all(n["duration_ms"] is not None for n in s["nodes"])
+
+    def test_same_node_not_reopened(self):
+        from services.trace_events import RunTrace
+        rt = RunTrace()
+        rt.start_node("billing_agent")
+        assert rt.observe_message("billing_agent", "m1") == []      # 同节点不重复开
+        assert rt.observe_message(None, "m1") == []                 # 空节点忽略
+        assert len(rt.summary()["nodes"]) == 1
+
+    def test_tool_running_then_done_on_next_message(self):
+        from services.trace_events import RunTrace
+        rt = RunTrace()
+        rt.observe_message("billing_agent", "m1")
+        evs = rt.observe_tool("get_order_bill", {"order_no": "T1"}, "m1")
+        assert len(evs) == 1 and evs[0]["tool"]["name"] == "get_order_bill"
+        assert evs[0]["tool"]["status"] == "running"
+        assert evs[0]["tool"]["node"] == "billing_agent"            # 工具挂在节点下
+        # 同名工具去重；参数滚动更新不重复发事件
+        assert rt.observe_tool("get_order_bill", {"order_no": "T1"}, "m1") == []
+        # 下一条消息流出 → 上一条消息上的工具收口
+        evs = rt.observe_message("billing_agent", "m2")
+        tool_done = [e["tool"] for e in evs if "tool" in e]
+        assert len(tool_done) == 1 and tool_done[0]["status"] == "done"
+        assert tool_done[0]["duration_ms"] >= 0
+        assert tool_done[0]["args"] == {"order_no": "T1"}
+
+    def test_tool_finished_at_stream_end(self):
+        from services.trace_events import RunTrace
+        rt = RunTrace()
+        rt.observe_message("product_agent", "m1")
+        rt.observe_tool("search_flights", {"dep": "PEK"}, "m1")
+        evs = rt.finish()                                           # 流结束统一收口
+        done_tools = [e["tool"] for e in evs if "tool" in e]
+        assert [t["name"] for t in done_tools] == ["search_flights"]
+        assert all(t["status"] == "done" for t in rt.summary()["tools"])
+
+    def test_blocked_guard_stops_chain(self):
+        from services.trace_events import RunTrace
+        rt = RunTrace()
+        rt.start_node("sensitive_guard")
+        evs = rt.finish(blocked=True)                               # 守卫拦截：止步于守卫
+        names = [e["node"]["name"] for e in evs]
+        assert names == ["sensitive_guard"]
+        assert evs[0]["node"].get("note")
+        assert "final_response" not in [n["name"] for n in rt.summary()["nodes"]]
+
+    def test_tool_args_update_reflected_in_summary(self):
+        from services.trace_events import RunTrace
+        rt = RunTrace()
+        rt.observe_tool("search_flights", None, "m1")                # 首个分片可能无参数
+        rt.observe_tool("search_flights", {"dep": "PEK", "arr": "SHA"}, "m1")
+        rt.finish()
+        assert rt.summary()["tools"][0]["args"] == {"dep": "PEK", "arr": "SHA"}
+
+
+class TestLangfuseSetup:
+    """Langfuse 观测接入：未配置密钥 / 占位符时全部退化为 no-op，
+    这是验收项④「Langfuse 链路可视化」的开关正确性。"""
+
+    def test_disabled_when_keys_unset(self, monkeypatch):
+        from services import langfuse_setup
+        monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+        monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+        assert langfuse_setup.is_enabled() is False
+        # trace 与 llm_config 都应退化为 no-op
+        with langfuse_setup.trace("agent:test") as h:
+            assert h is None
+        assert langfuse_setup.llm_config(None) is None
+
+    def test_disabled_for_placeholder_keys(self, monkeypatch):
+        from services import langfuse_setup
+        monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-xxxx")
+        monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-xxxx")
+        assert langfuse_setup.is_enabled() is False           # 占位符不开
+
+    def test_enabled_with_real_keys(self, monkeypatch):
+        from services import langfuse_setup
+        monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-real1234567890ab")
+        monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-real1234567890ab")
+        assert langfuse_setup.is_enabled() is True
+
+    def test_whitespace_only_keys_disabled(self, monkeypatch):
+        from services import langfuse_setup
+        monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "   ")
+        monkeypatch.setenv("LANGFUSE_SECRET_KEY", "")
+        assert langfuse_setup.is_enabled() is False
+
+
 # ---------------------------------------------------------------- 直接运行入口
 
 if __name__ == "__main__":
