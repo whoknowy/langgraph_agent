@@ -103,16 +103,20 @@ class BaseAgent(ABC):
     # ReAct 循环（模型自主 function calling，保持逐 token 流式回调）
     # ------------------------------------------------------------------
 
-    def _react_answer(self, user_query: str, history: List[Dict] = None, identity: str = "") -> str:
+    def _react_answer(self, user_query: str, history: List[Dict] = None, identity: str = "",
+                      obs_handler=None) -> str:
         """运行模型自主工具调用循环，返回最终答复文本。
 
         无绑定工具或调用失败时返回 ""（由调用方走无工具降级链路）。
+        obs_handler 由 _run 注入：Langfuse 启用时挂到 llm.stream
+        与 tool.invoke 的 callbacks，使一整段 ReAct 循环聚成一条 trace。
         """
         tools = self._react_tools()
         if not tools or self.llm is None:
             return ""
 
         import json
+        from services import langfuse_setup
 
         try:
             from services.tools import tools_by_name
@@ -121,13 +125,15 @@ class BaseAgent(ABC):
             if key not in self._react_cache:
                 self._react_cache[key] = self.llm.bind_tools(tools)
             llm_with_tools = self._react_cache[key]
+            tool_config = langfuse_setup.llm_config(obs_handler)  # 合并上下文后的 config 或 None
 
             messages = [SystemMessage(content=self._react_system_prompt(identity))]
             messages.extend(self._history_messages(history))
             messages.append(HumanMessage(content=user_query))
 
             for _round in range(5):
-                full_text, tool_calls = self._stream_with_tools(llm_with_tools, messages)
+                full_text, tool_calls = self._stream_with_tools(llm_with_tools, messages,
+                                                                obs_handler=obs_handler)
                 if not tool_calls:
                     return full_text
                 messages.append(AIMessage(content=full_text, tool_calls=tool_calls))
@@ -143,7 +149,8 @@ class BaseAgent(ABC):
                             result = {"error": f"工具不存在: {name}"}
                         else:
                             try:
-                                raw = tool.invoke(args)
+                                # tool.invoke 同样挂 callback，让工具调用嵌套到同一 trace
+                                raw = tool.invoke(args, config=tool_config) if tool_config else tool.invoke(args)
                                 result = json.loads(raw) if isinstance(raw, str) else raw
                             except Exception as e:
                                 result = {"error": f"工具执行失败: {e}"}
@@ -159,15 +166,19 @@ class BaseAgent(ABC):
             print(f"{self.name} ReAct 调用失败，降级为常规链路: {e}")
             return ""
 
-    def _plain_answer(self, user_query: str, history: List[Dict] = None, identity: str = "") -> str:
+    def _plain_answer(self, user_query: str, history: List[Dict] = None, identity: str = "",
+                      obs_handler=None) -> str:
         """无工具降级：一次普通调用（保持人设与上下文）。"""
+        from services import langfuse_setup
         if self.llm is None:
             return "抱歉，系统暂时无法处理您的请求，请稍后重试。"
         try:
             messages = [SystemMessage(content=self._react_system_prompt(identity))]
             messages.extend(self._history_messages(history))
             messages.append(HumanMessage(content=user_query))
-            return self.llm.invoke(messages).content or ""
+            cfg = langfuse_setup.llm_config(obs_handler)
+            resp = self.llm.invoke(messages, config=cfg) if cfg else self.llm.invoke(messages)
+            return resp.content or ""
         except Exception as e:
             print(f"{self.name} 降级调用失败: {e}")
             return "抱歉，处理您的请求时遇到技术问题，请稍后重试。"
@@ -187,13 +198,15 @@ class BaseAgent(ABC):
         return converted
 
     @staticmethod
-    def _stream_with_tools(llm, messages):
+    def _stream_with_tools(llm, messages, obs_handler=None):
         """流式调用并累积正文与 tool_calls 分片（保持逐 token 回调）。"""
         import json
+        from services import langfuse_setup
         full_text = ""
         tc_slots: dict = {}
         order: list = []
-        for chunk in llm.stream(messages):
+        cfg = langfuse_setup.llm_config(obs_handler)
+        for chunk in (llm.stream(messages, config=cfg) if cfg else llm.stream(messages)):
             if chunk.content:
                 full_text += chunk.content
             for tcc in getattr(chunk, "tool_call_chunks", None) or []:
@@ -237,8 +250,10 @@ class BaseAgent(ABC):
 
         执行期间把登录身份写入受信上下文（services.security），工具层据此做
         归属硬校验——身份来自图输入，不经过 LLM 的工具参数，无法被诱导越权。
+        可观测性：包一层 Langfuse trace（session_id=线程、user_id=会员），
+        未配置时为 no-op。
         """
-        from services import security
+        from services import langfuse_setup, security
 
         query = state["customer_query"]
         history = list(state.get("messages") or [])
@@ -249,17 +264,23 @@ class BaseAgent(ABC):
         identity = self._identity_context(state)
         self._pending_action = None
 
-        token = security.set_current_member(state.get("member_id"))
-        try:
+        with langfuse_setup.trace(
+            name=f"agent:{self.name}",
+            session_id=state.get("session_id"),
+            user_id=state.get("member_id"),
+            tags=["react", self.name],
+        ) as obs_handler:
+            token = security.set_current_member(state.get("member_id"))
             try:
-                response = self._react_answer(query, history, identity)
-            except Exception as e:
-                print(f"{self.name} ReAct 异常: {e}")
-                response = ""
-            if not response:
-                response = self._plain_answer(query, history, identity)
-        finally:
-            security.reset_current_member(token)
+                try:
+                    response = self._react_answer(query, history, identity, obs_handler=obs_handler)
+                except Exception as e:
+                    print(f"{self.name} ReAct 异常: {e}")
+                    response = ""
+                if not response:
+                    response = self._plain_answer(query, history, identity, obs_handler=obs_handler)
+            finally:
+                security.reset_current_member(token)
 
         return {
             "agent_response": response,

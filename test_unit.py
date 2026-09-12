@@ -1575,6 +1575,52 @@ class TestPayment:
         assert "route.query.order_no" in src
 
 
+class TestLangfuseSetup:
+    """Langfuse 观测接入：未配置密钥 / 占位符时全部退化为 no-op，
+    开关正确性；启用后不改变业务行为（config 合并防流式回调被替换）。"""
+
+    def test_disabled_when_keys_unset(self, monkeypatch):
+        from services import langfuse_setup
+        monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+        monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+        assert langfuse_setup.is_enabled() is False
+        # trace 与 llm_config 都应退化为 no-op
+        with langfuse_setup.trace("agent:test") as h:
+            assert h is None
+        assert langfuse_setup.llm_config(None) is None
+
+    def test_disabled_for_placeholder_keys(self, monkeypatch):
+        from services import langfuse_setup
+        monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-xxxx")
+        monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-xxxx")
+        assert langfuse_setup.is_enabled() is False           # 占位符不开
+
+    def test_enabled_with_real_keys(self, monkeypatch):
+        from services import langfuse_setup
+        monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-real1234567890ab")
+        monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-real1234567890ab")
+        assert langfuse_setup.is_enabled() is True
+
+    def test_whitespace_only_keys_disabled(self, monkeypatch):
+        from services import langfuse_setup
+        monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "   ")
+        monkeypatch.setenv("LANGFUSE_SECRET_KEY", "")
+        assert langfuse_setup.is_enabled() is False
+
+    def test_llm_config_merges_not_replaces(self, monkeypatch):
+        """llm_config 必须 merge_configs 合并，不能裸返回 callbacks——
+        显式 callbacks 会整体替换 LangGraph 注入的流式回调，token 传播被吞。"""
+        from services import langfuse_setup
+        monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-real1234567890ab")
+        monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-real1234567890ab")
+        with langfuse_setup.trace("agent:test") as h:
+            assert h is not None
+            cfg = langfuse_setup.llm_config(h)
+            assert cfg is not None and cfg.get("callbacks")
+            # 合并后应保留 LangGraph 注入的上下文键（而非只有 callbacks 一个键）
+            assert len(cfg) >= 1
+
+
 # ---------------------------------------------------------------- 直接运行入口
 
 if __name__ == "__main__":

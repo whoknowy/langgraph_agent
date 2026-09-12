@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 
 from agents import create_llm
 from langchain_core.messages import HumanMessage, SystemMessage
+from services import langfuse_setup
 
 _CLASSIFIER_LLM = None
 
@@ -47,12 +48,15 @@ def _get_llm():
     return _CLASSIFIER_LLM
 
 
-def classify_intent(query: str, history: Optional[List[Dict]] = None) -> Dict[str, str]:
+def classify_intent(query: str, history: Optional[List[Dict]] = None,
+                    session_id: Optional[str] = None,
+                    member_id: Optional[str] = None) -> Dict[str, str]:
     """单次 LLM 调用完成意图分类。
 
     Args:
         query: 用户最新消息
         history: 该线程的历史消息 [{"role": "user"|"assistant", "content": ...}]（不含当前消息）
+        session_id / member_id: 仅用于 Langfuse trace 归组，未启用时无影响
 
     Returns:
         {"agent": "product|billing|complaint|general", "note": str}
@@ -68,10 +72,18 @@ def classify_intent(query: str, history: Optional[List[Dict]] = None) -> Dict[st
         lines.append(f"用户最新消息: {query}")
         payload = "\n".join(lines)
 
-        raw = _get_llm().invoke([
-            SystemMessage(content=_SYSTEM_PROMPT),
-            HumanMessage(content=payload),
-        ]).content or ""
+        with langfuse_setup.trace(
+            name="intent_classifier",
+            session_id=session_id,
+            user_id=member_id,
+            tags=["classifier"],
+        ) as handler:
+            cfg = langfuse_setup.llm_config(handler)
+            llm = _get_llm()
+            resp = llm.invoke([SystemMessage(content=_SYSTEM_PROMPT), HumanMessage(content=payload)],
+                              config=cfg) if cfg else llm.invoke([SystemMessage(content=_SYSTEM_PROMPT),
+                                                                  HumanMessage(content=payload)])
+        raw = resp.content or ""
 
         m = re.search(r"\{.*\}", raw, re.DOTALL)
         data = json.loads(m.group(0)) if m else {}

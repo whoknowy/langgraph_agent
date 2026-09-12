@@ -1303,6 +1303,12 @@ def main():
         print("🔭 LangSmith 轨迹观测已启用（项目:", os.getenv("LANGSMITH_PROJECT", "default"), "）")
     else:
         print("🔭 LangSmith 轨迹观测未启用（.env 配置 LANGSMITH_* 后自动上报）")
+    # Langfuse 与 LangSmith 并存；未配置密钥时 is_enabled() 返回 False，降级 no-op
+    from services import langfuse_setup
+    if langfuse_setup.is_enabled():
+        print("🔭 Langfuse 轨迹观测已启用（host:", os.getenv("LANGFUSE_HOST"), "）")
+    else:
+        print("🔭 Langfuse 轨迹观测未启用（docker compose up -d 启 Langfuse 后在 .env 填 LANGFUSE_*）")
     print("🚀 多智能体客服系统 Web 应用")
     print("=" * 60)
     print("🌐 启动 Web 服务...")
