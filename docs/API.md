@@ -217,8 +217,8 @@ token 有效期 7 天。过期后所有接口返回 **401**。统一处理方案
 | 订票 | POST | `/api/book` | 创建订单（待支付） | 是 |
 | 订票 | POST | `/api/pay` | 支付（模拟渠道，一步付讫） | 是 |
 | 支付 | POST | `/api/pay/create` | 发起支付（返回收银台地址/表单） | 是 |
-| 支付 | GET | `/api/pay/gateway/{pay_no}` | 收银台中转页（自动 POST 到渠道） | 是 |
-| 支付 | POST | `/api/pay/confirm` | 站内确认支付（模拟渠道用） | 是 |
+| 支付 | GET | `/api/pay/gateway/{pay_no}` | 收银台中转页（自动 POST 到渠道，**无需登录**） | 否 |
+| 支付 | POST | `/api/pay/confirm` | 站内确认支付（模拟渠道用，**body 需带 `confirm_token`**，见 4.4.3.4） | 是 |
 | 支付 | GET | `/api/pay/status?order_no=` | 查询支付状态（轮询用） | 是 |
 | 支付 | POST | `/api/pay/notify/alipay` | 支付宝异步通知（**无需登录**，验签+幂等） | 否 |
 | 支付 | GET | `/api/pay/return/alipay` | 支付宝同步回跳（**无需登录**，跳转结果页） | 否 |
@@ -320,9 +320,9 @@ token 有效期 7 天。过期后所有接口返回 **401**。统一处理方案
 | 事件 | JSON | 含义 |
 |---|---|---|
 | 文本增量 | `{"content": "明天北京"}` | AI 正在生成的一段文字，**追加**到界面上（注意是增量，不是全量） |
-| 工具调用 | `{"tool": {"name": "search_flights", "status": "running"}}` | AI 正在查数据，界面可显示「查询中…」动画 |
+| 工具调用 | `{"tool": {"name": "search_flights", "args": {...}, "status": "running"}}` | AI 正在调工具；`args` 是本次调用的参数（工具分片到达早期可能为空对象，**参数以 done 事件的 `tool_calls` 为准**），界面可显示「查询中…」 |
 | 确认卡片 | `{"pending_action": {...}}` | 流结束前若 AI 发起了确认卡片，会推这个事件 |
-| 结束 | `{"done": true, "session_id": "...", "thread_id": "...", "response": "全文", "tools": ["search_flights"]}` | 一轮结束；`response` 是全文（懒得拼增量时直接用它覆盖） |
+| 结束 | `{"done": true, "session_id": "...", "thread_id": "...", "response": "全文", "tools": ["search_flights"], "tool_calls": [{"name": "search_flights", "args": {...}}]}` | 一轮结束；`response` 是全文（懒得拼增量时直接用它覆盖）；`tool_calls` 是全部工具调用（名称+参数）汇总，**以此为准** |
 | 出错 | `{"error": "流式响应中断"}` | 之后紧跟 `[DONE]`，按失败处理 |
 
 安卓读流示例（OkHttp）：
@@ -539,7 +539,9 @@ while (source.readUtf8Line()?.also { line ->
 
 #### 4.4.3.3 收银台中转页 `GET /api/pay/gateway/{pay_no}`
 
-返回一段会自动提交的 HTML 表单，Referer 恒为本站点。
+返回一段会自动提交的 HTML 表单，Referer 恒为本站点。**无需登录**——
+它要在 WebView / 外部浏览器里打开，那些容器未必带得上登录态；
+安全上靠 `pay_no` 不可猜测（随机生成）。
 
 > **为什么要中转**：直接把支付宝的 `pay_url` 粘到地址栏打开时 Referer 为空，
 > 沙箱会返回 `{"stat":"fail","msg":"RefererCheckFailed"}`。
