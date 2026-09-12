@@ -412,3 +412,6 @@ keys/*.txt
 
 # Vite 构建残留
 frontend/vite.config.js.timestamp-*
+
+# langgraph dev 本地持久化的备份目录（含用户对话数据，12MB+，不入库）
+.langgraph_api_backup_*/

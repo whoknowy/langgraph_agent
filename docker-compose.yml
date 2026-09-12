@@ -68,6 +68,9 @@ services:
       - "127.0.0.1:2024:2024"
     volumes:
       - ./data:/app/data
+      # langgraph dev 的本地持久化（线程/checkpoint 的 pckl）：挂载宿主机目录，
+      # 容器重建后对话记录不丢，且能沿用容器化之前的历史会话
+      - ./.langgraph_api:/app/.langgraph_api
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request as u; u.urlopen('http://127.0.0.1:2024/ok', timeout=3)"]
