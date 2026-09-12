@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  智能航空客服系统 · JMeter 阶梯压测（验收 1.2）
+
+  阶梯：10 → 50 → 100 → 200 并发，四组线程组顺序执行（serialized），
+  每组持续 60s；公共采样流（登录 → health → 订单 → 航班搜索）见
+  flight_agent_flow.jmx（IncludeController 引用）。
+
+  运行（命令行，非 GUI，在仓库根目录执行）：
+    jmeter -n -t ops/jmeter/flight_agent.jmx \
+           -l ops/jmeter/results/jmeter_run.csv \
+           -e -o ops/jmeter/results/report_<时间戳>
+  Windows 也可直接运行 ops/jmeter/run_jmeter.ps1。
+
+  无 JMeter 环境时的零依赖平替：ops/loadtest/step_load.py（同口径指标，
+  已实测并落档 eval/BASELINE.md）。
+-->
+<jmeterTestPlan version="1.2" properties="5" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="flight-agent 阶梯压测">
+      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments">
+        <collectionProp name="Arguments.arguments">
+          <elementProp name="BASE" elementType="Argument">
+            <stringProp name="Argument.name">BASE</stringProp>
+            <stringProp name="Argument.value">127.0.0.1</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+          <elementProp name="PORT" elementType="Argument">
+            <stringProp name="Argument.name">PORT</stringProp>
+            <stringProp name="Argument.value">5000</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+          <elementProp name="MEMBER_ID" elementType="Argument">
+            <stringProp name="Argument.name">MEMBER_ID</stringProp>
+            <stringProp name="Argument.value">M1001</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+          <elementProp name="PHONE_SUFFIX" elementType="Argument">
+            <stringProp name="Argument.name">PHONE_SUFFIX</stringProp>
+            <stringProp name="Argument.value">2835</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+        </collectionProp>
+      </elementProp>
+      <boolProp name="TestPlan.functional_mode">false</boolProp>
+      <boolProp name="TestPlan.serialize_threadgroups">true</boolProp>
+      <boolProp name="TestPlan.tearDown_on_shutdown">true</boolProp>
+    </TestPlan>
+    <hashTree>
+
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Step1-10并发" num_threads="10" ramp_time="10">
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController">
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+          <stringProp name="LoopController.loops">-1</stringProp>
+        </elementProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.duration">60</stringProp>
+        <stringProp name="ThreadGroup.delay">0</stringProp>
+      </ThreadGroup>
+      <hashTree>
+        <IncludeController guiclass="IncludeControllerGui" testclass="IncludeController" testname="公共采样流">
+          <stringProp name="IncludeController.includepath">flight_agent_flow.jmx</stringProp>
+        </IncludeController>
+        <hashTree/>
+      </hashTree>
+
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Step2-50并发" num_threads="50" ramp_time="20">
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController">
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+          <stringProp name="LoopController.loops">-1</stringProp>
+        </elementProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.duration">60</stringProp>
+        <stringProp name="ThreadGroup.delay">5</stringProp>
+      </ThreadGroup>
+      <hashTree>
+        <IncludeController guiclass="IncludeControllerGui" testclass="IncludeController" testname="公共采样流">
+          <stringProp name="IncludeController.includepath">flight_agent_flow.jmx</stringProp>
+        </IncludeController>
+        <hashTree/>
+      </hashTree>
+
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Step3-100并发" num_threads="100" ramp_time="25">
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController">
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+          <stringProp name="LoopController.loops">-1</stringProp>
+        </elementProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.duration">60</stringProp>
+        <stringProp name="ThreadGroup.delay">5</stringProp>
+      </ThreadGroup>
+      <hashTree>
+        <IncludeController guiclass="IncludeControllerGui" testclass="IncludeController" testname="公共采样流">
+          <stringProp name="IncludeController.includepath">flight_agent_flow.jmx</stringProp>
+        </IncludeController>
+        <hashTree/>
+      </hashTree>
+
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Step4-200并发" num_threads="200" ramp_time="30">
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController">
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+          <stringProp name="LoopController.loops">-1</stringProp>
+        </elementProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.duration">60</stringProp>
+        <stringProp name="ThreadGroup.delay">5</stringProp>
+      </ThreadGroup>
+      <hashTree>
+        <IncludeController guiclass="IncludeControllerGui" testclass="IncludeController" testname="公共采样流">
+          <stringProp name="IncludeController.includepath">flight_agent_flow.jmx</stringProp>
+        </IncludeController>
+        <hashTree/>
+      </hashTree>
+
+      <!-- 结果落盘（命令行 -l 之外的双保险） -->
+      <ResultCollector guiclass="SummaryReport" testclass="ResultCollector" testname="阶梯汇总(CSV)">
+        <boolProp name="ResultCollector.error_logging">false</boolProp>
+        <objProp>
+          <name>saveConfig</name>
+          <value class="SampleSaveConfiguration">
+            <time>true</time>
+            <latency>true</latency>
+            <timestamp>true</timestamp>
+            <success>true</success>
+            <label>true</label>
+            <code>true</code>
+            <message>false</message>
+            <thread_name>true</thread_name>
+            <data_type>false</data_type>
+            <assertion_results>false</assertion_results>
+            <bytes>true</bytes>
+            <sent_bytes>true</sent_bytes>
+            <url>false</url>
+            <thread_counts>true</thread_counts>
+            <idle_time>false</idle_time>
+            <connect_time>true</connect_time>
+          </value>
+        </objProp>
+        <stringProp name="filename">ops/jmeter/results/jmeter_run.csv</stringProp>
+      </ResultCollector>
+      <hashTree/>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>

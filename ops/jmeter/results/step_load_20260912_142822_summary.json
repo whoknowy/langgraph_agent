@@ -1,0 +1,181 @@
+{
+  "captured_at": "20260912_142822",
+  "base": "http://127.0.0.1:5000",
+  "member": "M1001",
+  "steps": {
+    "10": {
+      "health": {
+        "requests": 559,
+        "qps": 19.8,
+        "avg_ms": 6.6,
+        "p50_ms": 3.0,
+        "p95_ms": 24.9,
+        "p99_ms": 27.6,
+        "error_rate": 0.0
+      },
+      "login": {
+        "requests": 559,
+        "qps": 19.8,
+        "avg_ms": 62.2,
+        "p50_ms": 57.6,
+        "p95_ms": 92.8,
+        "p99_ms": 145.8,
+        "error_rate": 0.0
+      },
+      "orders": {
+        "requests": 559,
+        "qps": 19.8,
+        "avg_ms": 255.4,
+        "p50_ms": 236.3,
+        "p95_ms": 318.0,
+        "p99_ms": 1104.0,
+        "error_rate": 0.0
+      },
+      "search": {
+        "requests": 559,
+        "qps": 19.8,
+        "avg_ms": 175.4,
+        "p50_ms": 159.5,
+        "p95_ms": 204.0,
+        "p99_ms": 975.1,
+        "error_rate": 0.0
+      },
+      "_total": {
+        "requests": 2236,
+        "qps": 79.1,
+        "error_rate": 0.0
+      }
+    },
+    "50": {
+      "health": {
+        "requests": 550,
+        "qps": 18.4,
+        "avg_ms": 8.0,
+        "p50_ms": 4.2,
+        "p95_ms": 26.0,
+        "p99_ms": 27.8,
+        "error_rate": 0.0
+      },
+      "login": {
+        "requests": 550,
+        "qps": 18.4,
+        "avg_ms": 319.1,
+        "p50_ms": 314.2,
+        "p95_ms": 399.6,
+        "p99_ms": 761.8,
+        "error_rate": 0.0
+      },
+      "orders": {
+        "requests": 550,
+        "qps": 18.4,
+        "avg_ms": 1254.2,
+        "p50_ms": 1233.7,
+        "p95_ms": 1391.7,
+        "p99_ms": 2103.0,
+        "error_rate": 0.0
+      },
+      "search": {
+        "requests": 550,
+        "qps": 18.4,
+        "avg_ms": 1014.2,
+        "p50_ms": 883.8,
+        "p95_ms": 1989.8,
+        "p99_ms": 3598.2,
+        "error_rate": 0.0
+      },
+      "_total": {
+        "requests": 2200,
+        "qps": 73.6,
+        "error_rate": 0.0
+      }
+    },
+    "100": {
+      "health": {
+        "requests": 561,
+        "qps": 13.1,
+        "avg_ms": 21.8,
+        "p50_ms": 6.3,
+        "p95_ms": 88.1,
+        "p99_ms": 297.1,
+        "error_rate": 0.0
+      },
+      "login": {
+        "requests": 561,
+        "qps": 13.1,
+        "avg_ms": 772.3,
+        "p50_ms": 653.5,
+        "p95_ms": 1526.2,
+        "p99_ms": 2980.3,
+        "error_rate": 0.0
+      },
+      "orders": {
+        "requests": 561,
+        "qps": 13.1,
+        "avg_ms": 2997.3,
+        "p50_ms": 2623.7,
+        "p95_ms": 6021.9,
+        "p99_ms": 6728.1,
+        "error_rate": 0.0018
+      },
+      "search": {
+        "requests": 561,
+        "qps": 13.1,
+        "avg_ms": 2345.4,
+        "p50_ms": 1812.8,
+        "p95_ms": 5196.1,
+        "p99_ms": 9715.1,
+        "error_rate": 0.0089
+      },
+      "_total": {
+        "requests": 2244,
+        "qps": 52.6,
+        "error_rate": 0.0027
+      }
+    },
+    "200": {
+      "health": {
+        "requests": 516,
+        "qps": 20.6,
+        "avg_ms": 21.3,
+        "p50_ms": 13.4,
+        "p95_ms": 70.7,
+        "p99_ms": 79.9,
+        "error_rate": 0.0
+      },
+      "login": {
+        "requests": 516,
+        "qps": 20.6,
+        "avg_ms": 1792.1,
+        "p50_ms": 1310.4,
+        "p95_ms": 4350.7,
+        "p99_ms": 5473.5,
+        "error_rate": 0.0
+      },
+      "orders": {
+        "requests": 398,
+        "qps": 15.9,
+        "avg_ms": 5932.0,
+        "p50_ms": 5969.2,
+        "p95_ms": 7620.2,
+        "p99_ms": 8665.1,
+        "error_rate": 0.0
+      },
+      "search": {
+        "requests": 340,
+        "qps": 13.6,
+        "avg_ms": 4433.1,
+        "p50_ms": 3896.2,
+        "p95_ms": 7970.2,
+        "p99_ms": 9832.0,
+        "error_rate": 0.0176
+      },
+      "_total": {
+        "requests": 1770,
+        "qps": 70.8,
+        "error_rate": 0.0034
+      }
+    }
+  },
+  "note": "Python 阶梯压测（ops/loadtest/step_load.py），与 JMeter .jmx 同口径；每轮循环=登录+健康检查+订单+航班搜索 4 请求",
+  "total_samples": 8450
+}
