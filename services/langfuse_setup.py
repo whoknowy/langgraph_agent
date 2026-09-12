@@ -47,26 +47,34 @@ def trace(name: str, session_id: Optional[str] = None,
         with langfuse_setup.trace(name="agent:billing_agent",
                                   session_id=tid, user_id=mid) as handler:
             llm.invoke(messages, config=langfuse_setup.llm_config(handler))
+
+    SDK 兼容：langfuse python SDK v3 用 client.start_as_current_span，
+    v4 改名为 start_as_current_observation(as_type="span")，这里两者都支持。
     """
     if not is_enabled():
         yield None
         return
     try:
-        from langfuse import get_client  # v3 SDK
+        from langfuse import get_client  # v3/v4 SDK
         from langfuse.langchain import CallbackHandler
         client = get_client()
-        # span 自动管理 OTEL 上下文；CallbackHandler 实例化后挂到当前 span，
-        # 该 span 下游的 LLM / 工具 invoke 全部嵌套为该 trace 的子 observation。
-        with client.start_as_current_span(name=name) as span:
+        if hasattr(client, "start_as_current_span"):          # v3
+            span_cm = client.start_as_current_span(name=name)
+        else:                                                  # v4
+            span_cm = client.start_as_current_observation(name=name, as_type="span")
+        with span_cm as span:
             try:
-                span.update_trace(
-                    session_id=session_id,
-                    user_id=user_id,
-                    tags=tags or [],
-                )
+                if hasattr(span, "update_trace"):              # v3
+                    span.update_trace(session_id=session_id, user_id=user_id,
+                                      tags=tags or [])
+                else:                                          # v4: update(**kwargs) 承接 trace 属性
+                    span.update(session_id=session_id, user_id=user_id,
+                                tags=tags or [])
             except Exception:
-                # span.update_trace 在 v3 老 API 名称下可能不存在；不阻断主链路
+                # trace 属性写入失败不影响观测主链路
                 pass
+            # CallbackHandler 实例化后挂到当前 span 上下文，下游 LLM / 工具
+            # invoke 全部自动嵌套为该 trace 的子 observation。
             yield CallbackHandler()
     except Exception as e:
         # 观测组件任何异常都降级，不影响业务
