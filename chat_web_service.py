@@ -821,8 +821,8 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
     """
     LangGraph 原生 Token 级流式聊天。
 
-    通过 POST /threads/{tid}/runs/stream（stream_mode=["messages"]）拿到模型逐
-    token 分片，转成 SSE data 行下发；结束时回读线程状态补发 pending_action
+    通过 POST /threads/{tid}/runs/stream（stream_mode=["messages-tuple"]）拿到模型逐
+    token 增量分片，转成 SSE data 行下发；结束时回读线程状态补发 pending_action
     （确认卡片）事件与 done 事件（含 thread_id 与完整响应）。
     线程按会员归属解析（见 ensure_thread_exists），不依赖进程级全局状态。
     LangGraph 不可达时回退本地流程；runs/stream 端点不可用时回退轮询实现。
@@ -852,7 +852,9 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
             json={
                 "assistant_id": _assistant_id,
                 "input": graph_input,
-                "stream_mode": ["messages"],
+                # langgraph_api 0.14 下 "messages"（新版快照模式）对本图不下发任何
+                # 分片；"messages-tuple" 才是逐 token 增量（raw AIMessageChunk）。
+                "stream_mode": ["messages-tuple"],
             },
             stream=True,
             timeout=30,
@@ -909,10 +911,12 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
                 continue
 
             if isinstance(payload, list):
-                # messages / messages/partial 事件：data 是消息分片数组（累计文本），
-                # 与上一分片做增量，仅下发新增片段（Token 级打字效果）；
-                # 模型决定调用工具时，chunk.tool_calls 出现工具名（累计分片），发 running 事件；
-                # 意图分类节点的内部输出不进入对话流，按消息id对应的节点过滤。
+                # messages（messages-tuple）事件：data 是 [chunk, metadata]，
+                # chunk.content 本身就是本帧增量（raw AIMessageChunk）；
+                # messages/partial 事件（旧版快照模式）：content 是累计文本，
+                # 需与上一分片做 diff。两者都仅下发新增片段（Token 级打字效果）；
+                # 模型决定调用工具时，chunk.tool_calls 出现工具名，发 running 事件；
+                # 意图分类节点的内部输出不进入对话流，按节点名过滤。
                 if current_event in ("messages", "messages/partial"):
                     msg = payload[0] if payload else None
                     msg_id = msg.get("id") if isinstance(msg, dict) else None
@@ -926,13 +930,20 @@ def stream_chat_tokens(user_message: str, client_session_id: Optional[str] = Non
                     # 链路观测先于意图分类过滤：意图分类节点不进对话流，但要进链路
                     for ev in run_trace.observe_message(chunk_node, msg_id):
                         yield _sse_line(ev)
-                    if msg_id and msg_nodes.get(msg_id) == "intent_classifier":
+                    if chunk_node == "intent_classifier" \
+                            or (msg_id and msg_nodes.get(msg_id) == "intent_classifier"):
                         prev_content = ""
                         continue
                     content = _extract_stream_content(msg)
                     if content:
-                        delta = content[len(prev_content):] if content.startswith(prev_content) else content
-                        prev_content = content
+                        if current_event == "messages":
+                            # messages-tuple：分片即增量，直接下发。
+                            # 注意不能沿用 startswith diff——相邻分片内容重复时
+                            # （如 "0" 后又一个 "0"）会把合法 token 吞掉。
+                            delta = content
+                        else:
+                            delta = content[len(prev_content):] if content.startswith(prev_content) else content
+                            prev_content = content
                         if delta:
                             full_parts.append(delta)
                             _masked = masker.feed(delta)

@@ -83,7 +83,19 @@ def trace(name: str, session_id: Optional[str] = None,
 
 
 def llm_config(handler: Optional[object]) -> Optional[dict]:
-    """统一组装 LLM / 工具 invoke 的 config；handler 为 None 时返回 None。"""
+    """统一组装 LLM / 工具 invoke 的 config；handler 为 None 时返回 None。
+
+    注意：必须与调用点继承到的上下文 config 合并（merge_configs），
+    不能直接返回 {"callbacks": [handler]}——显式 callbacks 会整体替换掉
+    LangGraph 注入的流式回调（StreamMessagesHandler），导致
+    stream_mode=["messages-tuple"] 一个 token 都收不到（前端失去打字效果）。
+    合并后 Langfuse 观测与 LangGraph token 流可以共存。
+    """
     if handler is None:
         return None
-    return {"callbacks": [handler]}
+    try:
+        from langchain_core.runnables.config import ensure_config, merge_configs
+        return merge_configs(ensure_config(), {"callbacks": [handler]})
+    except Exception:
+        # 合并失败也不影响观测主链路，退化为原行为
+        return {"callbacks": [handler]}

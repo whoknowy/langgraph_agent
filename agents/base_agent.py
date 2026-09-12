@@ -125,7 +125,7 @@ class BaseAgent(ABC):
             if key not in self._react_cache:
                 self._react_cache[key] = self.llm.bind_tools(tools)
             llm_with_tools = self._react_cache[key]
-            tool_config = langfuse_setup.llm_config(obs_handler)  # {"callbacks":[handler]} 或 None
+            tool_config = langfuse_setup.llm_config(obs_handler)  # 合并上下文后的 config 或 None
 
             messages = [SystemMessage(content=self._react_system_prompt(identity))]
             messages.extend(self._history_messages(history))
@@ -168,7 +168,11 @@ class BaseAgent(ABC):
 
     def _plain_answer(self, user_query: str, history: List[Dict] = None, identity: str = "",
                       obs_handler=None) -> str:
-        """无工具降级：一次普通调用（保持人设与上下文）。"""
+        """无工具降级：一次普通调用（保持人设与上下文）。
+
+        用 llm.stream 逐 token 累积而非 invoke：无工具路径（如综合客服的问候闲聊）
+        也能把 token 分片挂到 LangGraph 流式通道上，前端保持打字效果。
+        """
         from services import langfuse_setup
         if self.llm is None:
             return "抱歉，系统暂时无法处理您的请求，请稍后重试。"
@@ -177,8 +181,12 @@ class BaseAgent(ABC):
             messages.extend(self._history_messages(history))
             messages.append(HumanMessage(content=user_query))
             cfg = langfuse_setup.llm_config(obs_handler)
-            resp = self.llm.invoke(messages, config=cfg) if cfg else self.llm.invoke(messages)
-            return resp.content or ""
+            full_text = ""
+            for chunk in (self.llm.stream(messages, config=cfg) if cfg
+                          else self.llm.stream(messages)):
+                if chunk.content:
+                    full_text += chunk.content
+            return full_text
         except Exception as e:
             print(f"{self.name} 降级调用失败: {e}")
             return "抱歉，处理您的请求时遇到技术问题，请稍后重试。"
