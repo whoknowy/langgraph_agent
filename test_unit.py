@@ -2183,6 +2183,37 @@ class TestLangfuseSetup:
         assert langfuse_setup.is_enabled() is False
 
 
+class TestMetrics:
+    """Prometheus /metrics 采集（验收 1.5；请求量/时延/越权拦截 gauge）。"""
+
+    def test_record_request_and_render(self):
+        from services import metrics
+        if not metrics.AVAILABLE:
+            pytest.skip("prometheus-client 未安装")
+        metrics.record_request("GET", "/api/my/orders", 200, 0.123)
+        metrics.record_request("POST", "/api/book", 403, 0.005)
+        body, ctype = metrics.render()
+        assert body and b"http_requests_total" in body
+        assert b'endpoint="/api/my/orders"' in body
+        assert b'status="403"' in body
+        assert b"http_request_duration_seconds" in body
+        assert ctype and "text/plain" in ctype
+
+    def test_runtime_gauges_refresh(self):
+        from services import metrics
+        if not metrics.AVAILABLE:
+            pytest.skip("prometheus-client 未安装")
+        from services import audit
+        security.set_current_member("M1001")
+        _insert_order("OMTR1", member_id="M1002", amount=1000)
+        audit.log("denied", "测试", "denied", detail={"reason": "metrics 单测"})
+        metrics.refresh_runtime_gauges("http://127.0.0.1:1", days=36500)  # langgraph 地址必不通
+        body, _ = metrics.render()
+        assert body and b"langgraph_up 0" in body
+        assert b"audit_denied_total" in body
+        assert b"audit_writes_total" in body
+
+
 # ---------------------------------------------------------------- 直接运行入口
 
 if __name__ == "__main__":

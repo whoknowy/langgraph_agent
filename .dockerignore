@@ -1,0 +1,28 @@
+# 构建上下文瘦身：依赖目录 / 运行数据 / 日志 / 报告一律不进镜像
+.venv/
+venv/
+frontend/node_modules/
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# 运行时数据（SQLite / 密钥 / 日志 / 评估报告）走卷挂载，不进镜像
+data/
+keys/
+*.log
+lg_dev.log
+flask.log
+web_out.log
+eval/reports/
+ops/jmeter/results/
+ops/loadtest/results/
+
+# 开发与文档
+.git/
+.gitignore
+workbuddy/
+.workbuddy/
+docs/
+*.md
+start*.ps1
+start.bat

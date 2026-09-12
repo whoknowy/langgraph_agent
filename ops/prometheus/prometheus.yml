@@ -1,0 +1,16 @@
+# Prometheus 抓取配置（docker-compose 里的 prometheus 服务加载本文件）
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Prometheus 自身
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Flask 业务应用：/metrics（请求量 / 时延 / 越权拦截 gauge / LangGraph 连通性）
+  - job_name: flight-agent-app
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["app:5000"]

@@ -24,6 +24,7 @@ from chat_web_service import (
     delete_remote_thread,
     clear_thread_and_create_new,
     langgraph_connectivity_test,
+    LANGGRAPH_API_URL,
 )
 from services import session_titles
 
@@ -78,6 +79,7 @@ start_lifecycle_worker()
 def _bind_security_context():
     from flask import g
     from services import security
+    g._metrics_start = time.time()  # /metrics 时延统计起点
     if request.path.startswith('/admin'):
         admin = _resolve_admin()
         if admin:
@@ -86,6 +88,22 @@ def _bind_security_context():
         member = _resolve_member()
         if member:
             g._member_security_token = security.set_current_member(member.get('member_id'))
+
+
+@app.after_request
+def _record_metrics(response):
+    """Prometheus 指标：请求量 / 状态码 / 时延（endpoint 用 url_rule 压标签基数）。"""
+    from flask import g
+    from services import metrics as _metrics
+    try:
+        start = getattr(g, '_metrics_start', None)
+        if start is not None:
+            rule = request.url_rule.rule if request.url_rule is not None else request.path
+            _metrics.record_request(request.method, rule, response.status_code,
+                                    time.time() - start)
+    except Exception:
+        pass  # 指标采集绝不影响响应
+    return response
 
 
 @app.teardown_request
@@ -1447,6 +1465,18 @@ def health_check():
         'status': 'healthy',
         'timestamp': time.time()
     })
+
+
+@app.route('/metrics')
+def metrics_endpoint():
+    """Prometheus 抓取端点（验收 1.5；请求量/时延/越权拦截/LangGraph 连通性）。"""
+    from services import metrics as _metrics
+    body, ctype = _metrics.render()
+    if body is None:
+        return "prometheus-client not installed; metrics disabled\n", 200, {
+            'Content-Type': 'text/plain; charset=utf-8'}
+    _metrics.refresh_runtime_gauges(LANGGRAPH_API_URL)
+    return body, 200, {'Content-Type': ctype}
 
 
 @app.route('/api/test')

@@ -1,16 +1,101 @@
-# 自建 Langfuse（LLM 轨迹观测平台）—— 验收项④ 落地
+# 智能航空客服系统 · 全栈一键部署（验收 1.3）
 #
-# 一键启动：项目根目录执行 docker compose up -d
-# UI 入口：http://localhost:3000（默认管理员 admin@demo.local / demo123456）
+# 启动：docker compose up -d
+#   - 客户端入口   http://localhost:5000        （Flask app）
+#   - LangGraph    http://localhost:2024/ok    （图服务，仅本机）
+#   - Langfuse UI  http://localhost:3000       （预设账号 admin@demo.local / demo123456）
+#   - Prometheus   http://localhost:9090       （抓取 app:5000/metrics）
+#   - Grafana      http://localhost:3001       （admin / demo123456，已预置看板）
 #
-# 首次启动后：
-#   1. 在 .env 把 LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY 改成下面 LANGFUSE_INIT_*
-#      预设的 pk-lf-airline-demo / sk-lf-airline-demo-secret 并取消注释；
-#   2. 重启 LangGraph dev 与 Flask 让观测生效（langgraph 进程不热加载）。
+# Langfuse 首次启动后：在 .env 取消 LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY
+# 注释（值为下方 LANGFUSE_INIT_* 预设的 pk-lf-airline-demo / sk-lf-airline-demo-secret），
+# 再重启 app / langgraph 容器让观测生效。
 #
-# 阶段四将扩展本文件加入 app / langgraph / prometheus / grafana 服务。
+# SQLite 数据落 ./data 卷；支付宝密钥走 ./keys 只读挂载，均不进镜像。
 
 services:
+  # ---------------- 业务应用 ----------------
+  app:
+    build: .
+    image: flight-agent:latest
+    container_name: flight-agent-app
+    restart: unless-stopped
+    command: ["waitress-serve", "--listen=0.0.0.0:5000", "web_app:app"]
+    environment:
+      # 容器内访问 LangGraph 走服务名，覆盖 .env 里的 127.0.0.1
+      LANGGRAPH_API_URL: http://langgraph:2024
+      APP_ENV: production
+    env_file:
+      - .env
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/app/data
+      - ./keys:/app/keys:ro
+    depends_on:
+      langgraph:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request as u; u.urlopen('http://127.0.0.1:5000/api/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  langgraph:
+    build: .
+    image: flight-agent:latest
+    container_name: flight-agent-langgraph
+    restart: unless-stopped
+    # 生产建议改用 `langgraph up`（LangSmith Deployment）；本地演示用 dev 服务器
+    command: ["langgraph", "dev", "--host", "0.0.0.0", "--port", "2024",
+              "--no-browser", "--no-reload"]
+    env_file:
+      - .env
+    expose:
+      - "2024"
+    ports:
+      - "127.0.0.1:2024:2024"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request as u; u.urlopen('http://127.0.0.1:2024/ok', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  # ---------------- 观测 ----------------
+  prometheus:
+    image: docker.io/prom/prometheus:v2.53.0
+    container_name: flight-agent-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  grafana:
+    image: docker.io/grafana/grafana:11.1.0
+    container_name: flight-agent-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: demo123456
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+
+  # ---------------- Langfuse（LLM 轨迹观测，验收 ④） ----------------
   langfuse-worker:
     image: docker.langfuse.com/langfuse/langfuse-worker:4
     restart: always
@@ -194,4 +279,8 @@ volumes:
   langfuse_minio_data:
     driver: local
   langfuse_redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
     driver: local
