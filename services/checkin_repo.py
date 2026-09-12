@@ -12,7 +12,7 @@
 import random
 from datetime import datetime, timedelta
 
-from services import db, security
+from services import audit, db, security
 
 BUSINESS_ROWS = range(1, 4)        # 商务舱 1-3 排
 BUSINESS_COLS = ("A", "C", "D", "F")
@@ -201,8 +201,10 @@ def do_checkin(order_no: str, member_id: str, seat_no: str) -> dict:
     r, dep = _order_with_departure(order_no)
     if not r:
         return {"error": f"订单不存在：{order_no}"}
-    if member_id and _norm(member_id) != _norm(r["member_id"]):
-        return {"error": "无权限：只能为登录会员本人的订单值机"}
+    denied = security.enforce_owner(r["member_id"], action="值机")
+    if denied:
+        audit.denied("值机", denied["error"], target=order_no)
+        return denied
     if r["status"] not in ("已出票", "已改签"):
         return {"error": f"订单状态为「{r['status']}」，只有「已出票/已改签」的订单可以值机"}
     can, reason = checkin_window_status(dep)
@@ -255,6 +257,8 @@ def do_checkin(order_no: str, member_id: str, seat_no: str) -> dict:
             (order_no, seat_no, gate, boarding,
              datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         conn.commit()
+        audit.write_ok("值机选座", target=order_no,
+                       detail={"seat_no": seat_no, "rebook": bool(old)})
         return _boardpass_payload(order_no, "值机成功" if not old else "改座成功",
                                   conn=conn)
     finally:
@@ -262,14 +266,18 @@ def do_checkin(order_no: str, member_id: str, seat_no: str) -> dict:
 
 
 def cancel_checkin(order_no: str, member_id: str = None) -> dict:
-    """取消值机：释放座位并删除值机记录（退票/改签时由仓库层自动调用，无记录时幂等成功）。"""
+    """取消值机：释放座位并删除值机记录（退票/改签时由仓库层自动调用，无记录时幂等成功）。
+
+    归属校验从订单反查（不信任传参）；退票/改签内部调用时登录身份或管理员身份已绑定。
+    """
     order_no = _norm(order_no)
-    if member_id:
-        r, _ = _order_with_departure(order_no)
-        if not r:
-            return {"error": f"订单不存在：{order_no}"}
-        if _norm(member_id) != _norm(r["member_id"]):
-            return {"error": "无权限：只能操作登录会员本人的订单"}
+    r, _ = _order_with_departure(order_no)
+    if not r:
+        return {"error": f"订单不存在：{order_no}"}
+    denied = security.enforce_owner(r["member_id"], action="取消值机")
+    if denied:
+        audit.denied("取消值机", denied["error"], target=order_no)
+        return denied
     conn = db.get_connection()
     try:
         ck = _get_checkin(conn, order_no)
@@ -283,6 +291,7 @@ def cancel_checkin(order_no: str, member_id: str = None) -> dict:
             (order_no, order_no, ck["seat_no"], order_no))
         conn.execute("DELETE FROM checkins WHERE order_no = ?", (order_no,))
         conn.commit()
+        audit.write_ok("取消值机", target=order_no, detail={"seat_no": ck["seat_no"]})
         return {"success": True, "released": True, "seat_no": ck["seat_no"],
                 "message": f"已取消值机，座位 {ck['seat_no']} 已释放"}
     finally:

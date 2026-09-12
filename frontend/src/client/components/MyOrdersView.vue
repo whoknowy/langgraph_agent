@@ -44,7 +44,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, qs } from '../../api.js'
+import { api, qs, newRequestId } from '../../api.js'
 import { toastError, toastSuccess, confirmDialog, promptDialog } from '../../ui.js'
 import { usePay, openPayWindow } from '../composables/usePay.js'
 
@@ -98,6 +98,7 @@ async function changeOrder(o) {
   const newDate = await promptDialog('请输入新日期 YYYY-MM-DD', o.flight_date, '改签日期')
   if (!newDate) return
   try {
+    // 报价接口同时签发一次性确认凭证：不带它，/api/change 会被服务端拒绝（HITL 服务端强制）
     const quote = await api('/api/change_quote' + qs({
       order_no: o.order_no, new_flight_no: newFlight, new_date: newDate, new_cabin: o.cabin
     }))
@@ -107,7 +108,8 @@ async function changeOrder(o) {
     const ok = await confirmDialog(`改签报价：${diffText}`, '确认改签')
     if (!ok) return
     const d = await api('/api/change', { method: 'POST', body: {
-      order_no: o.order_no, new_flight_no: newFlight, new_date: newDate, new_cabin: o.cabin
+      order_no: o.order_no, new_flight_no: newFlight, new_date: newDate, new_cabin: o.cabin,
+      confirm_token: quote.confirm_token
     }})
     toastSuccess(d.message || '改签成功')
     await load()
@@ -119,16 +121,21 @@ async function changeOrder(o) {
 async function refund(o) {
   const voluntary = await confirmDialog('选择"确定"走自愿退票；选择"取消"走特殊退票（人工审核）。', '退票方式')
   try {
+    const refundType = voluntary ? 'voluntary' : 'special'
+    // 两种退票都先取报价：它同时签发确认凭证（自愿退票还会展示手续费明细）
+    const quote = await api('/api/refund_quote' + qs({ order_no: o.order_no, refund_type: refundType }))
+    if (quote.error) { toastError(quote.error); return }
     if (voluntary) {
-      const quote = await api('/api/refund_quote' + qs({ order_no: o.order_no }))
       const ok1 = await confirmDialog(`票面金额 ¥${quote.amount}，手续费 ¥${quote.fee}，预计到账 ¥${quote.predict_amount}`, '确认退票')
       if (!ok1) return
     } else {
       const ok2 = await confirmDialog('确认提交特殊退票？将进入人工审核队列。', '特殊退票')
       if (!ok2) return
     }
+    // requestId 是幂等键：同一笔只退一次（双击/重试不会重复退款）
     const d = await api('/api/refund', { method: 'POST', body: {
-      order_no: o.order_no, refund_type: voluntary ? 'voluntary' : 'special'
+      order_no: o.order_no, refund_type: refundType,
+      requestId: newRequestId('refund'), confirm_token: quote.confirm_token
     }})
     toastSuccess(d.message || '退票已提交')
     await load()

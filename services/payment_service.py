@@ -56,8 +56,9 @@ def start_payment(order_no: str, member_id: str = None, provider_name: str = Non
     order = _load_order(order_no)
     if not order:
         return {"error": f"订单不存在：{order_no}"}
-    if member_id and order["member_id"] != member_id:
-        return {"error": "订单不属于当前登录会员"}
+    denied = _enforce_order_owner(order, "支付")
+    if denied:
+        return denied
     if order["status"] != "待支付":
         return {"error": f"订单状态为「{order['status']}」，无需支付"}
 
@@ -119,8 +120,11 @@ def settle_payment(pay_no: str = None, out_trade_no: str = None, *,
         return {"success": True, "already": True, "pay_no": pay_no,
                 "order_no": payment["order_no"], "message": "该支付已处理，忽略重复通知"}
 
-    from services import flight_repo
-    result = flight_repo.pay_order(payment["order_no"])  # 异步回调无登录身份，归属已在发起时校验
+    from services import flight_repo, security
+    # 异步回调没有登录身份，属于系统内部流程：显式声明 system_context，
+    # 让仓库层的归属校验按"系统流程"放行（归属已在发起支付时校验过）。
+    with security.system_context("支付异步回调落账"):
+        result = flight_repo.pay_order(payment["order_no"])
     if result.get("error"):
         # 钱已收但订单推进不了（典型：支付期间订单被超时任务取消）
         order = _load_order(payment["order_no"])
@@ -138,6 +142,12 @@ def settle_payment(pay_no: str = None, out_trade_no: str = None, *,
             "message": f"支付成功，订单 {payment['order_no']} 已出票"}
 
 
+def _enforce_order_owner(order: dict, action: str):
+    """支付相关操作的归属校验：从订单反查会员号走受信通道，不信任传参。"""
+    from services import security
+    return security.enforce_owner(order.get("member_id"), action=action)
+
+
 def confirm_payment(pay_no: str, member_id: str = None) -> Dict[str, Any]:
     """站内确认支付（direct 模式，目前仅 mock 渠道使用）。"""
     payment = payment_repo.get_payment(pay_no)
@@ -146,8 +156,9 @@ def confirm_payment(pay_no: str, member_id: str = None) -> Dict[str, Any]:
     order = _load_order(payment["order_no"])
     if not order:
         return {"error": f"订单不存在：{payment['order_no']}"}
-    if member_id and order["member_id"] != member_id:
-        return {"error": "订单不属于当前登录会员"}
+    denied = _enforce_order_owner(order, "支付")
+    if denied:
+        return denied
     return settle_payment(pay_no=pay_no, provider_name=payment["provider"])
 
 
@@ -156,8 +167,9 @@ def get_payment_status(order_no: str, member_id: str = None) -> Dict[str, Any]:
     order = _load_order(order_no)
     if not order:
         return {"error": f"订单不存在：{order_no}"}
-    if member_id and order["member_id"] != member_id:
-        return {"error": "订单不属于当前登录会员"}
+    denied = _enforce_order_owner(order, "查询支付状态")
+    if denied:
+        return denied
     payment = payment_repo.get_latest_payment(order_no)
     return {
         "order_no": order["order_no"],

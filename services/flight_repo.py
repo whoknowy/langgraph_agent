@@ -8,7 +8,7 @@
 import sqlite3
 from datetime import date, datetime, timedelta
 
-from services import db, security
+from services import audit, db, security
 from services.db_seed import HORIZON_DAYS
 
 
@@ -574,32 +574,43 @@ def book_flight(member_id: str, flight_no: str, flight_date: str, cabin: str, pa
 def _transition_order(order_no: str, member_id: str, from_status, to_status: str) -> dict:
     """订单状态流转（校验归属与前置状态）。
 
+    归属校验**从订单反查**再用受信通道比对，不信任调用方传入的 member_id；
+    更新语句带状态守卫（`AND status IN (...)`）保证原子，避免并发下重复流转。
+
     from_status 可传 str 或 tuple；进入「退票中」时自动把来源状态记入 prev_status，
     供管理端驳回后恢复（改签单驳回应回到「已改签」而不是「已出票」）。
     """
     from_list = (from_status,) if isinstance(from_status, str) else tuple(from_status)
+    order_no = (order_no or "").strip().upper()
     conn = _conn()
-    r = conn.execute("SELECT member_id, status FROM orders WHERE order_no = ?",
-                     ((order_no or "").strip().upper(),)).fetchone()
-    if not r:
+    try:
+        r = conn.execute("SELECT member_id, status FROM orders WHERE order_no = ?",
+                         (order_no,)).fetchone()
+        if not r:
+            return {"error": f"订单不存在：{order_no}"}
+        denied = security.enforce_owner(r["member_id"], action="操作")
+        if denied:
+            audit.denied(to_status, denied["error"], target=order_no)
+            return denied
+        if r["status"] not in from_list:
+            return {"error": f"订单状态为「{r['status']}」，无法执行该操作（需为「{'/'.join(from_list)}」）"}
+        marks = ",".join("?" for _ in from_list)
+        if to_status == "退票中":
+            cur = conn.execute(
+                f"UPDATE orders SET status = ?, prev_status = ? WHERE order_no = ? AND status IN ({marks})",
+                (to_status, r["status"], order_no, *from_list))
+        else:
+            cur = conn.execute(
+                f"UPDATE orders SET status = ? WHERE order_no = ? AND status IN ({marks})",
+                (to_status, order_no, *from_list))
+        if cur.rowcount != 1:
+            conn.rollback()
+            return {"error": f"订单 {order_no} 状态刚刚发生变化，操作未生效，请刷新后重试"}
+        conn.commit()
+    finally:
         conn.close()
-        return {"error": f"订单不存在：{order_no}"}
-    if member_id and r["member_id"] != member_id:
-        conn.close()
-        return {"error": "订单不属于当前登录会员"}
-    if r["status"] not in from_list:
-        conn.close()
-        return {"error": f"订单状态为「{r['status']}」，无法执行该操作（需为「{'/'.join(from_list)}」）"}
-    order_no = order_no.strip().upper()
-    if to_status == "退票中":
-        conn.execute("UPDATE orders SET status = ?, prev_status = ? WHERE order_no = ?",
-                     (to_status, r["status"], order_no))
-    else:
-        conn.execute("UPDATE orders SET status = ? WHERE order_no = ?", (to_status, order_no))
-    conn.commit()
-    conn.close()
-    return {"success": True, "order_no": order_no.strip().upper(), "status": to_status,
-            "message": f"订单 {order_no.strip().upper()} 状态已更新为「{to_status}」"}
+    return {"success": True, "order_no": order_no, "status": to_status,
+            "message": f"订单 {order_no} 状态已更新为「{to_status}」"}
 
 
 def pay_order(order_no: str, member_id: str = None) -> dict:
@@ -607,12 +618,68 @@ def pay_order(order_no: str, member_id: str = None) -> dict:
     return _transition_order(order_no, member_id, "待支付", "已出票")
 
 
-def refund_order(order_no: str, member_id: str = None) -> dict:
-    """特殊退票（非自愿：延误/取消等）：已出票/已改签 → 退票中，进入管理端审批队列。"""
+def _record_refund(conn, request_id, order_no, member_id, refund_type, amount, fee, status) -> bool:
+    """写退款流水（request_id 为幂等键）。已存在同 request_id 时返回 False。"""
+    if not request_id:
+        return True
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO refunds (request_id, order_no, member_id, refund_type, "
+        "amount, fee, status, created_at) VALUES (?,?,?,?,?,?,?,?)",
+        (request_id, order_no, member_id, refund_type, int(amount or 0), int(fee or 0),
+         status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    return cur.rowcount == 1
+
+
+def get_refund_by_request(request_id: str):
+    """按幂等键取退款流水（用于识别重复请求）。"""
+    if not request_id:
+        return None
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT * FROM refunds WHERE request_id = ?",
+                           (str(request_id).strip(),)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def _refund_order_member(order_no: str):
+    """取订单归属会员（幂等响应/流水记录用）。"""
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT member_id, status, amount FROM orders WHERE order_no = ?",
+                           (security.normalize(order_no),)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def refund_order(order_no: str, member_id: str = None, request_id: str = None) -> dict:
+    """特殊退票（非自愿：延误/取消等）：已出票/已改签 → 退票中，进入管理端审批队列。
+
+    request_id 幂等：同一请求重放直接返回首次结果，不重复流转订单。
+    """
+    order_no = security.normalize(order_no)
+    if request_id:
+        existing = get_refund_by_request(request_id)
+        if existing:
+            audit.idempotent("退票(特殊)", target=existing["order_no"], request_id=request_id)
+            return {"success": True, "idempotent": True, "order_no": existing["order_no"],
+                    "status": existing["status"],
+                    "message": f"该退票请求已受理（{existing['status']}），无需重复提交"}
     result = _transition_order(order_no, member_id, ("已出票", "已改签"), "退票中")
     if result.get("success"):
+        info = _refund_order_member(order_no) or {}
+        conn = _conn()
+        try:
+            _record_refund(conn, request_id, order_no, info.get("member_id") or "",
+                           "special", info.get("amount") or 0, 0, "退票中")
+            conn.commit()
+        finally:
+            conn.close()
         from services import checkin_repo
         checkin_repo.cancel_checkin(order_no)   # 退票审批期间释放座位；驳回后可重新值机
+        audit.write_ok("退票(特殊)", target=order_no, request_id=request_id)
     return result
 
 
@@ -648,13 +715,18 @@ def _order_departure(order_no: str):
 
 
 def refund_quote(order_no: str, member_id: str = None) -> dict:
-    """自愿退票报价：返回手续费与预计到账金额（供确认卡片展示）。"""
+    """自愿退票报价：返回手续费与预计到账金额（供确认卡片展示）。
+
+    归属校验从订单反查会员号再走受信通道（不信任传参）。
+    """
     order_no = security.normalize(order_no)
     r, depart = _order_departure(order_no)
     if not r:
         return {"error": f"订单不存在：{order_no}"}
-    if member_id and security.normalize(member_id) != security.normalize(r["member_id"]):
-        return {"error": "无权限：只能退登录会员本人的订单"}
+    denied = security.enforce_owner(r["member_id"], action="退票")
+    if denied:
+        audit.denied("退票报价", denied["error"], target=order_no)
+        return denied
     if r["status"] not in ("已出票", "已改签"):
         return {"error": f"订单状态为「{r['status']}」，只有「已出票/已改签」的订单可以退票"}
     if depart is None:
@@ -671,29 +743,53 @@ def refund_quote(order_no: str, member_id: str = None) -> dict:
             "fee": fee, "predict_amount": amount - fee, "depart_time": depart.isoformat(sep=" ", timespec="minutes")}
 
 
-def refund_order_instant(order_no: str, member_id: str = None) -> dict:
-    """自愿退票（规则费率，即时到账）：已出票 → 已退款。
+def refund_order_instant(order_no: str, member_id: str = None, request_id: str = None) -> dict:
+    """自愿退票（规则费率，即时到账）：已出票/已改签 → 已退款。
 
-    费用在代码层按公示规则计算，不经 LLM 决定。
+    - 费用在代码层按公示规则计算，不经 LLM 决定；
+    - **request_id 幂等**：同一请求重放只退一次（先查流水，直接返回首次结果）；
+    - 更新语句带状态守卫（`AND status IN (...)`）保证原子，杜绝重复退款；
+    - 归属校验由 refund_quote 从订单反查后走受信通道完成。
     """
     order_no = security.normalize(order_no)
+
+    # 幂等优先：重复点击/重复提交直接返回首次结果，不再消费订单状态
+    if request_id:
+        existing = get_refund_by_request(request_id)
+        if existing:
+            audit.idempotent("退票", target=existing["order_no"], request_id=request_id,
+                             detail={"refund_type": existing["refund_type"]})
+            return {"success": True, "idempotent": True, "order_no": existing["order_no"],
+                    "status": existing["status"], "refund_amount": existing["amount"],
+                    "fee": existing["fee"],
+                    "message": f"该退票请求已处理（订单 {existing['order_no']} 已{existing['status']}），无需重复提交"}
+
     quote = refund_quote(order_no, member_id)
     if quote.get("error"):
         return quote
-    if member_id:
-        row_check = _order_departure(order_no)[0]
-        if security.normalize(member_id) != security.normalize(row_check["member_id"]):
-            return {"error": "无权限：只能退登录会员本人的订单"}
+
+    info = _refund_order_member(order_no) or {}
+    note = f"自愿退票：{quote['fee_tier']}，手续费{quote['fee']}元"
+    conn = _conn()
+    try:
+        cur = conn.execute(
+            "UPDATE orders SET status = '已退款', refund_amount = ?, admin_note = ?, refunded_at = ? "
+            "WHERE order_no = ? AND status IN ('已出票', '已改签')",
+            (quote["predict_amount"], note,
+             datetime.now().strftime("%Y-%m-%d %H:%M:%S"), order_no))
+        if cur.rowcount != 1:
+            conn.rollback()
+            return {"error": f"退款未生效：订单 {order_no} 状态刚刚发生变化（可能已被退款/改签/使用）"}
+        _record_refund(conn, request_id, order_no, info.get("member_id") or "",
+                       "voluntary", quote["predict_amount"], quote["fee"], "已退款")
+        conn.commit()
+    finally:
+        conn.close()
 
     from services import checkin_repo
     checkin_repo.cancel_checkin(order_no)   # 退票自动取消值机、释放座位
-    conn = _conn()
-    conn.execute(
-        "UPDATE orders SET status = '已退款', refund_amount = ?, admin_note = ?, refunded_at = ? WHERE order_no = ?",
-        (quote["predict_amount"], f"自愿退票：{quote['fee_tier']}，手续费{quote['fee']}元",
-         datetime.now().strftime("%Y-%m-%d %H:%M:%S"), order_no))
-    conn.commit()
-    conn.close()
+    audit.write_ok("退票", target=order_no, request_id=request_id,
+                   detail={"fee": quote["fee"], "refund_amount": quote["predict_amount"]})
     return {"success": True, "order_no": order_no, "status": "已退款",
             "refund_amount": quote["predict_amount"], "fee": quote["fee"],
             "message": f"订单 {order_no} 已退款 {quote['predict_amount']} 元（手续费 {quote['fee']} 元，{quote['fee_tier']}）"}
@@ -726,9 +822,11 @@ def change_quote(order_no: str, member_id: str, new_flight_no: str, new_date: st
     if not o:
         conn.close()
         return {"error": f"订单不存在：{order_no}"}
-    if member_id and security.normalize(member_id) != security.normalize(o["member_id"]):
+    denied = security.enforce_owner(o["member_id"], action="改签")
+    if denied:
         conn.close()
-        return {"error": "无权限：只能改签登录会员本人的订单"}
+        audit.denied("改签报价", denied["error"], target=order_no)
+        return denied
     if o["status"] not in ("已出票", "已改签"):
         conn.close()
         return {"error": f"订单状态为「{o['status']}」，只有「已出票/已改签」的订单可以改签"}
@@ -803,17 +901,24 @@ def change_order(order_no: str, member_id: str, new_flight_no: str, new_date: st
     order_no = security.normalize(order_no)
     new_info = quote["new"]
     conn = _conn()
-    conn.execute(
-        "UPDATE orders SET flight_no = ?, flight_date = ?, cabin = ?, amount = ?, status = '已改签', "
-        "admin_note = ? WHERE order_no = ?",
-        (new_info["flight_no"], new_info["date"], new_info["cabin"], new_info["amount"],
-         f"改签: {quote['old']['flight_no']}/{quote['old']['date']}/{quote['old']['cabin']} -> "
-         f"{new_info['flight_no']}/{new_info['date']}/{new_info['cabin']}，{quote['diff_desc']}",
-         order_no))
-    conn.commit()
-    conn.close()
+    try:
+        cur = conn.execute(
+            "UPDATE orders SET flight_no = ?, flight_date = ?, cabin = ?, amount = ?, status = '已改签', "
+            "admin_note = ? WHERE order_no = ? AND status IN ('已出票', '已改签')",
+            (new_info["flight_no"], new_info["date"], new_info["cabin"], new_info["amount"],
+             f"改签: {quote['old']['flight_no']}/{quote['old']['date']}/{quote['old']['cabin']} -> "
+             f"{new_info['flight_no']}/{new_info['date']}/{new_info['cabin']}，{quote['diff_desc']}",
+             order_no))
+        if cur.rowcount != 1:
+            conn.rollback()
+            return {"error": f"改签未生效：订单 {order_no} 状态刚刚发生变化（可能已被退票/改签/使用）"}
+        conn.commit()
+    finally:
+        conn.close()
     from services import checkin_repo
     checkin_repo.cancel_checkin(order_no)   # 新航班需重新值机，原座位自动释放
+    audit.write_ok("改签", target=order_no,
+                   detail={"from": quote["old"], "to": new_info, "fare_diff": quote["fare_diff"]})
     return {"success": True, "order_no": order_no, "status": "已改签",
             "old": quote["old"], "new": new_info, "fare_diff": quote["fare_diff"],
             "message": f"订单 {order_no} 已改签至 {new_info['airline']}{new_info['flight_no']} "

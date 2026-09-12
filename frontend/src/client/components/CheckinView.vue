@@ -250,7 +250,8 @@ async function confirmCheckin() {
   submitting.value = true
   try {
     const d = await api('/api/checkin', { method: 'POST', body: {
-      order_no: selectedOrderNo.value, seat_no: selectedSeat.value
+      order_no: selectedOrderNo.value, seat_no: selectedSeat.value,
+      confirm_token: (seatData.value || {}).confirm_token
     }})
     boardPass.value = d
     await loadSeatMap()
