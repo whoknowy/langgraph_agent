@@ -93,9 +93,11 @@ const navOpen = ref(false)
 .brand-name { color: #fff; font-weight: 700; font-size: 15px; letter-spacing: .01em; }
 .brand-sub { font-size: 11px; color: #8ca3c7; margin-top: 2px; }
 
-.side-nav { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.side-nav {
+  display: flex; flex-direction: column; justify-content: center; gap: 12px; flex: 1;
+}
 .nav-link {
-  display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 11px;
+  display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 12px;
   color: #b7c4da; text-decoration: none; font-size: 14px;
   transition: background .15s, color .15s;
 }

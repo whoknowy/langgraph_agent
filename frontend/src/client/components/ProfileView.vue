@@ -6,11 +6,7 @@
         <div class="profile-avatar">{{ memberInitial }}</div>
         <div class="profile-name">{{ member?.name || '会员' }}</div>
         <div class="profile-id">{{ member?.member_id }} · {{ member?.level || '' }}</div>
-        <div class="profile-points">
-          <div><strong>12,580</strong><span>积分</span></div>
-          <div class="points-divider"></div>
-          <div><strong>8,600</strong><span>里程</span></div>
-        </div>
+        <div class="profile-level-tag" v-if="member?.level">{{ member.level }}会员</div>
       </div>
 
       <div class="card quick-card">
@@ -105,14 +101,12 @@ async function markRead() {
   box-shadow: 0 8px 18px -6px rgba(37, 99, 235, .5);
 }
 .profile-name { font-size: 18px; font-weight: 700; }
-.profile-id { color: var(--text-muted); font-size: 13px; margin: 4px 0 14px; }
-.profile-points {
-  display: flex; justify-content: center; align-items: center; gap: 26px;
-  padding-top: 14px; border-top: 1px dashed var(--border);
+.profile-id { color: var(--text-muted); font-size: 13px; margin: 4px 0 12px; }
+.profile-level-tag {
+  display: inline-block; padding: 4px 14px; border-radius: 999px;
+  background: var(--primary-light); color: var(--primary-dark);
+  font-size: 12.5px; font-weight: 600;
 }
-.profile-points strong { display: block; font-size: 20px; color: var(--primary); letter-spacing: -.02em; }
-.profile-points span { font-size: 12px; color: var(--text-muted); }
-.points-divider { width: 1px; height: 30px; background: var(--border); }
 
 .quick-card { padding: 20px; }
 .quick-links { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
