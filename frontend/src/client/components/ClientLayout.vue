@@ -94,7 +94,8 @@ const navOpen = ref(false)
 .brand-sub { font-size: 11px; color: #8ca3c7; margin-top: 2px; }
 
 .side-nav {
-  display: flex; flex-direction: column; justify-content: center; gap: 12px; flex: 1;
+  display: flex; flex-direction: column; justify-content: space-evenly; flex: 1;
+  padding: 8px 0;
 }
 .nav-link {
   display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 12px;
