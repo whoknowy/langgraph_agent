@@ -8,10 +8,8 @@
 //    不能只写 redirect 分支——后端切 mock 渠道时是 direct。
 // 2. 支付是否成功只看 /api/pay/status 的 paid 字段，同步回跳不可信。
 import { ref, onUnmounted } from 'vue'
-import { api, qs } from '../../api.js'
-import { toastError, toastSuccess } from '../../ui.js'
-
-// 注意：api.js / ui.js 在 src/ 下（不是 src/client/），所以是 ../../ 而非 ../
+import { api, qs } from '@/shared/api.js'
+import { toastError, toastSuccess } from '@/shared/ui.js'
 
 /** 轮询间隔与上限：2 秒 × 90 ≈ 3 分钟（异步通知可能迟到，别设太短） */
 const POLL_INTERVAL_MS = 2000

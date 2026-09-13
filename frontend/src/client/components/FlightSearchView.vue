@@ -27,17 +27,22 @@
 
     <div class="flight-list">
       <el-empty v-if="!flights.length && !loading" description="暂无航班，试试其他航线/日期" />
-      <el-card v-for="f in flights" :key="f.flight_no" shadow="hover" class="flight-card">
-        <div class="flight-airline">{{ f.airline }} <span class="muted">{{ f.flight_no }}</span></div>
+      <div v-for="f in flights" :key="f.flight_no" class="flight-card">
+        <div class="flight-airline">
+          <div class="airline-badge">{{ (f.airline || '航')[0] }}</div>
+          <div>
+            <div class="airline-name">{{ f.airline }}</div>
+            <div class="flight-no">{{ f.flight_no }}</div>
+          </div>
+        </div>
         <div class="flight-route">
           <div class="time">
             <div class="dep">{{ f.dep_time }}</div>
             <div class="city">{{ form.departure }}</div>
           </div>
           <div class="path">
-            <div class="line"></div>
-            <div class="plane">✈</div>
-            <div class="duration">{{ duration(f.dep_time, f.arr_time) }}</div>
+            <div class="duration">{{ flightDuration(f.dep_time, f.arr_time) }}</div>
+            <div class="line"><span class="plane">✈</span></div>
           </div>
           <div class="time">
             <div class="dep">{{ f.arr_time }}</div>
@@ -45,11 +50,11 @@
           </div>
         </div>
         <div class="flight-price">
-          <div class="price">¥{{ (f.prices && f.prices[form.cabin]) || '--' }}</div>
+          <div class="price"><small>¥</small>{{ (f.prices && f.prices[form.cabin]) || '--' }}</div>
           <div class="cabin">{{ form.cabin }}舱</div>
-          <el-button type="primary" size="small" @click="openBooking(f)">订票</el-button>
+          <button class="btn btn-primary btn-sm book-btn" @click="openBooking(f)">订票</button>
         </div>
-      </el-card>
+      </div>
     </div>
 
     <el-dialog v-model="orderPanel.open" title="订单确认" width="480px">
@@ -89,8 +94,9 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
-import { api, qs } from '../../api.js'
-import { toastSuccess, toastError } from '../../ui.js'
+import { api, qs } from '@/shared/api.js'
+import { toastSuccess } from '@/shared/ui.js'
+import { flightDuration, tomorrow } from '@/shared/format.js'
 import { usePay, openPayWindow } from '../composables/usePay.js'
 
 const form = ref({ departure: '北京', destination: '上海', date: '', cabin: '经济' })
@@ -110,12 +116,6 @@ const { pay } = usePay({
     await search()
   },
 })
-
-function tomorrow() {
-  const d = new Date()
-  d.setDate(d.getDate() + 1)
-  return d.toISOString().slice(0, 10)
-}
 
 onMounted(() => {
   form.value.date = tomorrow()
@@ -142,14 +142,6 @@ async function search() {
   } finally {
     loading.value = false
   }
-}
-
-function duration(dep, arr) {
-  const [dh, dm] = dep.split(':').map(Number)
-  const [ah, am] = arr.split(':').map(Number)
-  let mins = ah * 60 + am - dh * 60 - dm
-  if (mins < 0) mins += 24 * 60
-  return Math.floor(mins / 60) + 'h' + (mins % 60)
 }
 
 async function openBooking(f) {
@@ -215,23 +207,50 @@ async function confirmBook() {
 </script>
 
 <style scoped>
-.search-card { margin-bottom: 16px; }
+.search-card { margin-bottom: 18px; border-radius: var(--radius); }
 .flight-list { display: flex; flex-direction: column; gap: 12px; }
-.flight-card :deep(.el-card__body) { display: flex; align-items: center; gap: 20px; padding: 16px 20px; }
-.flight-airline { width: 180px; font-weight: 600; }
+
+.flight-card {
+  display: flex; align-items: center; gap: 24px;
+  background: #fff; border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 18px 22px; box-shadow: var(--shadow-sm);
+  transition: box-shadow .2s var(--ease), transform .2s var(--ease);
+}
+.flight-card:hover { box-shadow: var(--shadow); transform: translateY(-2px); }
+
+.flight-airline { width: 190px; display: flex; align-items: center; gap: 10px; }
+.airline-badge {
+  width: 38px; height: 38px; border-radius: 12px; flex: none;
+  background: var(--primary-light); color: var(--primary); font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.airline-name { font-weight: 600; }
+.flight-no { font-size: 12px; color: var(--text-muted); }
+
 .flight-route { flex: 1; display: flex; align-items: center; justify-content: center; gap: 30px; }
 .time { text-align: center; }
-.time .dep { font-size: 22px; font-weight: 700; }
-.time .city { font-size: 12px; color: var(--text-muted); }
-.path { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 140px; }
-.path .line { width: 100%; height: 1px; background: #cbd5e1; }
-.path .plane { margin-top: -10px; color: var(--primary); }
-.path .duration { font-size: 11px; color: var(--text-muted); }
-.flight-price { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
-.price { font-size: 20px; color: var(--danger); font-weight: 700; }
+.time .dep { font-size: 22px; font-weight: 700; letter-spacing: -.02em; }
+.time .city { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.path { display: flex; flex-direction: column; align-items: center; gap: 3px; width: 150px; }
+.path .duration { font-size: 11px; color: var(--text-faint); }
+.path .line { width: 100%; height: 1px; background: linear-gradient(90deg, transparent, var(--border-strong), transparent); position: relative; }
+.path .plane { position: absolute; top: -9px; left: 50%; transform: translateX(-50%); color: var(--primary); font-size: 13px; }
+
+.flight-price { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
+.price { font-size: 22px; color: #e11d48; font-weight: 800; letter-spacing: -.02em; }
+.price small { font-size: 13px; font-weight: 600; margin-right: 1px; }
 .cabin { font-size: 12px; color: var(--text-muted); }
-.order-flight { background: #f0f6ff; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+.book-btn { padding: 7px 20px; font-size: 13px; }
+
+.order-flight { background: var(--primary-light); border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; }
 .order-route { font-weight: 700; margin-bottom: 4px; }
 .order-passenger { margin: 12px 0; }
 .order-passenger label, .pay-methods label { display: block; font-size: 12.5px; color: var(--text-muted); margin-bottom: 5px; }
+
+@media (max-width: 720px) {
+  .flight-card { flex-wrap: wrap; gap: 12px; }
+  .flight-airline { width: 100%; }
+  .flight-route { order: 3; width: 100%; }
+  .flight-price { margin-left: auto; }
+}
 </style>

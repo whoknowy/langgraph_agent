@@ -42,8 +42,8 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { api, qs } from '../../api.js'
-import { toastError, toastSuccess, promptDialog } from '../../ui.js'
+import { api, qs } from '@/shared/api.js'
+import { toastError, toastSuccess, promptDialog } from '@/shared/ui.js'
 
 const complaints = ref([])
 const status = ref('')

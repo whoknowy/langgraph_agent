@@ -95,7 +95,7 @@
           <span><i class="selected"></i>已选</span>
         </div>
         <div class="seat-actions">
-          <div class="muted" v-if="selectedSeat">已选座位：{{ selectedSeat }}</div>
+          <div class="muted" v-if="selectedSeat">已选座位：<strong class="picked">{{ selectedSeat }}</strong></div>
           <button class="btn btn-primary" :disabled="!selectedSeat || submitting" @click="confirmCheckin">
             {{ submitting ? '提交中…' : (currentOrder && currentOrder.checked_in ? '确认改座' : '确认值机') }}
           </button>
@@ -115,7 +115,8 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { api, qs } from '../../api.js'
+import { api, qs } from '@/shared/api.js'
+import { seatLetter } from '@/shared/format.js'
 
 const orders = ref([])
 const selectedOrderNo = ref('')
@@ -141,12 +142,6 @@ const filteredCabins = computed(() => {
   }
   return cabins
 })
-
-// 座位号形如 31A → 字母 A；用于机舱内只显示列字母（排号在过道中间竖向标出）
-function seatLetter(seatNo) {
-  const m = String(seatNo || '').match(/([A-Za-z]+)$/)
-  return m ? m[1].toUpperCase() : seatNo
-}
 
 // 把一排拆成「过道左 / 过道右」两簇。真实单通道客机的过道在
 // 字母序列的中点：3-3（ABCDEF）分 ABC|DEF，2-2（ACDF）分 AC|DF。
@@ -267,7 +262,12 @@ async function confirmCheckin() {
 </script>
 
 <style scoped>
-.order-select { width: 100%; max-width: 560px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; }
+.order-select {
+  width: 100%; max-width: 560px; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: #fff;
+  outline: none; transition: border-color .15s, box-shadow .15s;
+}
+.order-select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, .12); }
 .seat-card { min-height: 280px; }
 .seat-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; }
 .seat-summary { font-size: 13px; color: var(--text-muted); }
@@ -279,9 +279,7 @@ async function confirmCheckin() {
   display: flex; flex-direction: column; align-items: center;
 }
 .nose-svg, .tail-svg { display: block; width: 220px; height: auto; }
-.nose-text {
-  font-size: 13px; fill: var(--text-faint); font-family: inherit;
-}
+.nose-text { font-size: 13px; fill: var(--text-faint); font-family: inherit; }
 .nose { position: relative; }
 .tail { position: relative; }
 /* 机翼：从机身两侧伸出，纯装饰，标明"这是飞机" */
@@ -327,43 +325,41 @@ async function confirmCheckin() {
 }
 
 .seat-row { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
-.row-no { width: 0; }
 .seat-cluster { display: flex; gap: 4px; }
 /* 过道：比座椅间距宽，中间竖排标排号 */
-.aisle {
-  width: 40px; display: flex; align-items: center; justify-content: center;
-}
+.aisle { width: 40px; display: flex; align-items: center; justify-content: center; }
 .aisle-no { font-size: 11px; color: var(--text-faint); }
 
 .seat {
-  width: 34px; height: 30px; border-radius: 6px;
+  width: 34px; height: 30px; border-radius: 8px;
   border: 1px solid var(--border); background: #fff;
   font-size: 11px; color: #333; cursor: pointer;
-  transition: background .12s, border-color .12s;
+  transition: all .12s var(--ease);
 }
-.seat:hover:not(:disabled) { border-color: var(--primary); }
+.seat:hover:not(:disabled) { border-color: var(--primary); transform: scale(1.08); }
 .seat.occupied { background: #e5e7eb; color: #9ca3af; cursor: not-allowed; border-color: #e5e7eb; }
 .seat.mine { background: #fef3c7; border-color: #f59e0b; color: #92400e; }
-.seat.selected { background: var(--primary); color: #fff; border-color: var(--primary); }
+.seat.selected {
+  background: var(--brand-gradient); color: #fff; border-color: transparent;
+  box-shadow: 0 3px 8px -2px rgba(37, 99, 235, .45);
+}
 
 /* 顶部列字母轴：与座椅列对齐 */
 .cabin-axis {
   display: flex; justify-content: center; align-items: center;
   gap: 4px; margin: 14px 0 2px; padding: 0 26px;
 }
-.axis-cell {
-  width: 34px; text-align: center;
-  font-size: 11px; color: var(--text-faint);
-}
+.axis-cell { width: 34px; text-align: center; font-size: 11px; color: var(--text-faint); }
 .axis-cell:empty { width: 40px; }
 
 .seat-legend { display: flex; gap: 16px; justify-content: center; font-size: 12px; color: var(--text-muted); margin: 14px 0; }
-.seat-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+.seat-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 4px; margin-right: 4px; vertical-align: -1px; }
 .seat-legend .free { background: #fff; border: 1px solid var(--border); }
 .seat-legend .mine { background: #fef3c7; border: 1px solid #f59e0b; }
 .seat-legend .occupied { background: #e5e7eb; }
 .seat-legend .selected { background: var(--primary); }
 .seat-actions { display: flex; justify-content: flex-end; align-items: center; gap: 14px; }
+.picked { color: var(--primary); }
 .boardpass-result { margin-top: 16px; background: #f0f9ff; border-color: #bae6fd; }
 .boardpass-result p { margin: 6px 0; }
 </style>

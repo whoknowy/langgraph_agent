@@ -52,7 +52,7 @@
       </div>
       <div class="bp-bottom">
         <span>祝您旅途愉快 ✈</span>
-        <span class="muted">请于起飞前 45 分钟到达登机口</span>
+        <span class="bp-note">请于起飞前 45 分钟到达登机口</span>
       </div>
     </div>
   </div>
@@ -61,7 +61,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { api, qs } from '../../api.js'
+import { api, qs } from '@/shared/api.js'
 
 const orders = ref([])
 const selectedOrderNo = ref('')
@@ -109,23 +109,35 @@ async function loadBoardPass() {
 </script>
 
 <style scoped>
-.order-select { width: 100%; max-width: 560px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; }
-.boarding-pass {
-  max-width: 760px; margin: 0 auto; background: linear-gradient(135deg, #1d4ed8, #3b82f6);
-  border-radius: 18px; color: #fff; overflow: hidden; box-shadow: 0 16px 40px rgba(29,78,216,.3);
+.order-select {
+  width: 100%; max-width: 560px; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: #fff;
+  outline: none; transition: border-color .15s, box-shadow .15s;
 }
-.bp-top { padding: 22px 24px 12px; display: flex; justify-content: space-between; align-items: center; }
+.order-select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, .12); }
+
+.boarding-pass {
+  max-width: 760px; margin: 0 auto;
+  background: linear-gradient(135deg, #1d4ed8 0%, #2563eb 55%, #38bdf8 130%);
+  border-radius: 22px; color: #fff; overflow: hidden;
+  box-shadow: 0 20px 48px -12px rgba(29, 78, 216, .45);
+}
+.bp-top { padding: 24px 26px 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
 .bp-airline { display: flex; gap: 12px; align-items: center; }
-.airline-logo { width: 42px; height: 42px; background: rgba(255,255,255,.18); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; }
+.airline-logo {
+  width: 44px; height: 44px; background: rgba(255, 255, 255, .18); border-radius: 13px;
+  display: flex; align-items: center; justify-content: center; font-size: 22px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.25);
+}
 .airline-name { font-weight: 700; font-size: 16px; }
 .flight-name { font-size: 13px; opacity: .85; }
 .bp-route { display: flex; align-items: center; gap: 14px; }
 .bp-city { text-align: center; }
-.city-code { font-size: 26px; font-weight: 800; }
+.city-code { font-size: 26px; font-weight: 800; letter-spacing: -.02em; }
 .city-name { font-size: 11px; opacity: .8; }
 .bp-arrow { font-size: 20px; opacity: .8; }
 .bp-body {
-  background: #fff; color: var(--text); margin: 0 14px; border-radius: 12px; padding: 20px;
+  background: #fff; color: var(--text); margin: 0 14px; border-radius: 14px; padding: 22px;
   display: flex; gap: 20px; align-items: center;
 }
 .bp-info { flex: 1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
@@ -135,10 +147,16 @@ async function loadBoardPass() {
 .highlight { color: var(--primary); font-size: 18px; }
 .bp-qr { text-align: center; }
 .qr-grid {
-  width: 100px; height: 100px; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px;
+  width: 100px; height: 100px; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
   display: grid; grid-template-columns: repeat(10, 1fr); gap: 2px; padding: 6px; margin: 0 auto 6px;
 }
 .qr-grid div { background: #fff; }
 .qr-grid div.dark { background: #1e293b; }
-.bp-bottom { padding: 18px 24px; display: flex; justify-content: space-between; font-size: 13px; }
+.bp-bottom { padding: 18px 26px; display: flex; justify-content: space-between; font-size: 13px; flex-wrap: wrap; gap: 6px; }
+.bp-note { opacity: .85; }
+
+@media (max-width: 640px) {
+  .bp-body { flex-direction: column; }
+  .bp-info { grid-template-columns: repeat(2, 1fr); width: 100%; }
+}
 </style>

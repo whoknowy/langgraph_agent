@@ -2,8 +2,15 @@
   <div>
     <h2 class="page-title">我的订单</h2>
     <div class="order-summary card" v-if="summary.count">
-      <div>共 <strong>{{ summary.count }}</strong> 笔订单</div>
-      <div>累计金额 <strong>¥{{ summary.total_amount }}</strong></div>
+      <div class="summary-item">
+        <span class="summary-num">{{ summary.count }}</span>
+        <span class="summary-label">全部订单</span>
+      </div>
+      <div class="summary-divider"></div>
+      <div class="summary-item">
+        <span class="summary-num">¥{{ summary.total_amount }}</span>
+        <span class="summary-label">累计金额</span>
+      </div>
     </div>
 
     <div class="order-list">
@@ -13,8 +20,8 @@
           <span class="badge" :class="statusClass(o.status)">{{ o.status }}</span>
         </div>
         <div class="order-meta">
-          <span>{{ o.route }}</span>
-          <span>{{ o.flight_date }} {{ o.dep_time }}</span>
+          <span>🛫 {{ o.route }}</span>
+          <span>📅 {{ o.flight_date }} {{ o.dep_time }}</span>
           <span>{{ o.cabin }}舱 · 金额 ¥{{ o.amount }}</span>
           <span v-if="o.checked_in" class="checkin-tag">已值机 {{ o.checkin_seat }}</span>
         </div>
@@ -44,8 +51,8 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, qs, newRequestId } from '../../api.js'
-import { toastError, toastSuccess, confirmDialog, promptDialog } from '../../ui.js'
+import { api, qs, newRequestId } from '@/shared/api.js'
+import { toastError, toastSuccess, confirmDialog, promptDialog } from '@/shared/ui.js'
 import { usePay, openPayWindow } from '../composables/usePay.js'
 
 const orders = ref([])
@@ -146,14 +153,22 @@ async function refund(o) {
 </script>
 
 <style scoped>
-.order-summary { display: flex; gap: 30px; margin-bottom: 16px; font-size: 14px; }
-.order-summary strong { color: var(--primary); font-size: 18px; }
+.order-summary {
+  display: flex; gap: 26px; align-items: center; margin-bottom: 16px;
+  padding: 16px 22px;
+}
+.summary-item { display: flex; flex-direction: column; gap: 2px; }
+.summary-num { color: var(--primary); font-size: 20px; font-weight: 800; letter-spacing: -.02em; }
+.summary-label { font-size: 12px; color: var(--text-muted); }
+.summary-divider { width: 1px; height: 34px; background: var(--border); }
+
 .order-list { display: flex; flex-direction: column; gap: 12px; }
-.order-card { padding: 14px 16px; }
+.order-card { padding: 16px 18px; }
+.order-card:hover { box-shadow: var(--shadow); }
 .order-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .order-flight { font-weight: 700; }
 .flight-no { color: var(--text-muted); font-weight: 400; margin-left: 6px; font-size: 13px; }
-.order-meta { display: flex; flex-wrap: wrap; gap: 16px; color: var(--text-muted); font-size: 13px; margin-bottom: 12px; }
+.order-meta { display: flex; flex-wrap: wrap; gap: 8px 18px; color: var(--text-muted); font-size: 13px; margin-bottom: 12px; }
 .checkin-tag { color: var(--warning); }
-.order-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.order-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
 </style>

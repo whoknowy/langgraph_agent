@@ -1,40 +1,18 @@
 <template>
-  <div v-if="loading" class="app-loading">加载中…</div>
-  <LoginView v-else-if="!member" @login="onLogin" />
-  <router-view v-else :member="member" @logout="logout" />
+  <div v-if="!state.ready" class="app-loading">
+    <div class="loading-logo">✈</div>
+    <span>加载中…</span>
+  </div>
+  <LoginView v-else-if="!state.member" @login="signIn" />
+  <router-view v-else />
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
-import { api, setMemberToken, getMemberToken, clearTokens } from '../api.js'
+import { onMounted } from 'vue'
+import { useAuth } from '@/client/stores/auth.js'
 import LoginView from './components/LoginView.vue'
 
-const member = ref(null)
-const loading = ref(true)
-
-async function checkAuth() {
-  try {
-    const data = await api('/api/me')
-    member.value = data.member || null
-    // Web Cookie 已登录但本地没有 token 时，后端仍会通过 cookie 放行。
-    // 这里保留 cookie 通道，因此不强制要求 token。
-  } catch (e) {
-    member.value = null
-  } finally {
-    loading.value = false
-  }
-}
-
-function onLogin(data) {
-  if (data.token) setMemberToken(data.token)
-  member.value = data.member
-}
-
-async function logout() {
-  try { await api('/api/logout', { method: 'POST' }) } catch (e) {}
-  setMemberToken('')
-  member.value = null
-}
+const { state, checkAuth, signIn } = useAuth()
 
 onMounted(checkAuth)
 </script>
@@ -42,9 +20,15 @@ onMounted(checkAuth)
 <style scoped>
 .app-loading {
   height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: flex; flex-direction: column; gap: 14px;
+  align-items: center; justify-content: center;
   color: var(--text-muted);
 }
+.loading-logo {
+  width: 56px; height: 56px; border-radius: 18px;
+  background: var(--brand-gradient); color: #fff; font-size: 26px;
+  display: flex; align-items: center; justify-content: center;
+  animation: float 1.6s ease-in-out infinite;
+}
+@keyframes float { 50% { transform: translateY(-6px); } }
 </style>

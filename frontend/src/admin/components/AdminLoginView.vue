@@ -22,7 +22,7 @@
 
 <script setup>
 import { ref } from 'vue'
-import { api } from '../../api.js'
+import { api } from '@/shared/api.js'
 
 const emit = defineEmits(['login'])
 const username = ref('')

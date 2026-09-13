@@ -39,7 +39,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { api, qs } from '../../api.js'
+import { api, qs } from '@/shared/api.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -68,15 +68,16 @@ async function check() {
 </script>
 
 <style scoped>
-.pay-result { padding: 20px; }
-.result-line { display: flex; align-items: center; gap: 10px; font-size: 16px; margin-bottom: 14px; }
+.pay-result { padding: 24px; max-width: 560px; }
+.result-line { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 600; margin-bottom: 16px; }
 .result-icon {
-  width: 26px; height: 26px; border-radius: 50%; display: inline-flex;
+  width: 28px; height: 28px; border-radius: 50%; display: inline-flex;
   align-items: center; justify-content: center; color: #fff; font-size: 15px;
 }
-.result-icon.ok { background: #2f9e6f; }
-.result-icon.wait { background: #9a8f7a; }
-.result-meta { color: #5c5850; font-size: 14px; line-height: 1.9; margin-bottom: 16px; }
+.result-icon.ok { background: var(--success); box-shadow: 0 4px 10px -2px rgba(22, 163, 74, .5); }
+.result-icon.wait { background: #b45309; }
+.result-meta { color: var(--text-muted); font-size: 14px; line-height: 2; margin-bottom: 18px; }
+.result-meta strong { color: var(--text); }
 .result-actions { display: flex; gap: 10px; }
-.tip { margin-top: 14px; font-size: 13px; line-height: 1.7; }
+.tip { margin-top: 16px; font-size: 13px; line-height: 1.7; }
 </style>

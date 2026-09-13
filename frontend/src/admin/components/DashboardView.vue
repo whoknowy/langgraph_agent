@@ -54,7 +54,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { api } from '../../api.js'
+import { api } from '@/shared/api.js'
 
 const stats = ref({})
 const trend = ref({ days: [], orders: [], refunds: [], top_routes: [] })

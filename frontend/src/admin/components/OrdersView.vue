@@ -40,8 +40,8 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { toastError } from '../../ui.js'
-import { api, qs } from '../../api.js'
+import { toastError } from '@/shared/ui.js'
+import { api, qs } from '@/shared/api.js'
 
 const orders = ref([])
 const status = ref('')

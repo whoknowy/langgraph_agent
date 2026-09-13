@@ -33,8 +33,8 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { api } from '../../api.js'
-import { toastError, toastSuccess, promptDialog } from '../../ui.js'
+import { api } from '@/shared/api.js'
+import { toastError, toastSuccess, promptDialog } from '@/shared/ui.js'
 
 const refunds = ref([])
 const loading = ref(false)

@@ -7,7 +7,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { api, setAdminToken, getAdminToken } from '../api.js'
+import { api, setAdminToken, getAdminToken } from '@/shared/api.js'
 import AdminLoginView from './components/AdminLoginView.vue'
 import ChangePasswordView from './components/ChangePasswordView.vue'
 

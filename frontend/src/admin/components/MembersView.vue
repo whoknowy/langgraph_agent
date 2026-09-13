@@ -22,8 +22,8 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { api } from '../../api.js'
-import { toastError } from '../../ui.js'
+import { api } from '@/shared/api.js'
+import { toastError } from '@/shared/ui.js'
 
 const members = ref([])
 const q = ref('')

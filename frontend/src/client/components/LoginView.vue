@@ -64,7 +64,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { api } from '../../api.js'
+import { api } from '@/shared/api.js'
 
 const emit = defineEmits(['login'])
 const mode = ref('suffix')
@@ -104,7 +104,6 @@ async function doLogin() {
       method: 'POST',
       body: { member_id: memberId.value, phone_suffix: phoneSuffix.value }
     })
-    error.value = ''
     message.value = d.message || '登录成功'
     emit('login', d)
   } catch (e) { error.value = e.message } finally { loading.value = false }
@@ -123,7 +122,6 @@ async function doPasswordLogin() {
       method: 'POST',
       body: { account: account.value, password: password.value }
     })
-    error.value = ''
     message.value = d.message || '登录成功'
     emit('login', d)
   } catch (e) { error.value = e.message } finally { loading.value = false }
@@ -147,7 +145,6 @@ async function doRegister() {
       method: 'POST',
       body: { name: r.name, phone: r.phone, password: r.password }
     })
-    error.value = ''
     message.value = d.message || '注册成功'
     emit('login', d)
   } catch (e) { error.value = e.message } finally { loading.value = false }
@@ -157,36 +154,36 @@ async function doRegister() {
 <style scoped>
 .login-page {
   min-height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(135deg, #0b3a82 0%, #2563eb 55%, #60a5fa 100%);
-  padding: 24px;
-  gap: 48px;
+  display: flex; align-items: center; justify-content: center;
+  background:
+    radial-gradient(800px 400px at 80% 0%, rgba(56, 189, 248, .35), transparent 60%),
+    linear-gradient(135deg, #0a2d63 0%, #1d4ed8 55%, #38bdf8 120%);
+  padding: 24px; gap: 56px;
 }
-.login-hero {
-  color: #fff;
-  max-width: 420px;
-}
+.login-hero { color: #fff; max-width: 420px; }
 .brand { display: flex; gap: 14px; align-items: center; }
 .brand-icon {
   width: 58px; height: 58px; display: flex; align-items: center; justify-content: center;
-  background: rgba(255,255,255,.16); border-radius: 16px; font-size: 30px;
+  background: rgba(255, 255, 255, .16); border-radius: 18px; font-size: 30px;
+  backdrop-filter: blur(4px); box-shadow: inset 0 1px 0 rgba(255,255,255,.25);
 }
-.brand h1 { font-size: 30px; margin-bottom: 6px; }
+.brand h1 { font-size: 30px; margin-bottom: 6px; letter-spacing: -.01em; }
 .brand p { opacity: .85; font-size: 14px; }
 .hero-planes { position: relative; height: 160px; margin: 20px 0; }
-.plane { position: absolute; font-size: 80px; opacity: .35; }
-.plane-1 { left: 0; top: 30px; transform: rotate(-12deg); }
-.plane-2 { right: 20px; top: 0; transform: rotate(12deg); font-size: 50px; opacity: .2; }
+.plane { position: absolute; font-size: 80px; opacity: .32; }
+.plane-1 { left: 0; top: 30px; transform: rotate(-12deg); animation: drift 5s ease-in-out infinite; }
+.plane-2 { right: 20px; top: 0; transform: rotate(12deg); font-size: 50px; opacity: .18; animation: drift 6s ease-in-out infinite reverse; }
+@keyframes drift { 50% { translate: 10px -8px; } }
 .hero-points { list-style: none; display: flex; flex-direction: column; gap: 14px; font-size: 16px; }
 .hero-points span {
   display: inline-block; width: 28px; height: 28px; margin-right: 10px; text-align: center; line-height: 28px;
-  background: rgba(255,255,255,.18); border-radius: 8px;
+  background: rgba(255, 255, 255, .18); border-radius: 9px;
 }
 .login-card {
-  width: 400px; background: #fff; border-radius: 18px; padding: 20px 24px 26px;
-  box-shadow: 0 30px 80px rgba(0,0,0,.3);
+  width: 400px; max-width: 100%;
+  background: rgba(255, 255, 255, .96); backdrop-filter: blur(10px);
+  border-radius: 22px; padding: 22px 26px 28px;
+  box-shadow: 0 30px 80px rgba(2, 20, 60, .45);
 }
 .login-btn { width: 100%; margin-top: 4px; }
 .demo-box { margin-top: 18px; border-top: 1px dashed var(--border); padding-top: 14px; }
