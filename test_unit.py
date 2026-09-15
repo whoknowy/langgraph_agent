@@ -162,6 +162,102 @@ class TestTransition:
         assert row["prev_status"] == "已改签"
 
 
+# ---------------------------------------------------------------- 航班搜索（只在售未起飞班次）
+
+class TestUpcomingFlights:
+    """`search_flights` 只返回还没起飞的航班，且拒绝过去日期。
+
+    固件里 PEK→SHA 的 CA1061（06:40 起飞、天天执飞）在 FUTURE/NEAR/PAST 三天都有价格，
+    正好用来验证「过去日期 → 报错、未来日期 → 照常返回」。
+    """
+
+    def test_is_upcoming_pure(self):
+        from datetime import date as _date
+        from services.flight_repo import is_upcoming
+        today = _date(2026, 9, 15)
+        now = datetime(2026, 9, 15, 12, 0)
+        assert is_upcoming("18:30", today, now) is True      # 今天还没起飞
+        assert is_upcoming("06:40", today, now) is False     # 今天已起飞
+        assert is_upcoming("12:00", today, now) is False     # 正好到点也算已起飞
+        assert is_upcoming("06:40", _date(2026, 9, 16), now) is True   # 未来日期恒为 True
+        assert is_upcoming("23:59", _date(2026, 9, 14), now) is False  # 过去日期恒为 False
+
+    def test_reject_past_date(self):
+        from services import flight_repo
+        r = flight_repo.search_flights("北京", "上海", PAST)
+        assert "过去" in r["error"]
+        assert not r.get("flights")
+
+    def test_future_date_unaffected(self):
+        from services import flight_repo
+        r = flight_repo.search_flights("北京", "上海", FUTURE)
+        assert r["count"] == 1 and r["flights"][0]["flight_no"] == "CA1061"
+
+    def test_today_excludes_departed(self):
+        """当天搜索：已起飞的班次不返回；返回的班次起飞时刻必须晚于当前时刻。"""
+        from services import flight_repo
+        today = datetime.now().strftime("%Y-%m-%d")
+        now = datetime.now()
+        if now.hour == 23 and now.minute >= 57:
+            pytest.skip("临近午夜，构造的时刻边界会跨日，跳过")
+        conn = db.get_connection()
+        # 一班今天 00:01（必已起飞）、一班今天 23:59（必未起飞）
+        conn.executemany(
+            "INSERT INTO flights (flight_no, airline_code, dep_iata, arr_iata, dep_time, "
+            "arr_time, duration_min, aircraft, freq_days) VALUES (?,?,?,?,?,?,?,?,?)",
+            [("CA9001", "CA", "PEK", "SHA", "00:01", "02:10", 130, "B737", "1234567"),
+             ("CA9002", "CA", "PEK", "SHA", "23:59", "01:59", 130, "B737", "1234567")],
+        )
+        conn.executemany(
+            "INSERT INTO flight_prices (flight_no, flight_date, cabin, price) VALUES (?,?,?,?)",
+            [("CA9001", today, "经济", 600), ("CA9002", today, "经济", 600)],
+        )
+        conn.commit()
+        conn.close()
+
+        r = flight_repo.search_flights("北京", "上海", today)
+        nos = [f["flight_no"] for f in r["flights"]]
+        assert "CA9001" not in nos          # 00:01 已飞走
+        assert "CA9002" in nos              # 23:59 仍可订
+        # 独立复算一遍：所有返回班次的起飞时刻都晚于此刻
+        for f in r["flights"]:
+            assert datetime.strptime(f"{today} {f['dep_time']}", "%Y-%m-%d %H:%M") > now
+
+    def test_today_all_departed_gives_hint(self):
+        """当天航班全部起飞时给明确提示（区别于「当天无航班」）。"""
+        from services import flight_repo
+        today = datetime.now().strftime("%Y-%m-%d")
+        now = datetime.now()
+        if now.strftime("%H:%M") <= "00:01":
+            pytest.skip("刚过零点，构造不出已起飞的当天班次")
+        conn = db.get_connection()
+        # 把唯一的班次改到 00:01 起飞，并补一条今天的价格
+        conn.execute("UPDATE flights SET dep_time = '00:01', freq_days = '1234567'")
+        conn.execute("INSERT INTO flight_prices (flight_no, flight_date, cabin, price) "
+                     "VALUES ('CA1061', ?, '经济', 600)", (today,))
+        conn.commit()
+        conn.close()
+        r = flight_repo.search_flights("北京", "上海", today)
+        assert "起飞" in r["error"] and "明天" in r["error"]
+
+    def test_price_range_ignores_past_only_flights(self):
+        """不带日期时，只剩历史价格的班次不再返回。"""
+        from services import flight_repo
+        conn = db.get_connection()
+        conn.execute(
+            "INSERT INTO flights (flight_no, airline_code, dep_iata, arr_iata, dep_time, "
+            "arr_time, duration_min, aircraft, freq_days) VALUES ('CA9003','CA','PEK','SHA',"
+            "'09:00','11:10',130,'B737','1234567')")
+        conn.execute("INSERT INTO flight_prices (flight_no, flight_date, cabin, price) "
+                     "VALUES ('CA9003', ?, '经济', 500)", (PAST,))
+        conn.commit()
+        conn.close()
+        r = flight_repo.search_flights("北京", "上海")
+        assert "CA9003" not in [f["flight_no"] for f in r["flights"]]
+        for f in r["flights"]:
+            assert f["price_range"]["from"] >= datetime.now().strftime("%Y-%m-%d")
+
+
 # ---------------------------------------------------------------- 生命周期
 
 class TestLifecycle:
@@ -2319,10 +2415,6 @@ class TestLangfuseSetup:
             assert len(cfg) >= 1
 
 
-# ---------------------------------------------------------------- 直接运行入口
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-q", "--tb=short"]))
 # ------------------------------------------------- 支付宝通知字符集（线上实况）
 
 
@@ -2412,3 +2504,7 @@ class TestAlipayNotifyCharset:
         assert fields["amount"] == "740.00"
 
 
+# ---------------------------------------------------------------- 直接运行入口
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q", "--tb=short"]))

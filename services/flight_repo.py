@@ -48,13 +48,35 @@ def city_to_iata(city: str) -> str:
 
 # ---------------------------------------------------------------- 航班搜索
 
+def is_upcoming(dep_time: str, flight_date: date, now: datetime = None) -> bool:
+    """班次在 now 时刻是否**还没起飞**（纯函数，便于单测）。
+
+    - 未来日期：恒为 True（起飞时刻尚未到）；
+    - 过去日期：恒为 False；
+    - 当天：按 HH:MM 字符串比较（零填充，字典序即时间先后）。
+    """
+    now = now or datetime.now()
+    if flight_date > now.date():
+        return True
+    if flight_date < now.date():
+        return False
+    return str(dep_time or "") > now.strftime("%H:%M")
+
+
 def search_flights(departure: str, destination: str, date_str: str = None) -> dict:
-    """按出发/目的地（城市名或 IATA）查航班；date_str 为空时给出 30 天价格区间。"""
+    """按出发/目的地（城市名或 IATA）查航班；date_str 为空时给出 30 天价格区间。
+
+    只返回**尚未起飞**的航班：
+    - 过去日期直接拒绝（不出售已过期航班）；
+    - 指定当天时，剔除起飞时刻已经过去的班次；
+    - 不指定日期时，价格区间只统计今天及以后（历史价格档期不参与）。
+    """
     dep_iata = city_to_iata(departure)
     arr_iata = city_to_iata(destination)
     if not dep_iata or not arr_iata:
         return {"error": f"暂不支持该航线：{departure} → {destination}"}
 
+    today = date.today()
     conn = _conn()
     base_sql = (
         "SELECT f.flight_no, a.name_cn AS airline, f.dep_time, f.arr_time, f.aircraft, "
@@ -71,13 +93,27 @@ def search_flights(departure: str, destination: str, date_str: str = None) -> di
         if not d:
             conn.close()
             return {"error": f"日期格式无效：{date_str}"}
+        if d < today:
+            conn.close()
+            return {"error": f"不能查询过去日期的航班：{date_str} 已过期，"
+                             f"仅支持今天（{today.isoformat()}）及以后"}
         weekday_cn = str(d.isoweekday())
         rows = conn.execute(
             base_sql + " AND instr(f.freq_days, ?) > 0 ORDER BY f.dep_time",
             (dep_iata, arr_iata, weekday_cn),
         ).fetchall()
+        # 当天：剔除已经起飞的班次（飞走了就查不到、也订不了）
+        departed = 0
+        if d == today:
+            now = datetime.now()
+            remain = [r for r in rows if is_upcoming(r["dep_time"], d, now)]
+            departed = len(rows) - len(remain)
+            rows = remain
         if not rows:
             conn.close()
+            if departed:
+                return {"error": f"今天（{d.isoformat()}）{departure}→{destination} 的 "
+                                 f"{departed} 个航班均已起飞，请查询明天及以后的航班"}
             return {"error": f"{date_str} 当天无 {departure}→{destination} 航班"}
         flights = []
         for r in rows:
@@ -104,13 +140,16 @@ def search_flights(departure: str, destination: str, date_str: str = None) -> di
     ).fetchall()
     flights = []
     for r in rows:
+        # 价格区间只统计今天及以后：只剩历史价格的班次不再对外返回
         price_row = conn.execute(
             "SELECT MIN(CASE WHEN cabin='经济' THEN price END) AS min_p, "
             "MAX(CASE WHEN cabin='商务' THEN price END) AS max_p, "
             "MIN(flight_date) AS d_from, MAX(flight_date) AS d_to "
-            "FROM flight_prices WHERE flight_no = ?",
-            (r["flight_no"],),
+            "FROM flight_prices WHERE flight_no = ? AND flight_date >= ?",
+            (r["flight_no"], today.isoformat()),
         ).fetchone()
+        if price_row["min_p"] is None and price_row["max_p"] is None:
+            continue
         flights.append({
             "flight_no": r["flight_no"], "airline": r["airline"],
             "dep_time": r["dep_time"], "arr_time": r["arr_time"],

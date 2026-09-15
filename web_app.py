@@ -974,7 +974,11 @@ def my_orders():
 
 @app.route('/api/flights/search')
 def api_flights_search():
-    """按出发/到达城市与日期搜索航班（机票预订页使用）。"""
+    """按出发/到达城市与日期搜索航班（机票预订页使用）。
+
+    只返回尚未起飞的航班：过去日期返回 error（仅支持今天及以后），
+    查询当天时已起飞的班次不返回。
+    """
     try:
         member, denied = _require_member()
         if denied:

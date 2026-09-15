@@ -10,7 +10,9 @@
           <el-input v-model="form.destination" placeholder="上海" style="width: 140px" />
         </el-form-item>
         <el-form-item label="日期">
-          <el-date-picker v-model="form.date" type="date" value-format="YYYY-MM-DD" placeholder="选择日期" style="width: 160px" />
+          <el-date-picker v-model="form.date" type="date" value-format="YYYY-MM-DD"
+                          placeholder="选择日期" style="width: 160px"
+                          :disabled-date="disabledPastDate" />
         </el-form-item>
         <el-form-item label="舱位">
           <el-select v-model="form.cabin" style="width: 120px">
@@ -121,6 +123,13 @@ onMounted(() => {
   form.value.date = tomorrow()
   search()
 })
+
+// 只开放今天及以后：过去日期已过期，后端也会拒绝（这里提前拦下，少一次无效请求）
+function disabledPastDate(d) {
+  const start = new Date()
+  start.setHours(0, 0, 0, 0)
+  return d.getTime() < start.getTime()
+}
 
 async function search() {
   if (!form.value.departure || !form.value.destination || !form.value.date) {

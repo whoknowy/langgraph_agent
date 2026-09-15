@@ -43,10 +43,14 @@ def _weather_text(code: int) -> str:
 def search_flights(departure: str, destination: str, date: str = "") -> str:
     """搜索航班信息：返回航线在指定日期的航班时刻、航司、机型与经济舱/商务舱票价。
 
+    只返回**还没起飞**的航班：过去日期会报错（仅支持今天及以后），
+    查询当天时会自动剔除起飞时刻已过的班次。用户说"今天"时若航班已全部起飞，
+    应改查明天及以后，不要向用户报已飞走的班次。
+
     Args:
         departure: 出发城市（如"北京"）或机场三字码（如"PEK"）
         destination: 目的城市（如"上海"）或机场三字码
-        date: 出发日期 YYYY-MM-DD；留空时返回未来价格区间
+        date: 出发日期 YYYY-MM-DD，必须不早于今天；留空时返回未来价格区间
     """
     try:
         data = flight_repo.search_flights(departure, destination, date or None)
