@@ -11,13 +11,16 @@
 4. **待验签原文必须自己拼（异步通知恒验签失败的根因）**：
    支付宝网关拼待签名字符串的规则是「剔除 sign / sign_type，
    并**剔除值为空的参数**」，而 python-alipay-sdk 的 AliPay.verify()
-   只弹 sign_type，会把 `body=`、`out_biz_no=`、`gmt_refund=` 这类
-   空值参数也拼进原文 —— 只要通知里存在任何一个空值参数，拼出的原文
-   就与支付宝实际签的原文不一致，验签**必然失败**。
-   （下单时 biz_content 没设 body，支付宝就会把 body 原样回传为空串，
-   于是本项目的异步通知从未验签通过，全靠同步回跳查单兜底改单。）
+   只弹 sign_type，会把空值参数也拼进原文，拼出的原文可能与支付宝不一致。
    因此这里按网关规则自行拼原文验签，SDK 的 verify 仅作兜底，
    详见 build_sign_content() / verify_notify()。
+5. **字符集跟通知里的 charset 走（本项目实测踩到的坑）**：
+   支付宝异步通知实际会声明 `charset=GBK`，中文参数（如 subject）按 GBK 编码，
+   签名也是把原文转成 **GBK 字节**后做的。若按 UTF-8 解码参数、或按 UTF-8
+   把原文转字节，原文就对不上 → 验签必然失败。
+   （同步回跳之所以能过，是因为它的参数全是 ASCII，GBK 与 UTF-8 字节相同。）
+   所以 parse_notify_body() 与 _verify_signature() 都必须带 charset，
+   并且必须用**原始报文**解析——框架（Flask/Werkzeug）按 UTF-8 解 GBK 中文会变乱码。
 
 密钥来源：环境变量 ALIPAY_PRIVATE_KEY / ALIPAY_PUBLIC_KEY 优先，
 未设置时回退到 config 指定的密钥文件（见 _load_key）。
@@ -29,7 +32,7 @@ SDK 与网络调用均为延迟加载/延迟构造：未配置凭据时本模块
 import base64
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl
 
 from .base import (MODE_REDIRECT, PROVIDER_ALIPAY, PROVIDER_ALIPAY_SANDBOX,
@@ -52,7 +55,48 @@ _SIGN_SKIP = ("sign", "sign_type")
 _SIGN_TYPES = ("RSA", "RSA2")
 
 # GBK 系编码的别名，通知里的 charset 可能是其中任一个
-_GBK_ALIASES = ("gbk", "gb2312", "gb18030")
+_GBK_ALIASES = ("gbk", "gb2312", "gb18030", "cp936")
+
+# 通知实际用的字符集（实测沙箱为 GBK），探测不到或探测错时逐个回退尝试。
+# 每多试一个组合只多一次 RSA 验签，且必须验通真签名，不影响安全。
+_CHARSET_FALLBACKS = ("utf-8", "gbk")
+
+
+def normalize_charset(value: str) -> str:
+    """把通知声明的 charset 归一成 Python 认识、且大小写不敏感的编解码器名。"""
+    cs = (value or "").strip().lower().replace("_", "-")
+    if not cs:
+        return "utf-8"
+    if cs == "utf8":
+        return "utf-8"
+    if cs in _GBK_ALIASES:
+        return "gbk"
+    return cs
+
+
+def charset_candidates(*names: str) -> List[str]:
+    """按给定顺序去重出一组候选字符集（声明值优先，其后是兜底）。"""
+    out: List[str] = []
+    for name in names:
+        cs = normalize_charset(name)
+        if cs and cs not in out:
+            out.append(cs)
+    for cs in _CHARSET_FALLBACKS:
+        if cs not in out:
+            out.append(cs)
+    return out
+
+
+def charset_of(raw: Any) -> str:
+    """读出回调声明用的字符集（charset 参数本身是 ASCII，可先按 UTF-8 安全探一遍）。"""
+    if not raw:
+        return "utf-8"
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8", "replace")
+    for key, value in parse_qsl(raw.decode("utf-8", "replace"), keep_blank_values=True):
+        if key == "charset":
+            return normalize_charset(value)
+    return "utf-8"
 
 
 def build_sign_content(params: Dict[str, Any], *, drop_blank: bool = True) -> str:
@@ -62,8 +106,10 @@ def build_sign_content(params: Dict[str, Any], *, drop_blank: bool = True) -> st
     1. 剔除 sign 与 sign_type；
     2. **剔除值为空的参数**（"没有值的参数无需传递，也无需包含到待签名数据中"）；
     3. 键名按 ASCII 码升序排序；
-    4. 以 `键=值` 用 `&` 连接，值取 **url_decode 之后的原生值**
-       （不做二次 URL 编码，中文按 UTF-8 转字节）。
+    4. 以 `键=值` 用 `&` 连接，值取 **url_decode 之后的原生值**（不再二次 URL 编码）。
+
+    注意：这里产出的是**字符串**；转成字节时要按通知声明的 charset 编码，
+    见 _verify_signature(content, ..., charset)。
 
     drop_blank=False 用于兼容「支付宝确实对含空值原文签名」的极端情况（兜底用）。
     """
@@ -82,25 +128,26 @@ def build_sign_content(params: Dict[str, Any], *, drop_blank: bool = True) -> st
     return "&".join(f"{k}={v}" for k, v in items)
 
 
-def parse_notify_body(raw: Any) -> Dict[str, str]:
+def parse_notify_body(raw: Any, charset: str = None) -> Dict[str, str]:
     """把回调的原始报文（bytes / str）解析成参数，等价于官方验签第二步的 url_decode。
 
-    为什么不直接用框架解析好的 dict：
-    - 报文按通知里 `charset` 声明的字符集编码，框架可能按错误的字符集解码；
-    - 框架会把重复键合并、可能按自身规则转义，我们要的是与字节流一一对应的参数；
+    为什么要自己解、而不是直接用框架解析好的 dict：
+    - **字符集**：通知里声明的 charset 决定参数值的编码。实测沙箱会声明
+      `charset=GBK` 并按 GBK 编码中文参数（如 subject），而 Flask/Werkzeug
+      按 UTF-8 解析会得到乱码，验签必然失败；
+    - 报文按该字符集编码，框架可能用错字符集、合并重复键或按自身规则转义；
     - keep_blank_values=True 才能保住空值参数，让上层按网关规则决定是否剔除。
 
-    解析结果若为空/失败返回 {}，调用方会回退到框架解析结果。
+    关键点：charset 必须交给 parse_qsl 做百分号解码（encoding=参数），
+    不能先按某个字符集把整串解码完再解析，否则 %XX 仍会按默认 UTF-8 还原。
     """
     if not raw:
         return {}
     if isinstance(raw, str):
         raw = raw.encode("utf-8", "replace")
-    text = raw.decode("utf-8", "replace")
-    charset = (dict(parse_qsl(text, keep_blank_values=True)).get("charset") or "").lower()
-    if charset in _GBK_ALIASES:
-        text = raw.decode(charset, "replace")
-    return dict(parse_qsl(text, keep_blank_values=True))
+    cs = normalize_charset(charset or charset_of(raw))
+    text = raw.decode(cs, "replace")
+    return dict(parse_qsl(text, keep_blank_values=True, encoding=cs, errors="replace"))
 
 
 def _normalize_pem(raw: str, header: str, footer: str) -> str:
@@ -232,10 +279,13 @@ class AlipayProvider(PaymentProvider):
         except Exception:
             return None
 
-    def _verify_signature(self, content: str, signature: str, sign_type: str) -> bool:
+    def _verify_signature(self, content: str, signature: str, sign_type: str,
+                          charset: str = "utf-8") -> bool:
         """用支付宝公钥做 RSA 验签：RSA2=SHA256withRSA，RSA=SHA1withRSA。
 
         content 是按网关规则拼好的待验签原文；signature 是 base64 字符串。
+        ⚠️ content 必须按**通知声明的 charset** 转字节：支付宝是把原文按该字符集
+        编码后再签的，中文参数（subject 等）用错字符集必然验不过。
         任何异常（解码失败、密钥不可用等）都按「验签不通过」处理，绝不抛给调用方。
         """
         try:
@@ -243,7 +293,7 @@ class AlipayProvider(PaymentProvider):
             from Cryptodome.Signature import PKCS1_v1_5
             key = self._ensure_client().alipay_public_key
             digest = SHA.new() if sign_type == "RSA" else SHA256.new()
-            digest.update(content.encode("utf-8"))
+            digest.update(content.encode(normalize_charset(charset), "replace"))
             return bool(PKCS1_v1_5.new(key).verify(digest, base64.b64decode(signature)))
         except Exception:
             return False
@@ -254,64 +304,76 @@ class AlipayProvider(PaymentProvider):
 
         返回 (是否可信, 标准化字段)。任何未通过验签的数据一律返回 False。
 
-        ⚠️ 不要直接把通知参数丢给 SDK 的 verify()——它不剔除空值参数，
-        而网关签名时剔除了，两边原文不一致就会恒失败（见模块开头第 4 条）。
-        这里按网关规则自己拼原文验签，并在失败时给出可定位的诊断信息。
+        ⚠️ 不要直接把通知参数丢给 SDK 的 verify()：
+        - 它不剔除空值参数，而网关签名时剔除了；
+        - 它固定按 UTF-8 把原文转字节，而通知实测声明 `charset=GBK`。
+        两者任一不符，原文就对不上 → 恒失败（见模块开头第 4、5 条）。
+        这里按网关规则自己拼原文、按声明的字符集转字节，SDK 仅作兜底。
 
-        raw_body：回调的原始报文（bytes），给到时优先用它解析参数，
-        可避免框架解析带来的字符集/转义差异；不给则用 data（两者都会尝试）。
+        raw_body：回调的原始报文（bytes）。**必须传**，否则 GBK 通知里的中文
+        会被框架按 UTF-8 解成乱码，无从验签。data 作为兜底候选一并尝试。
         """
-        candidates = []
-        body_params = parse_notify_body(raw_body)
-        if body_params:
-            candidates.append(("原始报文", body_params))
+        declared = charset_of(raw_body)
+
+        # 候选 = (来源标签, 参数, 转字节用的字符集)
+        candidates: List[Tuple[str, Dict[str, Any], str]] = []
+        for cs in charset_candidates(declared):
+            params = parse_notify_body(raw_body, cs)
+            if params:
+                candidates.append((f"原始报文/{cs}", params, cs))
         if data:
-            candidates.append(("框架解析", dict(data)))
+            # 框架解析结果：字符集已被框架拍板（通常是 utf-8）。
+            # 通知声明 GBK 时这里的中文已损坏，仅作兜底。
+            for cs in charset_candidates(declared):
+                candidates.append((f"框架解析/{cs}", dict(data), cs))
         if not candidates:
             return False, {"error": "回调缺少参数"}
 
-        signature = next((p.get("sign") for _, p in candidates if p.get("sign")), "")
+        signature = next((p.get("sign") for _, p, _ in candidates if p.get("sign")), "")
         if not signature:
             return False, {"error": "回调缺少 sign 参数"}
 
         # 签名算法优先取通知声明的，缺省用本渠道配置；只接受 RSA / RSA2
-        declared = next((p.get("sign_type") for _, p in candidates if p.get("sign_type")), "")
-        sign_type = str(declared or self.sign_type).upper()
+        declared_type = next((p.get("sign_type") for _, p, _ in candidates
+                              if p.get("sign_type")), "")
+        sign_type = str(declared_type or self.sign_type).upper()
         if sign_type not in _SIGN_TYPES:
-            return False, {"error": f"不支持的签名算法：{declared}"}
+            return False, {"error": f"不支持的签名算法：{declared_type}"}
 
         # 第一轮：按支付宝网关规则（剔除空值）验签
         hit = None
-        for label, params in candidates:
+        for label, params, cs in candidates:
             sig = params.get("sign") or signature
-            if self._verify_signature(build_sign_content(params), sig, sign_type):
-                hit = (label, params, "gateway")
+            if self._verify_signature(build_sign_content(params), sig, sign_type, cs):
+                hit = (label, params, cs, "gateway")
                 break
 
         # 第二轮（兜底）：少数场景支付宝确实对含空值的原文签名，
         # 或 SDK 的拼装规则与网关一致，交给 SDK 再验一次。
         # 两条路都要求同一个支付宝公钥下的合法 RSA 签名，安全性不受影响。
         if hit is None:
-            for label, params in candidates:
+            for label, params, _ in candidates:
                 try:
                     probe = dict(params)
                     sig = probe.pop("sign", None)
                     if sig and self._ensure_client().verify(probe, sig):
-                        hit = (label, params, "sdk")
+                        hit = (label, params, "", "sdk")
                         break
                 except Exception:
                     continue
 
         if hit is None:
-            blank = sorted(k for k, v in candidates[0][1].items()
+            diag = candidates[0]
+            blank = sorted(k for k, v in diag[1].items()
                            if v == "" and k not in _SIGN_SKIP)
             return False, {
                 "error": "签名校验未通过",
+                "charset": declared,
                 "blank_params": blank,
-                "content_head": build_sign_content(candidates[0][1])[:200],
+                "content_head": build_sign_content(diag[1])[:200],
             }
 
-        source, params, how = hit
+        source, params, charset, how = hit
         if how != "gateway":
             print(f"⚠️ [支付] 异步通知经 SDK 兜底验签通过（参数来源：{source}）")
 

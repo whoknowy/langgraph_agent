@@ -749,6 +749,8 @@ def pay_notify_alipay():
         ok, fields = provider.verify_notify(data, raw_body=raw)
         if not ok:
             detail = ''
+            if fields.get('charset'):
+                detail += f"（通知声明 charset={fields['charset']}）"
             if fields.get('blank_params'):
                 detail += f"（含空值参数：{','.join(fields['blank_params'])}）"
             if fields.get('content_head'):

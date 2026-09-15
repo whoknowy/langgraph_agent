@@ -1460,7 +1460,7 @@ class TestPayment:
     # --- 支付宝验签链路（真实 RSA，不联网）---
 
     @staticmethod
-    def _sign(params):
+    def _sign(params, charset="utf-8"):
         """按支付宝规则对参数签名（用应用私钥）。"""
         import base64
 
@@ -1476,7 +1476,8 @@ class TestPayment:
         content = "&".join(f"{k}={v}" for k, v in items)
         pem = _load_key(ALIPAY_PRIVATE_KEY_PATH, "ALIPAY_PRIVATE_KEY",
                         _PRIV_HEADER, _PRIV_FOOTER)
-        sig = pkcs1_15.new(RSA.importKey(pem)).sign(SHA256.new(content.encode("utf-8")))
+        sig = pkcs1_15.new(RSA.importKey(pem)).sign(
+            SHA256.new(content.encode(charset)))
         return base64.b64encode(sig).decode()
 
     @classmethod
@@ -2322,3 +2323,92 @@ class TestLangfuseSetup:
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "--tb=short"]))
+# ------------------------------------------------- 支付宝通知字符集（线上实况）
+
+
+class TestAlipayNotifyCharset:
+    """异步通知声明 charset=GBK 时的验签（2026-09-15 线上故障回归）。
+
+    实况日志：待验签原文里 `charset=GBK`，且参数含中文 subject。
+    支付宝把原文按 GBK 转字节后签名，所以解码参数、拼完原文转字节都必须用 GBK；
+    按 UTF-8 处理必然验不过。同步回跳因参数全是 ASCII（GBK 与 UTF-8 字节相同）
+    反而能通过，这正是问题难定位的原因。
+    """
+
+    def test_gbk_notify_from_raw_body_passes(self):
+        from urllib.parse import quote
+
+        from config import ALIPAY_APP_ID
+        from services.payment.alipay_provider import (build_sign_content,
+                                                      parse_notify_body)
+
+        p = TestPayment._alipay_provider_with_app_pubkey()
+        params = TestPayment._notify_params("PB20", 740, app_id=ALIPAY_APP_ID)
+        params.update({"charset": "GBK", "subject": "机票订单 O5755188"})
+        params["sign"] = TestPayment._sign(params, "gbk")
+
+        body = "&".join(
+            f"{quote(str(k), safe='')}={quote(str(v).encode('gbk'), safe='')}"
+            for k, v in params.items()).encode("ascii")
+
+        # 只给原始报文（模拟回调路由传 request.get_data()）
+        ok, fields = p.verify_notify(None, raw_body=body)
+        assert ok is True, fields
+        assert fields["amount"] == "740.00"
+        assert fields["out_trade_no"] == "PB20"
+
+        # 参数必须按声明的 GBK 解码，按 UTF-8 解是乱码（所以不能只用框架解析结果）
+        assert parse_notify_body(body, "gbk")["subject"] == "机票订单 O5755188"
+        assert parse_notify_body(body, "utf-8")["subject"] != "机票订单 O5755188"
+
+        # 同一份原文，按 UTF-8 转字节验签必须失败——这正是修复前的行为
+        content = build_sign_content(params)
+        # 该断言依赖原文含非 ASCII 字符（否则 GBK 与 UTF-8 字节相同，两条都通）
+        assert any(ord(c) > 127 for c in content), "用例前提：原文须含中文"
+        assert p._verify_signature(content, params["sign"], "RSA2", "gbk") is True
+        assert p._verify_signature(content, params["sign"], "RSA2", "utf-8") is False
+
+    def test_gbk_notify_rejects_tampered_amount(self):
+        """GBK 路径同样不得放过被篡改金额的通知。"""
+        from urllib.parse import quote
+
+        from config import ALIPAY_APP_ID
+
+        p = TestPayment._alipay_provider_with_app_pubkey()
+        params = TestPayment._notify_params("PB21", 740, app_id=ALIPAY_APP_ID)
+        params.update({"charset": "GBK", "subject": "机票订单 O5755188"})
+        params["sign"] = TestPayment._sign(params, "gbk")
+        params["total_amount"] = "0.01"          # 签名后篡改
+        body = "&".join(
+            f"{quote(str(k), safe='')}={quote(str(v).encode('gbk'), safe='')}"
+            for k, v in params.items()).encode("ascii")
+
+        ok, info = p.verify_notify(None, raw_body=body)
+        assert ok is False and "签名" in info.get("error", "")
+
+    def test_notify_declares_gbk_but_signed_utf8(self):
+        """声明 charset=GBK、实际却按 UTF-8 编码与签名的反常通知，也必须验通。
+
+        这条是给「charset=GBK 就该按 GBK 转字节」这个**假设**兜底的：
+        真实回调声明什么 charset 是我们从日志里读到的**事实**，但网关到底用哪个
+        字符集转字节签名，无法在没有支付宝私钥的情况下离线证明。
+        若假设错了（声明 GBK、实际 UTF-8），候选矩阵（参数来源 × 字符集）仍能
+        命中正确组合，不会因为猜错字符集而误杀真通知。
+        """
+        from urllib.parse import quote
+
+        from config import ALIPAY_APP_ID
+
+        p = TestPayment._alipay_provider_with_app_pubkey()
+        params = TestPayment._notify_params("PB22", 740, app_id=ALIPAY_APP_ID)
+        params.update({"charset": "GBK", "subject": "机票订单 O5755188"})
+        params["sign"] = TestPayment._sign(params, "utf-8")     # 字节其实是 UTF-8
+        body = "&".join(
+            f"{quote(str(k), safe='')}={quote(str(v).encode('utf-8'), safe='')}"
+            for k, v in params.items()).encode("ascii")
+
+        ok, fields = p.verify_notify(None, raw_body=body)
+        assert ok is True, fields
+        assert fields["amount"] == "740.00"
+
+
