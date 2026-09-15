@@ -2,7 +2,7 @@
 //
 // 写操作必须携带一次性确认凭证 confirm_token（服务端强制 HITL）：
 // 正常由智能体在卡片里签发；卡片没有时（旧服务端 / 凭证过期）回准备接口现取一张。
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { api, qs, newRequestId } from '@/shared/api.js'
 import { toastError, confirmDialog } from '@/shared/ui.js'
 import { usePay } from './usePay.js'
@@ -19,6 +19,32 @@ export function useChatActions(chat) {
   // 聊天里订票后的支付：与「我的订单」「机票预订」共用同一实现。
   // 这里不传 win —— 跳转方式与那两处不同，原因见 confirmAction 里的注释。
   const { pay } = usePay()
+
+  // 订票确认卡片要展示「航司 / 航线 / 起降时间 / 舱位 / 人数 / 单价 / 总价」，
+  // 而 pending_action 里只有 flight_no/flight_date/cabin/passengers，
+  // 所以卡片一出现就补一次报价查询（纯展示用，确认凭证仍走 ensureToken）。
+  const cardQuote = ref({ loading: false, error: '', data: null })
+  watch(pendingAction, (a) => { loadCardQuote(a) }, { immediate: true })
+
+  async function loadCardQuote(a) {
+    if (!a || a.type !== 'book_flight') {
+      cardQuote.value = { loading: false, error: '', data: null }
+      return
+    }
+    cardQuote.value = { loading: true, error: '', data: null }
+    try {
+      const q = await api('/api/booking_quote' + qs({
+        flight_no: a.flight_no, flight_date: a.flight_date,
+        cabin: a.cabin, passengers: Number(a.passengers || 1)
+      }))
+      cardQuote.value = q && q.error
+        ? { loading: false, error: q.error, data: null }
+        : { loading: false, error: '', data: q }
+    } catch (e) {
+      // 报价拿不到不阻塞确认：卡片退回文字描述，确认时 ensureToken 仍会再试一次
+      cardQuote.value = { loading: false, error: e.message, data: null }
+    }
+  }
 
   const pendingActionDesc = computed(() => {
     const a = pendingAction.value
@@ -157,7 +183,7 @@ export function useChatActions(chat) {
   }
 
   return {
-    actionLoading, seatModal,
+    actionLoading, seatModal, cardQuote,
     pendingActionDesc, actionButtonText,
     confirmAction, cancelAction, confirmSeat, closeSeatModal
   }

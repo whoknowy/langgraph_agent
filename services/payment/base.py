@@ -34,15 +34,7 @@ class PaymentProvider(ABC):
 
     name = PROVIDER_MOCK
     label = "未命名渠道"
-    # 面向用户的渠道名：前端「支付方式」展示用，不带"沙箱/手机网站支付"这类技术后缀。
-    # 留空则回退 label（见 ui_label）。
-    display_label = ""
     mode = MODE_DIRECT
-
-    @property
-    def ui_label(self) -> str:
-        """给用户看的渠道名（沙箱与生产对买家都是「支付宝」，不需要暴露环境差异）。"""
-        return self.display_label or self.label
 
     @abstractmethod
     def create_payment(self, *, pay_no: str, subject: str, amount: float,

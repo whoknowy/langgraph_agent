@@ -549,7 +549,7 @@ def booking_quote(flight_no: str, flight_date: str, cabin: str, passengers: int 
 
     conn = _conn()
     frow = conn.execute(
-        "SELECT f.flight_no, a.name_cn AS airline, f.dep_time, "
+        "SELECT f.flight_no, a.name_cn AS airline, f.dep_time, f.arr_time, "
         "fd.city_cn AS dep_city, fa.city_cn AS arr_city "
         "FROM flights f JOIN airlines a ON a.code = f.airline_code "
         "JOIN airports fd ON fd.iata3 = f.dep_iata JOIN airports fa ON fa.iata3 = f.arr_iata "
@@ -565,8 +565,12 @@ def booking_quote(flight_no: str, flight_date: str, cabin: str, passengers: int 
         return {"error": f"{flight_no} 在 {d.isoformat()} 无 {cabin}舱 在售票价"}
 
     unit = int(prow["price"])
+    # 字段尽量拆开给前端（确认卡片要按「航司 / 航线 / 起降时间 / 舱位 / 票价」分块展示，
+    # 不想让前端去 split(route) 猜城市）
     return {"flight_no": frow["flight_no"], "airline": frow["airline"],
-            "route": f"{frow['dep_city']}-{frow['arr_city']}", "dep_time": frow["dep_time"],
+            "route": f"{frow['dep_city']}-{frow['arr_city']}",
+            "dep_city": frow["dep_city"], "arr_city": frow["arr_city"],
+            "dep_time": frow["dep_time"], "arr_time": frow["arr_time"],
             "flight_date": d.isoformat(), "cabin": cabin, "passengers": passengers,
             "unit_price": unit, "total_amount": unit * passengers}
 
