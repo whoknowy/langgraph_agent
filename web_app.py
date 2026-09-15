@@ -736,14 +736,24 @@ def pay_notify_alipay():
 
     验签 → 校验金额 → 幂等改单 → 返回 success。
     支付宝会间隔重投 8 次，重复通知由 mark_paid 去重，必须原样返回 success 才会停止重试。
+
+    注意：先把**原始报文**取出来再让框架解析。
+    验签要按支付宝网关规则拼原文（剔除 sign/sign_type 与空值参数后再排序），
+    用原始字节流解析能避免框架在字符集/转义上的差异，见 provider.verify_notify()。
     """
     try:
         from services import payment_service
-        data = request.form.to_dict()
+        raw = request.get_data()                 # 必须先取原始报文
+        data = request.form.to_dict()            # 再取框架解析结果
         provider = _alipay_provider()
-        ok, fields = provider.verify_notify(data)
+        ok, fields = provider.verify_notify(data, raw_body=raw)
         if not ok:
-            print(f"⚠️ [支付] 异步通知验签失败：{fields.get('error') or data.get('out_trade_no')}")
+            detail = ''
+            if fields.get('blank_params'):
+                detail += f"（含空值参数：{','.join(fields['blank_params'])}）"
+            if fields.get('content_head'):
+                detail += f"（我方拼的待验签原文：{fields['content_head']}）"
+            print(f"⚠️ [支付] 异步通知验签失败：{fields.get('error') or data.get('out_trade_no')}{detail}")
             return 'failure', 400
         if fields.get('trade_status') not in ('TRADE_SUCCESS', 'TRADE_FINISHED'):
             # 非终态（如 WAIT_BUYER_PAY）不处理，但必须回 success，否则会被判定为通知失败
@@ -779,7 +789,9 @@ def pay_return_alipay():
         data = request.args.to_dict()
         provider = _alipay_provider()
         pay_no = data.get('out_trade_no', '')
-        ok, fields = provider.verify_notify(data)
+        # 同样把原始查询串给渠道：框架可能按自己的字符集/转义解析，
+        # 与验签要求的原文产生差异（异步通知就栽在这上面，见 provider.verify_notify）。
+        ok, fields = provider.verify_notify(data, raw_body=request.query_string)
         if ok:
             # 同步参数可被篡改，只信任查询接口返回的真实状态
             q = provider.query_payment(pay_no)

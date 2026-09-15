@@ -1548,6 +1548,57 @@ class TestPayment:
         ok, info = p.verify_notify(params)     # 不带 sign
         assert ok is False and "sign" in info.get("error", "")
 
+    def test_alipay_notify_ignores_blank_params(self):
+        """空值参数不得参与待验签原文——异步通知恒验签失败的根因，锁死防回归。
+
+        支付宝网关拼待签名字符串的规则是「剔除 sign/sign_type，剔除值为空的参数」，
+        而 python-alipay-sdk 的 verify() 只弹 sign_type、会把 `body=` 这类空值也拼进去。
+        下单时 biz_content 没设 body，支付宝就把 body 原样回传为空串，
+        于是拼出的原文与支付宝实际签的原文不符 → 验签永远失败。
+
+        这里模拟真实现场：通知里带空值的 body/out_biz_no/gmt_refund，
+        而签名按网关规则（剔除空值）产生 → 必须验签通过。
+        """
+        from config import ALIPAY_APP_ID
+        p = self._alipay_provider_with_app_pubkey()
+        params = self._notify_params("PB7", 600, app_id=ALIPAY_APP_ID)
+        params.update({"body": "", "out_biz_no": "", "gmt_refund": ""})
+        params["sign"] = self._sign(params)          # _sign 已按网关规则剔除空值
+        ok, fields = p.verify_notify(params)
+        assert ok is True, fields
+        assert fields["amount"] == "600.00"
+
+    def test_alipay_notify_from_raw_body(self):
+        """走原始报文验签：含中文标题、JSON 字段、空值参数都要能验通。
+
+        回调路由传的是 request.get_data() 的原始字节流，由渠道自己按 charset 解码，
+        避免框架解析在字符集/转义上的差异。
+        """
+        from urllib.parse import urlencode
+        from config import ALIPAY_APP_ID
+        p = self._alipay_provider_with_app_pubkey()
+        params = self._notify_params("PB8", 600, app_id=ALIPAY_APP_ID)
+        params.update({"subject": "机票订单 M1001", "body": "", "out_biz_no": "",
+                       "fund_bill_list": '[{"amount":"600.00","fundChannel":"ALIPAYACCOUNT"}]'})
+        params["sign"] = self._sign(params)
+        raw = urlencode(params).encode("utf-8")
+        # 故意只给原始报文，不给框架解析结果
+        ok, fields = p.verify_notify(None, raw_body=raw)
+        assert ok is True, fields
+        assert fields["out_trade_no"] == "PB8"
+        assert fields["amount"] == "600.00"
+
+    def test_alipay_notify_blank_params_still_reject_tampering(self):
+        """剔除空值修复了拼串规则，但不得因此放过被篡改的通知。"""
+        from config import ALIPAY_APP_ID
+        p = self._alipay_provider_with_app_pubkey()
+        params = self._notify_params("PB9", 600, app_id=ALIPAY_APP_ID)
+        params.update({"body": "", "out_biz_no": ""})
+        params["sign"] = self._sign(params)
+        params["total_amount"] = "0.01"              # 篡改金额
+        ok, info = p.verify_notify(params)
+        assert ok is False and "签名" in info.get("error", "")
+
     def test_alipay_notify_end_to_end_marks_order_paid_once(self):
         """验签通过后走完整落账：出票，且重投 5 次仍只出票一次。"""
         from config import ALIPAY_APP_ID

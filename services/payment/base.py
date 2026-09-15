@@ -46,12 +46,17 @@ class PaymentProvider(ABC):
         """
 
     @abstractmethod
-    def verify_notify(self, data: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+    def verify_notify(self, data: Dict[str, Any] = None, *,
+                      raw_body: Any = None) -> Tuple[bool, Dict[str, Any]]:
         """校验异步回调。
 
         返回 (是否可信, 标准化字段)，标准化字段至少含
         out_trade_no / trade_no / amount / buyer_id / trade_status。
         任何未通过验签的数据一律返回 False，调用方不得据此改单。
+
+        data：框架解析好的参数 dict（如 Flask 的 request.form.to_dict()）；
+        raw_body：回调的原始报文 bytes，渠道可优先据此自行解码，
+        避免框架解析带来的字符集/转义差异。两者都给时由渠道决定用哪个。
         """
 
     @abstractmethod

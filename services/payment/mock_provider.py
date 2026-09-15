@@ -30,7 +30,8 @@ class MockProvider(PaymentProvider):
             "message": "模拟支付：请点击确认完成付款",
         }
 
-    def verify_notify(self, data: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+    def verify_notify(self, data: Dict[str, Any] = None, *,
+                      raw_body: Any = None) -> Tuple[bool, Dict[str, Any]]:
         return False, {"error": "模拟渠道不接收异步通知，请使用站内确认支付"}
 
     def query_payment(self, pay_no: str) -> Dict[str, Any]:

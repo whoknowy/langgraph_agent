@@ -1,6 +1,6 @@
 """支付宝渠道（沙箱与生产共用同一实现，靠 debug 切换网关）。
 
-三个容易踩坑、这里已处理的点：
+四个容易踩坑、这里已处理的点：
 1. **密钥格式**：密钥工具常导出单行裸 Base64（无 BEGIN/END 标记），
    而 pycryptodome 的 RSA.importKey 只认 PEM，直接喂会报
    "RSA key format is not supported"。_read_pem() 负责补齐头尾。
@@ -8,6 +8,16 @@
    SDK 在 debug=True 时已自动指向它，无需手动拼 URL。
 3. **回调不可信**：验签只是第一道，还必须校验 app_id 与金额，
    否则攻击者可用自己的商户号伪造一笔"已支付"。
+4. **待验签原文必须自己拼（异步通知恒验签失败的根因）**：
+   支付宝网关拼待签名字符串的规则是「剔除 sign / sign_type，
+   并**剔除值为空的参数**」，而 python-alipay-sdk 的 AliPay.verify()
+   只弹 sign_type，会把 `body=`、`out_biz_no=`、`gmt_refund=` 这类
+   空值参数也拼进原文 —— 只要通知里存在任何一个空值参数，拼出的原文
+   就与支付宝实际签的原文不一致，验签**必然失败**。
+   （下单时 biz_content 没设 body，支付宝就会把 body 原样回传为空串，
+   于是本项目的异步通知从未验签通过，全靠同步回跳查单兜底改单。）
+   因此这里按网关规则自行拼原文验签，SDK 的 verify 仅作兜底，
+   详见 build_sign_content() / verify_notify()。
 
 密钥来源：环境变量 ALIPAY_PRIVATE_KEY / ALIPAY_PUBLIC_KEY 优先，
 未设置时回退到 config 指定的密钥文件（见 _load_key）。
@@ -16,9 +26,10 @@ SDK 与网络调用均为延迟加载/延迟构造：未配置凭据时本模块
 只在真正发起支付时才报错，不影响 mock 通道与其他功能。
 """
 
+import base64
 import os
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 from urllib.parse import parse_qsl
 
 from .base import (MODE_REDIRECT, PROVIDER_ALIPAY, PROVIDER_ALIPAY_SANDBOX,
@@ -33,6 +44,63 @@ _PUB_FOOTER = "-----END PUBLIC KEY-----"
 
 # 交易终态：只有这两种才认为买家真的付了钱
 _PAID_STATUSES = ("TRADE_SUCCESS", "TRADE_FINISHED")
+
+# 不参与签名的参数（网关规则第一条）
+_SIGN_SKIP = ("sign", "sign_type")
+
+# 支持的签名算法（网关只认这两个）
+_SIGN_TYPES = ("RSA", "RSA2")
+
+# GBK 系编码的别名，通知里的 charset 可能是其中任一个
+_GBK_ALIASES = ("gbk", "gb2312", "gb18030")
+
+
+def build_sign_content(params: Dict[str, Any], *, drop_blank: bool = True) -> str:
+    """按支付宝网关规则拼「待验签字符串」。
+
+    网关规则（缺一不可，见开放平台《自行实现签名》）：
+    1. 剔除 sign 与 sign_type；
+    2. **剔除值为空的参数**（"没有值的参数无需传递，也无需包含到待签名数据中"）；
+    3. 键名按 ASCII 码升序排序；
+    4. 以 `键=值` 用 `&` 连接，值取 **url_decode 之后的原生值**
+       （不做二次 URL 编码，中文按 UTF-8 转字节）。
+
+    drop_blank=False 用于兼容「支付宝确实对含空值原文签名」的极端情况（兜底用）。
+    """
+    items = []
+    for key, value in (params or {}).items():
+        key = str(key)
+        if key in _SIGN_SKIP or value is None:
+            continue
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", "replace")
+        text = value if isinstance(value, str) else str(value)
+        if drop_blank and text == "":
+            continue
+        items.append((key, text))
+    items.sort(key=lambda kv: kv[0])
+    return "&".join(f"{k}={v}" for k, v in items)
+
+
+def parse_notify_body(raw: Any) -> Dict[str, str]:
+    """把回调的原始报文（bytes / str）解析成参数，等价于官方验签第二步的 url_decode。
+
+    为什么不直接用框架解析好的 dict：
+    - 报文按通知里 `charset` 声明的字符集编码，框架可能按错误的字符集解码；
+    - 框架会把重复键合并、可能按自身规则转义，我们要的是与字节流一一对应的参数；
+    - keep_blank_values=True 才能保住空值参数，让上层按网关规则决定是否剔除。
+
+    解析结果若为空/失败返回 {}，调用方会回退到框架解析结果。
+    """
+    if not raw:
+        return {}
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8", "replace")
+    text = raw.decode("utf-8", "replace")
+    charset = (dict(parse_qsl(text, keep_blank_values=True)).get("charset") or "").lower()
+    if charset in _GBK_ALIASES:
+        text = raw.decode(charset, "replace")
+    return dict(parse_qsl(text, keep_blank_values=True))
 
 
 def _normalize_pem(raw: str, header: str, footer: str) -> str:
@@ -164,29 +232,99 @@ class AlipayProvider(PaymentProvider):
         except Exception:
             return None
 
-    def verify_notify(self, data: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
-        raw = dict(data or {})
-        signature = raw.pop("sign", None)
+    def _verify_signature(self, content: str, signature: str, sign_type: str) -> bool:
+        """用支付宝公钥做 RSA 验签：RSA2=SHA256withRSA，RSA=SHA1withRSA。
+
+        content 是按网关规则拼好的待验签原文；signature 是 base64 字符串。
+        任何异常（解码失败、密钥不可用等）都按「验签不通过」处理，绝不抛给调用方。
+        """
+        try:
+            from Cryptodome.Hash import SHA, SHA256
+            from Cryptodome.Signature import PKCS1_v1_5
+            key = self._ensure_client().alipay_public_key
+            digest = SHA.new() if sign_type == "RSA" else SHA256.new()
+            digest.update(content.encode("utf-8"))
+            return bool(PKCS1_v1_5.new(key).verify(digest, base64.b64decode(signature)))
+        except Exception:
+            return False
+
+    def verify_notify(self, data: Dict[str, Any] = None, *,
+                      raw_body: Any = None) -> Tuple[bool, Dict[str, Any]]:
+        """校验异步通知（或同步回跳参数）。
+
+        返回 (是否可信, 标准化字段)。任何未通过验签的数据一律返回 False。
+
+        ⚠️ 不要直接把通知参数丢给 SDK 的 verify()——它不剔除空值参数，
+        而网关签名时剔除了，两边原文不一致就会恒失败（见模块开头第 4 条）。
+        这里按网关规则自己拼原文验签，并在失败时给出可定位的诊断信息。
+
+        raw_body：回调的原始报文（bytes），给到时优先用它解析参数，
+        可避免框架解析带来的字符集/转义差异；不给则用 data（两者都会尝试）。
+        """
+        candidates = []
+        body_params = parse_notify_body(raw_body)
+        if body_params:
+            candidates.append(("原始报文", body_params))
+        if data:
+            candidates.append(("框架解析", dict(data)))
+        if not candidates:
+            return False, {"error": "回调缺少参数"}
+
+        signature = next((p.get("sign") for _, p in candidates if p.get("sign")), "")
         if not signature:
             return False, {"error": "回调缺少 sign 参数"}
-        try:
-            # SDK 的 verify 会自行处理 sign_type；验签失败返回 False
-            ok = self._ensure_client().verify(raw, signature)
-        except Exception as e:
-            return False, {"error": f"验签异常：{e}"}
-        if not ok:
-            return False, {"error": "签名校验未通过"}
 
-        # 验签通过只说明"是支付宝发的"，还需确认"是发给我的、金额对得上"
-        if self.app_id and raw.get("app_id") and raw.get("app_id") != self.app_id:
-            return False, {"error": f"app_id 不匹配：{raw.get('app_id')}"}
+        # 签名算法优先取通知声明的，缺省用本渠道配置；只接受 RSA / RSA2
+        declared = next((p.get("sign_type") for _, p in candidates if p.get("sign_type")), "")
+        sign_type = str(declared or self.sign_type).upper()
+        if sign_type not in _SIGN_TYPES:
+            return False, {"error": f"不支持的签名算法：{declared}"}
+
+        # 第一轮：按支付宝网关规则（剔除空值）验签
+        hit = None
+        for label, params in candidates:
+            sig = params.get("sign") or signature
+            if self._verify_signature(build_sign_content(params), sig, sign_type):
+                hit = (label, params, "gateway")
+                break
+
+        # 第二轮（兜底）：少数场景支付宝确实对含空值的原文签名，
+        # 或 SDK 的拼装规则与网关一致，交给 SDK 再验一次。
+        # 两条路都要求同一个支付宝公钥下的合法 RSA 签名，安全性不受影响。
+        if hit is None:
+            for label, params in candidates:
+                try:
+                    probe = dict(params)
+                    sig = probe.pop("sign", None)
+                    if sig and self._ensure_client().verify(probe, sig):
+                        hit = (label, params, "sdk")
+                        break
+                except Exception:
+                    continue
+
+        if hit is None:
+            blank = sorted(k for k, v in candidates[0][1].items()
+                           if v == "" and k not in _SIGN_SKIP)
+            return False, {
+                "error": "签名校验未通过",
+                "blank_params": blank,
+                "content_head": build_sign_content(candidates[0][1])[:200],
+            }
+
+        source, params, how = hit
+        if how != "gateway":
+            print(f"⚠️ [支付] 异步通知经 SDK 兜底验签通过（参数来源：{source}）")
+
+        # 验签通过只说明"是支付宝发的"，还需确认"是发给我的"
+        if self.app_id and params.get("app_id") and params.get("app_id") != self.app_id:
+            return False, {"error": f"app_id 不匹配：{params.get('app_id')}"}
 
         return True, {
-            "out_trade_no": raw.get("out_trade_no"),
-            "trade_no": raw.get("trade_no"),
-            "trade_status": raw.get("trade_status"),
-            "amount": raw.get("total_amount"),
-            "buyer_id": raw.get("buyer_id") or raw.get("buyer_logon_id"),
+            "out_trade_no": params.get("out_trade_no"),
+            "trade_no": params.get("trade_no"),
+            "trade_status": params.get("trade_status"),
+            "amount": params.get("total_amount"),
+            "buyer_id": params.get("buyer_id") or params.get("buyer_logon_id"),
         }
 
     def query_payment(self, pay_no: str) -> Dict[str, Any]:
