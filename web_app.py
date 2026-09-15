@@ -592,6 +592,26 @@ def _pay_urls(co_base: str) -> dict:
     }
 
 
+@app.route('/api/pay/channel')
+def pay_channel():
+    """当前支付渠道（只读，无需登录，仅含渠道名，不含凭据）。
+
+    给前端「支付方式」展示用：渠道由服务端 PAY_PROVIDER 决定（可能是
+    alipay_sandbox 也可能是演示用的 mock），前端**只展示、不据此分支**——
+    交互一律看 /api/pay/create 返回的 mode。
+    """
+    try:
+        from services.payment import get_provider
+        provider = get_provider()
+        return jsonify({
+            'provider': provider.name,
+            'label': provider.ui_label,
+            'mode': provider.mode,
+        })
+    except Exception as e:
+        return jsonify({'error': f'支付渠道不可用：{e}'}), 500
+
+
 @app.route('/api/pay/create', methods=['POST'])
 def pay_create():
     """发起支付（准备步骤）。

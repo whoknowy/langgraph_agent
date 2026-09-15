@@ -191,6 +191,7 @@ class AlipayProvider(PaymentProvider):
 
     name = PROVIDER_ALIPAY_SANDBOX
     label = "支付宝沙箱"
+    display_label = "支付宝"      # 买家侧统一叫「支付宝」，不暴露沙箱/场景等实现细节
     mode = MODE_REDIRECT
 
     # 场景 → SDK 方法名（SDK 内部已带好各自 product_code）

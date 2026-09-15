@@ -77,10 +77,10 @@
         </div>
         <div class="pay-methods">
           <label>支付方式</label>
-          <el-radio-group v-model="orderPanel.payMethod">
-            <el-radio value="balance">会员余额</el-radio>
-            <el-radio value="card">银行卡</el-radio>
-          </el-radio-group>
+          <div class="pay-channel">
+            <span class="pay-channel-name">{{ payChannel.label }}</span>
+            <span class="pay-channel-tip">{{ payChannel.tip }}</span>
+          </div>
         </div>
         <el-alert v-if="orderPanel.error" :title="orderPanel.error" type="error" :closable="false" style="margin-top:12px" />
       </template>
@@ -107,9 +107,29 @@ const loading = ref(false)
 const error = ref('')
 const orderPanel = reactive({
   open: false, loading: false, submitting: false, error: '', flight: null,
-  cabin: '经济', passengers: 1, quote: {}, created: false, orderNo: '', payMethod: 'balance', passengerName: '',
+  cabin: '经济', passengers: 1, quote: {}, created: false, orderNo: '', passengerName: '',
   payWin: null   // 预开的支付窗口，见 onSubmitClick
 })
+
+// 支付方式展示：渠道名取自后端（渠道由服务端 PAY_PROVIDER 决定）。
+// 这里原来是「会员余额 / 银行卡」的假单选——选项从不发给后端，点哪个都是跳
+// 支付宝收银台，属于误导用户，已改为只展示真实渠道。
+const payChannel = ref({ label: '支付宝', tip: '下单后跳转支付宝收银台完成付款' })
+
+async function loadPayChannel() {
+  try {
+    const d = await api('/api/pay/channel')
+    if (!d || !d.label) return
+    payChannel.value = {
+      label: d.label,
+      tip: d.mode === 'redirect'
+        ? `下单后跳转${d.label}收银台完成付款`
+        : '下单后在站内直接确认付款',
+    }
+  } catch (e) {
+    // 查不到渠道不影响下单：保留默认文案，真正分支看 /api/pay/create 的 mode
+  }
+}
 
 // 支付成功后刷新航班列表（该舱位余票可能变化）
 const { pay } = usePay({
@@ -122,6 +142,7 @@ const { pay } = usePay({
 onMounted(() => {
   form.value.date = tomorrow()
   search()
+  loadPayChannel()
 })
 
 // 只开放今天及以后：过去日期已过期，后端也会拒绝（这里提前拦下，少一次无效请求）
@@ -255,6 +276,12 @@ async function confirmBook() {
 .order-route { font-weight: 700; margin-bottom: 4px; }
 .order-passenger { margin: 12px 0; }
 .order-passenger label, .pay-methods label { display: block; font-size: 12.5px; color: var(--text-muted); margin-bottom: 5px; }
+.pay-channel { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pay-channel-name {
+  font-size: 13px; font-weight: 500; padding: 4px 10px; border-radius: 8px;
+  background: var(--primary-light); color: var(--primary);
+}
+.pay-channel-tip { font-size: 12px; color: var(--text-muted); }
 
 @media (max-width: 720px) {
   .flight-card { flex-wrap: wrap; gap: 12px; }

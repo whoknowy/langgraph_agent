@@ -217,6 +217,7 @@ token 有效期 7 天。过期后所有接口返回 **401**。统一处理方案
 | 订票 | POST | `/api/book` | 创建订单（待支付） | 是 |
 | 订票 | POST | `/api/pay` | 支付（模拟渠道，一步付讫） | 是 |
 | 支付 | POST | `/api/pay/create` | 发起支付（返回收银台地址/表单） | 是 |
+| 支付 | GET | `/api/pay/channel` | 当前支付渠道（前端「支付方式」展示用，**无需登录**，仅返回渠道名） | 否 |
 | 支付 | GET | `/api/pay/gateway/{pay_no}` | 收银台中转页（自动 POST 到渠道，**无需登录**） | 否 |
 | 支付 | POST | `/api/pay/confirm` | 站内确认支付（模拟渠道用，**body 需带 `confirm_token`**，见 4.4.3.4） | 是 |
 | 支付 | GET | `/api/pay/status?order_no=` | 查询支付状态（轮询用） | 是 |

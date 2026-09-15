@@ -2504,6 +2504,52 @@ class TestAlipayNotifyCharset:
         assert fields["amount"] == "740.00"
 
 
+# ------------------------------------------------- 前端「支付方式」展示的渠道名
+
+
+class TestPayChannelLabel:
+    """前端展示的渠道名（provider.ui_label）与后台技术名（label）要分开。
+
+    买家侧只该看到「支付宝」——沙箱/生产、page/wap 场景都是实现细节；
+    但日志与后台排查仍需要 label 里的沙箱/场景信息，不能反过来把 label 改掉。
+    """
+
+    def test_alipay_ui_label_hides_sandbox_and_scene(self):
+        from config import (ALIPAY_APP_ID, ALIPAY_PRIVATE_KEY_PATH,
+                            ALIPAY_PUBLIC_KEY_PATH)
+        from services.payment.alipay_provider import AlipayProvider
+        for scene in ("page", "wap"):
+            p = AlipayProvider(app_id=ALIPAY_APP_ID,
+                               private_key_path=ALIPAY_PRIVATE_KEY_PATH,
+                               public_key_path=ALIPAY_PUBLIC_KEY_PATH,
+                               debug=True, scene=scene)
+            assert p.ui_label == "支付宝"
+            assert "沙箱" in p.label          # 技术名仍保留环境信息
+        wap = AlipayProvider(app_id=ALIPAY_APP_ID,
+                             private_key_path=ALIPAY_PRIVATE_KEY_PATH,
+                             public_key_path=ALIPAY_PUBLIC_KEY_PATH,
+                             debug=True, scene="wap")
+        assert "手机网站支付" in wap.label     # 场景信息只在 label 里
+
+    def test_mock_ui_label_falls_back_to_label(self):
+        from services.payment import MockProvider
+        p = MockProvider()
+        assert p.display_label == ""          # 未单独指定
+        assert p.ui_label == p.label == "模拟支付"
+
+    def test_pay_channel_endpoint_shape(self):
+        """路由存在且只暴露渠道名（不含任何密钥/网关细节）。
+
+        web_app 导入成本高（会拉起后台线程与建表），这里只做源码级契约检查，
+        与 test_return_url_targets_backend_sync_handler 同一套路。
+        """
+        src = open("web_app.py", encoding="utf-8").read()
+        assert "@app.route('/api/pay/channel')" in src
+        assert "'label': provider.ui_label" in src
+        for leaked in ("private_key", "alipay_public_key_string", "_gateway"):
+            assert leaked not in src.split("def pay_channel")[1].split("def pay_create")[0]
+
+
 # ---------------------------------------------------------------- 直接运行入口
 
 if __name__ == "__main__":
