@@ -21,6 +21,11 @@
    （同步回跳之所以能过，是因为它的参数全是 ASCII，GBK 与 UTF-8 字节相同。）
    所以 parse_notify_body() 与 _verify_signature() 都必须带 charset，
    并且必须用**原始报文**解析——框架（Flask/Werkzeug）按 UTF-8 解 GBK 中文会变乱码。
+6. **退款是同步接口，但要区分「失败」与「结果未知」**：`alipay.trade.refund`
+   返回 code=10000 才算受理成功（fund_change=N 表示重复请求命中幂等）；
+   网络超时/响应验签失败属于**结果未知**，既不能当失败也不能盲目重试，
+   必须用 alipay.trade.fastpay.refund.query + 同一个 out_request_no 对账，
+   详见 refund() / query_refund()。
 
 密钥来源：环境变量 ALIPAY_PRIVATE_KEY / ALIPAY_PUBLIC_KEY 优先，
 未设置时回退到 config 指定的密钥文件（见 _load_key）。
@@ -36,7 +41,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl
 
 from .base import (MODE_REDIRECT, PROVIDER_ALIPAY, PROVIDER_ALIPAY_SANDBOX,
-                   PaymentProvider)
+                   REFUND_FAILED, REFUND_OK, REFUND_PENDING, PaymentProvider)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -60,6 +65,24 @@ _GBK_ALIASES = ("gbk", "gb2312", "gb18030", "cp936")
 # 通知实际用的字符集（实测沙箱为 GBK），探测不到或探测错时逐个回退尝试。
 # 每多试一个组合只多一次 RSA 验签，且必须验通真签名，不影响安全。
 _CHARSET_FALLBACKS = ("utf-8", "gbk")
+
+# 退款原因长度上限（支付宝 refund_reason 要求不超过 256 字符，留余量）
+_REFUND_REASON_MAX = 200
+
+# 退款失败 sub_code 分类：决定「能不能原样重试」。
+# - 可重试：渠道侧临时问题（余额不足、系统繁忙），过一会儿用**同一个** out_request_no 再试；
+# - 不可重试：语义性失败（交易不存在、超退、状态不允许），重试也不会成功。
+_REFUND_RETRYABLE_SUB = (
+    "ACQ.SELLER_BALANCE_NOT_ENOUGH",   # 商户可用余额不足
+    "ACQ.SYSTEM_ERROR",
+    "SYSTEM_ERROR",
+    "ACQ.PAYMENT_FAIL",
+    "ACQ.TRADE_SETTLE_ERROR",
+)
+_REFUND_NOT_FOUND_SUB = ("ACQ.TRADE_NOT_EXIST",)   # 支付宝侧无此交易（如本地虚拟支付）
+
+# 退款查询结果里的终态：REFUND_SUCCESS=退款成功，其余（如 REFUND_CLOSED）视为未成功
+_REFUND_QUERY_SUCCESS = "REFUND_SUCCESS"
 
 
 def normalize_charset(value: str) -> str:
@@ -415,3 +438,146 @@ class AlipayProvider(PaymentProvider):
             return res.get("code") == "10000"
         except Exception:
             return False
+
+    # ------------------------------------------------------------ 退款
+
+    def refund(self, *, pay_no: str, amount: float, out_request_no: str,
+               reason: str = "", trade_no: str = None) -> Dict[str, Any]:
+        """调用 `alipay.trade.refund` 发起退款（**同步接口**，立即拿到结果）。
+
+        参数怎么给：
+        - 交易标识：优先 `trade_no`（支付宝交易号）；没有则用 `out_trade_no`（= 我们的 pay_no）；
+        - `refund_amount`：本次退款额，少付整单就是部分退款；
+        - `out_request_no`：退款请求号。**部分退款必传**，且同一交易下多次部分退款必须唯一。
+          支付宝对「同一 out_trade_no + out_request_no」的重复请求只退一次并返回首次结果，
+          这是渠道侧的重复退款防护——所以调用方必须传稳定值（本地幂等键）。
+        - `refund_reason`：退款原因，超长会截断（网关上限 256 字符）。
+
+        三种结果要分清，业务层的处理方式完全不同：
+        - 成功：`ok=True`；`fund_change=N` 说明是重复请求命中了幂等，没有二次扣钱；
+        - 明确失败：`ok=False` + `retryable=False`（超退/交易不存在等，重试无意义）；
+        - 结果未知：`ok=False` + `unknown=True`（网络超时、响应验签失败），
+          **不能当失败处理，也不能直接重试**——必须先用 `query_refund()` 对账。
+        """
+        if not out_request_no:
+            return {"ok": False, "channel_status": REFUND_FAILED, "duplicate": False,
+                    "retryable": False, "unknown": False,
+                    "error": "缺少退款请求号 out_request_no（部分退款必须唯一）"}
+
+        try:
+            client = self._ensure_client()
+        except Exception as e:
+            # 密钥缺失/SDK 未装：属于配置问题，不是"结果未知"，不该重试
+            return {"ok": False, "channel_status": REFUND_FAILED, "duplicate": False,
+                    "retryable": False, "unknown": False,
+                    "error": f"支付宝客户端不可用：{e}"}
+
+        biz = {
+            "refund_amount": self.fmt_amount(amount),
+            "out_request_no": str(out_request_no),
+        }
+        text = (reason or "").strip()
+        if text:
+            biz["refund_reason"] = text[:_REFUND_REASON_MAX]
+        if trade_no:
+            biz["trade_no"] = trade_no
+        else:
+            biz["out_trade_no"] = pay_no
+
+        try:
+            res = client.api_alipay_trade_refund(**biz)
+        except Exception as e:
+            # 网络超时/连接中断：请求可能已经到达支付宝并退了钱，结果未知
+            return {"ok": False, "channel_status": REFUND_PENDING, "duplicate": False,
+                    "retryable": True, "unknown": True,
+                    "error": f"退款请求结果未知（{type(e).__name__}: {e}）；"
+                             f"请用退款请求号 {out_request_no} 查询确认后再重试"}
+
+        if not isinstance(res, dict):
+            # 响应验签失败时 SDK 返回 None，同样属于结果未知
+            return {"ok": False, "channel_status": REFUND_PENDING, "duplicate": False,
+                    "retryable": True, "unknown": True,
+                    "error": "退款响应验签失败或格式异常（结果未知，请对账确认）"}
+
+        code = str(res.get("code") or "")
+        if code != "10000":
+            sub_code = str(res.get("sub_code") or "")
+            retryable = sub_code in _REFUND_RETRYABLE_SUB
+            if sub_code in _REFUND_NOT_FOUND_SUB:
+                msg = (f"支付宝侧查无此交易（{biz.get('trade_no') or biz.get('out_trade_no')}），"
+                       f"该笔支付可能未真实经过支付宝，无法原路退回")
+            else:
+                msg = res.get("sub_msg") or res.get("msg") or "退款被支付宝拒绝"
+            return {"ok": False, "channel_status": REFUND_FAILED, "duplicate": False,
+                    "retryable": retryable, "unknown": False,
+                    "code": code, "sub_code": sub_code, "error": msg, "raw": res}
+
+        # code=10000：受理成功。fund_change=Y 表示本次确实发生了资金变动，
+        # N 表示幂等命中（此前已用同一 out_request_no 退过），钱不会退第二次。
+        fund_change = str(res.get("fund_change") or "").upper()
+        return {
+            "ok": True,
+            "channel_status": REFUND_OK,
+            "duplicate": fund_change == "N",
+            "retryable": False,
+            "unknown": False,
+            "fund_change": fund_change,
+            "refund_fee": res.get("refund_fee"),
+            "channel_refund_no": res.get("trade_no") or "",
+            "gmt_refund_pay": res.get("gmt_refund_pay") or "",
+            "code": code,
+            "raw": res,
+        }
+
+    def query_refund(self, *, pay_no: str, out_request_no: str,
+                     trade_no: str = None) -> Dict[str, Any]:
+        """调用 `alipay.trade.fastpay.refund.query` 查退款结果（对账兜底）。
+
+        什么时候用：`refund()` 返回「处理中」时，隔一会儿拿**同一个** out_request_no
+        查一次——`refunded=True` 说明钱已经退了，不必再发起（再发起也是幂等命中）；
+        `queried=True` 但 `refunded=False` 说明渠道侧没有这笔退款的成功记录，
+        可以安全用同一个请求号重试。
+
+        ⚠️ 【实测坑】这个接口"命中"和"未命中"**都返回 code=10000**：
+        成功退款时会带 `refund_status=REFUND_SUCCESS`（还有 refund_amount / out_request_no），
+        而查不到该退款请求号时响应只有 `{"code":"10000","msg":"Success"}`。
+        所以判断依据是「有没有退款记录字段」，不是 code（见 found 的赋值）。
+        """
+        try:
+            client = self._ensure_client()
+            kwargs = {"trade_no": trade_no} if trade_no else {"out_trade_no": pay_no}
+            res = client.api_alipay_trade_fastpay_refund_query(
+                out_request_no=str(out_request_no), **kwargs)
+        except Exception as e:
+            # 网络/配置问题：渠道没给出可用回答（queried=False），不能据此认为没退款
+            return {"queried": False, "found": False, "refunded": False,
+                    "error": f"退款查询失败（{type(e).__name__}: {e}）"}
+
+        if not isinstance(res, dict) or str(res.get("code") or "") != "10000":
+            # 渠道明确回答了：多为「该退款请求号不存在」→ 说明请求没到支付宝，可安全重试
+            detail = (res or {}).get("sub_msg") or (res or {}).get("msg") or "查询无结果"
+            return {"queried": True, "found": False, "refunded": False,
+                    "code": (res or {}).get("code"),
+                    "sub_code": (res or {}).get("sub_code"),
+                    "error": detail, "raw": res}
+
+        status = str(res.get("refund_status") or "")
+        # 【实测】退款查询命中与未命中都返回 code=10000：
+        #   - 退款成功：多出 refund_status=REFUND_SUCCESS / refund_amount / out_request_no；
+        #   - 无此退款请求号：**只有** {"code":"10000","msg":"Success"} 两个字段。
+        # 所以 found 不能只看 code，必须看有没有退款记录字段——
+        # 否则会把「没退过」误判成「退过」，业务侧就不敢重试了。
+        has_record = bool(status or res.get("refund_amount") or res.get("out_request_no"))
+        return {
+            "queried": True,
+            "found": has_record,
+            "refunded": status == _REFUND_QUERY_SUCCESS,
+            "refund_status": status or None,
+            "refund_amount": res.get("refund_amount"),
+            "out_request_no": res.get("out_request_no") or str(out_request_no),
+            "channel_refund_no": res.get("trade_no") or "",
+            "gmt_refund_pay": res.get("gmt_refund_pay") or "",
+            "gmt_refund": res.get("gmt_refund") or "",
+            "raw": res,
+        }
+

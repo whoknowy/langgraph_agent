@@ -4,9 +4,11 @@
 - `pay_no` 是幂等键。一笔流水只会从「待支付」翻转到「支付成功」一次；
 - `mark_paid()` 返回 True 才代表「本次是首次翻转」，调用方据此推进业务订单。
   支付宝异步通知会间隔重投 8 次，全靠这里去重，漏掉这层会出现重复出票；
-- 一笔业务订单可有多笔流水（支付失败重试），但同一时刻只允许存在一笔待支付流水。
+- 一笔业务订单可有多笔流水（支付失败重试），但同一时刻只允许存在一笔待支付流水；
+- 退款额度记在 `payments.refunded_amount`（累计已退），**不得超过 amount**：
+  这是部分退款的边界，也是重复退款在「订单状态守卫」之外的第二道防线。
 
-本模块只做数据落账，不含任何渠道逻辑（签名/验签见 services/payment/）。
+本模块只做数据落账，不含任何渠道逻辑（签名/验签/退款见 services/payment/）。
 """
 
 from datetime import datetime, timedelta
@@ -164,3 +166,92 @@ def list_expired_pending(minutes: int = DEFAULT_PAY_TIMEOUT_MINUTES):
         return [dict(r) for r in rows]
     finally:
         conn.close()
+
+
+# ------------------------------------------------------------------ 退款
+
+def get_paid_payment(order_no: str) -> Optional[Dict[str, Any]]:
+    """取该订单**已支付成功**的最新一笔流水（渠道退款的依据）。
+
+    没有它就没有「可退的钱」——种子订单/线下支付订单会走到这个分支，
+    调用方应据此跳过渠道退款（见 payment_service.refund_payment）。
+    """
+    conn = db.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM payments WHERE order_no = ? AND status = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (order_no, "支付成功")).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def _refunded_of(payment: Dict[str, Any]) -> float:
+    try:
+        return float(payment.get("refunded_amount") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def refundable_amount(payment: Dict[str, Any]) -> float:
+    """该笔流水当前还能退多少（实付 - 已退）。"""
+    try:
+        return round(float(payment["amount"]) - _refunded_of(payment), 2)
+    except (TypeError, ValueError, KeyError):
+        return 0.0
+
+
+def claim_refund_amount(pay_no: str, amount) -> Dict[str, Any]:
+    """申请占用退款额度：把本次退款额累加进 `payments.refunded_amount`。
+
+    这是「部分退款」与「重复退款」的核心守卫：
+    - 累计退款额不得超过该笔流水的实付金额；
+    - 守卫写在 UPDATE 的 WHERE 里（而非先查后写），并发下也不会超额；
+    - 返回 ok=False 时**渠道调用必须已经成功**才允许调用本函数的话——
+      调用顺序是「渠道先退、成功后再占用额度」，所以拿到 ok=False 说明
+      渠道退了钱但本地额度不够（并发/人工改库），属于必须人工核对的异常。
+
+    返回 {"ok", "refunded_total", "refundable", "partial", "error"}。
+    """
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "退款金额非法"}
+    if amount <= 0:
+        return {"ok": False, "error": "退款金额必须大于 0"}
+
+    conn = db.get_connection()
+    try:
+        row = conn.execute("SELECT * FROM payments WHERE pay_no = ?", (pay_no,)).fetchone()
+        if not row:
+            return {"ok": False, "error": f"支付流水不存在：{pay_no}"}
+        payment = dict(row)
+        if payment["status"] != "支付成功":
+            return {"ok": False,
+                    "error": f"支付流水状态为「{payment['status']}」，不能退款"}
+        done = _refunded_of(payment)
+        paid = float(payment["amount"])
+        if done + amount > paid + AMOUNT_TOLERANCE:
+            return {"ok": False, "refunded_total": done,
+                    "refundable": round(paid - done, 2),
+                    "error": f"超出可退金额：已退 {done:.2f}，本次 {amount:.2f}，"
+                             f"可退余额 {paid - done:.2f}"}
+
+        cur = conn.execute(
+            "UPDATE payments SET refunded_amount = refunded_amount + ? "
+            "WHERE pay_no = ? AND status = ? "
+            "AND (refunded_amount + ?) <= (amount + ?)",
+            (amount, pay_no, "支付成功", amount, AMOUNT_TOLERANCE))
+        if cur.rowcount != 1:
+            conn.rollback()
+            return {"ok": False,
+                    "error": "退款额度占用失败（并发冲突或金额已变动），请刷新后重试"}
+        conn.commit()
+        total = round(done + amount, 2)
+        return {"ok": True, "refunded_total": total,
+                "refundable": round(paid - total, 2),
+                "partial": total < paid - AMOUNT_TOLERANCE}
+    finally:
+        conn.close()
+

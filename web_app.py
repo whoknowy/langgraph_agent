@@ -188,6 +188,18 @@ def _issue_confirm(action: str, member: dict, target: str, params: dict, payload
     return payload
 
 
+def _new_refund_request_id(order_no: str) -> str:
+    """服务端生成退款请求号（客户端没传 requestId 时的兜底）。
+
+    这个号身兼两职：本地 refunds 表的幂等键 + 支付宝的 out_request_no。
+    订单号 + 随机串保证「同一订单的不同次退款」不会撞号——否则支付宝会按
+    「重复请求」返回首次结果，第二次部分退款就不会真的发生。
+    客户端仍应自带并复用 requestId，避免断网重发时退两次（详见 docs/API.md）。
+    """
+    import uuid
+    return f"RF{order_no}-{uuid.uuid4().hex[:16]}"
+
+
 def _local_chat_response(user_message: str, session_id: str):
     """LangGraph 服务未启动时，回退到本地多智能体流程。"""
     try:
@@ -914,15 +926,17 @@ def refund():
         if denied:
             return denied
         data = request.get_json() or {}
-        from services import audit, flight_repo
+        from services import audit, flight_repo, payment_service
         refund_type = (data.get('refund_type') or 'voluntary').strip()
         order_no = data.get('order_no', '')
         request_id = (data.get('requestId') or data.get('request_id') or '').strip() or None
 
         # 幂等第一优先：同一 requestId 重复提交，直接返回首次结果（不消费凭证、不再动订单）
+        # ⚠️ 只有"钱已经动过"的流水才算处理过——`退款失败` 必须允许用同一个
+        # requestId 重试（此时订单还在「已出票」，重试会覆盖那一行流水）。
         if request_id:
             existing = flight_repo.get_refund_by_request(request_id)
-            if existing:
+            if existing and existing['status'] in payment_service.SETTLED_LEDGER_STATUSES:
                 audit.idempotent('退票', target=existing['order_no'], request_id=request_id)
                 return jsonify({
                     'success': True, 'idempotent': True, 'order_no': existing['order_no'],
@@ -930,6 +944,12 @@ def refund():
                     'fee': existing['fee'],
                     'message': f"该退票请求已处理（订单 {existing['order_no']} 已{existing['status']}），无需重复提交",
                 })
+            if existing and existing['status'] == '退款待对账':
+                return jsonify({
+                    'error': '这笔退款的结果还未确认（渠道超时），请稍后在订单页查看，'
+                             '或联系客服对账；请勿重复提交',
+                    'unsettled': True, 'pending': True, 'status': existing['status'],
+                }), 409
 
         bad = _require_confirm(data, member, 'refund', order_no,
                                {'refund_type': refund_type})
@@ -944,11 +964,40 @@ def refund():
                 return jsonify(result), 400
             result['message'] = result.get('message', '') + '（特殊退票已受理，人工审核中）'
             return jsonify(result)
+
+        # ---- 自愿退票：先渠道退款，成功之后才推进订单状态 ----
+        # 顺序不能颠倒：反过来一旦渠道失败，就会出现「订单已退款、钱没退」的假账。
+        quote = flight_repo.refund_quote(order_no, member_id=member['member_id'])
+        if quote.get('error'):
+            audit.write_error('退票', quote['error'], target=order_no)
+            return jsonify(quote), 400
+
+        rid = request_id or _new_refund_request_id(order_no)
+        channel = payment_service.refund_payment(
+            order_no=order_no, amount=quote['predict_amount'], out_request_no=rid,
+            refund_type='voluntary', fee=quote['fee'],
+            reason=f"用户自愿退票，手续费 {quote['fee']} 元（{quote['fee_tier']}）",
+            member_id=member['member_id'])
+        if channel.get('error'):
+            # 渠道没退成功 → 订单保持原样，直接用同一个 requestId 重试是安全的
+            audit.write_error('退票(渠道退款)', channel['error'], target=order_no,
+                              request_id=rid)
+            payload = dict(channel, order_no=quote.get('order_no', order_no), requestId=rid)
+            return jsonify(payload), 400
         result = flight_repo.refund_order_instant(order_no, member_id=member['member_id'],
-                                                  request_id=request_id)
+                                                  request_id=rid, quote=quote, channel=channel)
         if result.get('error'):
-            audit.write_error('退票', result['error'], target=order_no)
-            return jsonify(result), 400
+            # 极端情况：渠道已把钱退了，但订单状态没推进（并发改签/占用等）。
+            # 这笔钱是真的出去了，绝不能静默忽略——留痕并提示转人工核对。
+            audit.blocked('退票', f"渠道已退款但订单未推进：{result['error']}",
+                          target=order_no, request_id=rid)
+            return jsonify({
+                'error': f"渠道已退款成功，但订单状态更新失败：{result['error']}，已转人工核对",
+                'needs_manual': True, 'order_no': order_no,
+                'channel': channel.get('channel'), 'out_request_no': rid,
+            }), 500
+        result['requestId'] = rid
+        result['channel_message'] = channel.get('message')
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': f'退票失败: {str(e)}'}), 500
@@ -1320,6 +1369,48 @@ def admin_refund_reject():
     data = request.get_json() or {}
     from services import admin_repo
     result = admin_repo.reject_refund(data.get('order_no', ''), data.get('admin_note', ''))
+    if result.get('error'):
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+@app.route('/admin/api/refunds/query', methods=['POST'])
+def admin_refund_query():
+    """退款对账：退款返回「结果未知」（网络超时）时，用同一个退款请求号问渠道。
+
+    查到退款成功 → 钱已经退了，按成功处理即可（业务侧可推进状态）；
+    查不到 → 请求没到渠道，可以安全地用同一个 out_request_no 重新发起退款。
+    """
+    admin, denied = admin_required()
+    if denied:
+        return denied
+    data = request.get_json() or {}
+    from services import payment_service
+    result = payment_service.query_refund_status(
+        data.get('out_request_no', ''), order_no=data.get('order_no', ''),
+        pay_no=data.get('pay_no', ''))
+    if result.get('error'):
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+
+@app.route('/admin/api/refunds/settle', methods=['POST'])
+def admin_refund_settle():
+    """确认退款完成：渠道的钱已退出、订单状态没跟上时的人工收口。
+
+    - 默认模式要求已有一条「渠道已退款」流水（那是钱确实退了的凭证）；
+    - `offline: true` 走线下退款：渠道**明确退不了**（如支付宝查无此交易/渠道不支持）
+      时才允许，且必须写备注 ≥4 字。两种情况都会留审计。
+    """
+    admin, denied = admin_required()
+    if denied:
+        return denied
+    data = request.get_json() or {}
+    from services import admin_repo
+    result = admin_repo.settle_channel_refund(data.get('order_no', ''),
+                                              data.get('admin_note', ''),
+                                              offline=bool(data.get('offline')))
     if result.get('error'):
         return jsonify(result), 400
     return jsonify(result)

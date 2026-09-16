@@ -661,16 +661,151 @@ def pay_order(order_no: str, member_id: str = None) -> dict:
     return _transition_order(order_no, member_id, "待支付", "已出票")
 
 
-def _record_refund(conn, request_id, order_no, member_id, refund_type, amount, fee, status) -> bool:
-    """写退款流水（request_id 为幂等键）。已存在同 request_id 时返回 False。"""
+def _record_refund(conn, request_id, order_no, member_id, refund_type, amount, fee, status,
+                   channel=None) -> bool:
+    """写退款流水（request_id 为幂等键），**同一请求号重复写入时更新为本次结果**。
+
+    为什么要 upsert：一次退款可能被尝试多次（渠道失败后重试、超时后对账），
+    同一个 request_id 必须只留一行、且最终反映真实结果——否则重试成功后
+    流水里还留着上一次的「退款失败」，对账会看糊涂。
+
+    `channel` 是渠道退款结果（services/payment_service.refund_payment 的返回），
+    落库后即便流程中断，也能凭 out_request_no 去支付宝对账。
+    """
     if not request_id:
         return True
+    ch = channel or {}
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 13 项，顺序与下面 INSERT/UPDATE 的列一致（第 7 项在 INSERT 里是 created_at、
+    # 在 UPDATE 里是 updated_at —— 重试不覆盖首次尝试时间）
+    vals = (order_no, member_id or "", refund_type, int(amount or 0), int(fee or 0),
+            status, now, ch.get("pay_no"), ch.get("out_request_no") or request_id,
+            ch.get("channel"), ch.get("channel_status"), ch.get("channel_error"),
+            ch.get("channel_raw"))
     cur = conn.execute(
         "INSERT OR IGNORE INTO refunds (request_id, order_no, member_id, refund_type, "
-        "amount, fee, status, created_at) VALUES (?,?,?,?,?,?,?,?)",
-        (request_id, order_no, member_id, refund_type, int(amount or 0), int(fee or 0),
-         status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    return cur.rowcount == 1
+        "amount, fee, status, created_at, pay_no, out_request_no, channel, "
+        "channel_status, channel_error, channel_raw, updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (request_id, *vals, now))
+    if cur.rowcount == 1:
+        return True
+    conn.execute(
+        "UPDATE refunds SET order_no = ?, member_id = ?, refund_type = ?, amount = ?, "
+        "fee = ?, status = ?, updated_at = ?, pay_no = ?, out_request_no = ?, channel = ?, "
+        "channel_status = ?, channel_error = ?, channel_raw = ? WHERE request_id = ?",
+        (*vals, request_id))
+    return False
+
+
+def attach_refund_channel(request_id, channel, status: str = None, create: dict = None) -> bool:
+    """把渠道退款结果补写到退款流水上（按 request_id 定位）。
+
+    两种用法：
+    - 特殊退票的审批场景：用户提交时先落了「退票中」流水，审批通过、渠道退款成功后
+      再补写渠道结果（`create` 传 None）；
+    - 兜底场景：提交时没带 requestId（历史上允许），审批时才生成，
+      此时行不存在 → 用 `create`（order_no/member_id/refund_type/amount/fee）补插一行。
+
+    返回是否写成功。写不成功不阻断主流程，但调用方应感知（对账会缺一条线索）。
+    """
+    if not request_id:
+        return False
+    ch = channel or {}
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = _conn()
+    try:
+        cur = conn.execute(
+            "UPDATE refunds SET pay_no = ?, out_request_no = ?, channel = ?, "
+            "channel_status = ?, channel_error = ?, channel_raw = ?, updated_at = ?"
+            + (", status = ?" if status else "")
+            + " WHERE request_id = ?",
+            [ch.get("pay_no"), ch.get("out_request_no") or request_id, ch.get("channel"),
+             ch.get("channel_status"), ch.get("channel_error"), ch.get("channel_raw"), now]
+            + ([status] if status else []) + [request_id])
+        if cur.rowcount != 1 and create:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO refunds (request_id, order_no, member_id, refund_type, "
+                "amount, fee, status, created_at, pay_no, out_request_no, channel, "
+                "channel_status, channel_error, channel_raw, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (request_id, create.get("order_no"), create.get("member_id") or "",
+                 create.get("refund_type") or "special",
+                 int(create.get("amount") or 0), int(create.get("fee") or 0),
+                 status or create.get("status") or "已退款", now,
+                 ch.get("pay_no"), ch.get("out_request_no") or request_id, ch.get("channel"),
+                 ch.get("channel_status"), ch.get("channel_error"), ch.get("channel_raw"), now))
+        conn.commit()
+        return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def get_pending_refund(order_no: str, refund_type: str = None):
+    """取该订单最新的待审批退款流水（特殊退票走审批时用它拿渠道幂等键）。"""
+    conn = _conn()
+    try:
+        sql = ("SELECT * FROM refunds WHERE order_no = ? AND status = ? "
+               + ("AND refund_type = ? " if refund_type else "")
+               + "ORDER BY id DESC LIMIT 1")
+        params = [security.normalize(order_no), "退票中"]
+        if refund_type:
+            params.append(refund_type)
+        row = conn.execute(sql, params).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+# 未定论的退款状态：钱可能已经出去了，但订单状态还没跟上。
+# 只要有这种流水存在，就不允许对该订单再发起新的退款（防重复退款）。
+# - 退款待对账：渠道结果未知（网络超时），必须先用退款对账接口问清楚；
+# - 渠道已退款：渠道确认钱退了，但订单没推进，等管理端「确认退款完成」收口。
+OPEN_REFUND_STATUSES = ("退款待对账", "渠道已退款")
+
+# 已定论（钱已动过）的退款状态：同一 requestId 重放直接返回首次结果。
+# 注意 `退票中`（等审批）、`退款失败`（没退成）、`退款待对账`（结果未知）都不在内。
+SETTLED_REFUND_STATUSES = ("已退款", "渠道已退款", "线下退款")
+PENDING_REFUND_STATUS = "退款待对账"
+
+
+def find_failed_refund(order_no: str):
+    """取该订单最近一条**渠道明确失败**的退款流水。
+
+    用途：线下退款收口的准入判断——只有"渠道真的退不了"（如支付宝查无此交易）
+    才允许运营走线下退款，不能凭空空手把订单标成已退款。
+    """
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT * FROM refunds WHERE order_no = ? AND status = ? AND channel_status = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (security.normalize(order_no), "退款失败", "失败")).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def find_open_refund(order_no: str, exclude_request_id: str = None):
+    """取该订单未定论的退款流水（退款待对账 / 渠道已退款），没有则 None。
+
+    用于退款入口的「先查未定论退款、再决定是否动渠道」——这是「重复退款」
+    在订单状态守卫之外的第二道闸门：网络超时导致的未知结果也必须留下痕迹，
+    否则客户端换个 requestId 重试就会真的退第二笔。
+    """
+    conn = _conn()
+    try:
+        marks = ",".join("?" for _ in OPEN_REFUND_STATUSES)
+        params = [security.normalize(order_no), *OPEN_REFUND_STATUSES]
+        sql = f"SELECT * FROM refunds WHERE order_no = ? AND status IN ({marks})"
+        if exclude_request_id:
+            sql += " AND request_id != ?"
+            params.append(exclude_request_id.strip())
+        sql += " ORDER BY id DESC LIMIT 1"
+        row = conn.execute(sql, params).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
 
 
 def get_refund_by_request(request_id: str):
@@ -786,28 +921,41 @@ def refund_quote(order_no: str, member_id: str = None) -> dict:
             "fee": fee, "predict_amount": amount - fee, "depart_time": depart.isoformat(sep=" ", timespec="minutes")}
 
 
-def refund_order_instant(order_no: str, member_id: str = None, request_id: str = None) -> dict:
+def refund_order_instant(order_no: str, member_id: str = None, request_id: str = None,
+                         quote: dict = None, channel: dict = None) -> dict:
     """自愿退票（规则费率，即时到账）：已出票/已改签 → 已退款。
 
     - 费用在代码层按公示规则计算，不经 LLM 决定；
     - **request_id 幂等**：同一请求重放只退一次（先查流水，直接返回首次结果）；
     - 更新语句带状态守卫（`AND status IN (...)`）保证原子，杜绝重复退款；
-    - 归属校验由 refund_quote 从订单反查后走受信通道完成。
+    - 归属校验由 refund_quote 从订单反查后走受信通道完成；
+    - `quote`：调用方已经算过的报价（渠道扣款要用同一个金额，避免二次计算漂移）；
+    - `channel`：渠道退款结果，落进退款流水，供对账与失败追溯。
+
+    ⚠️ 调用顺序约定：**渠道退款成功之后才允许调用本函数**。
+    本函数只做业务状态变更，自身不触达任何支付渠道。
     """
     order_no = security.normalize(order_no)
 
-    # 幂等优先：重复点击/重复提交直接返回首次结果，不再消费订单状态
+    # 幂等优先：重复点击/重复提交直接返回首次结果，不再消费订单状态。
+    # ⚠️ 但只有**真已定论**的流水才算"处理过"：`退款失败` 必须允许用同一个
+    # requestId 重试（重试会覆盖那一行流水）；`退款待对账` 是"结果未知"，
+    # 绝不能当成功回给用户——否则用户被告知"已处理"，钱其实没退。
     if request_id:
         existing = get_refund_by_request(request_id)
-        if existing:
+        if existing and existing["status"] in SETTLED_REFUND_STATUSES:
             audit.idempotent("退票", target=existing["order_no"], request_id=request_id,
                              detail={"refund_type": existing["refund_type"]})
             return {"success": True, "idempotent": True, "order_no": existing["order_no"],
                     "status": existing["status"], "refund_amount": existing["amount"],
                     "fee": existing["fee"],
                     "message": f"该退票请求已处理（订单 {existing['order_no']} 已{existing['status']}），无需重复提交"}
+        if existing and existing["status"] == PENDING_REFUND_STATUS:
+            return {"error": "这笔退款的结果还未确认（渠道超时），请先对账后再处理，不要重复提交",
+                    "pending": True, "order_no": existing["order_no"],
+                    "status": existing["status"], "out_request_no": request_id}
 
-    quote = refund_quote(order_no, member_id)
+    quote = quote or refund_quote(order_no, member_id)
     if quote.get("error"):
         return quote
 
@@ -824,7 +972,8 @@ def refund_order_instant(order_no: str, member_id: str = None, request_id: str =
             conn.rollback()
             return {"error": f"退款未生效：订单 {order_no} 状态刚刚发生变化（可能已被退款/改签/使用）"}
         _record_refund(conn, request_id, order_no, info.get("member_id") or "",
-                       "voluntary", quote["predict_amount"], quote["fee"], "已退款")
+                       "voluntary", quote["predict_amount"], quote["fee"], "已退款",
+                       channel=channel)
         conn.commit()
     finally:
         conn.close()
@@ -832,10 +981,18 @@ def refund_order_instant(order_no: str, member_id: str = None, request_id: str =
     from services import checkin_repo
     checkin_repo.cancel_checkin(order_no)   # 退票自动取消值机、释放座位
     audit.write_ok("退票", target=order_no, request_id=request_id,
-                   detail={"fee": quote["fee"], "refund_amount": quote["predict_amount"]})
-    return {"success": True, "order_no": order_no, "status": "已退款",
-            "refund_amount": quote["predict_amount"], "fee": quote["fee"],
-            "message": f"订单 {order_no} 已退款 {quote['predict_amount']} 元（手续费 {quote['fee']} 元，{quote['fee_tier']}）"}
+                   detail={"fee": quote["fee"], "refund_amount": quote["predict_amount"],
+                           "channel": (channel or {}).get("channel"),
+                           "channel_status": (channel or {}).get("channel_status")})
+    result = {"success": True, "order_no": order_no, "status": "已退款",
+              "refund_amount": quote["predict_amount"], "fee": quote["fee"],
+              "message": f"订单 {order_no} 已退款 {quote['predict_amount']} 元（手续费 {quote['fee']} 元，{quote['fee_tier']}）"}
+    if channel:
+        result["channel"] = channel.get("channel")
+        result["channel_status"] = channel.get("channel_status")
+        if channel.get("duplicate"):
+            result["duplicate"] = True
+    return result
 
 # ------------------------------------------------ 改签（免改签费，差价多退少补）
 

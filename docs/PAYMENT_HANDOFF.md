@@ -91,6 +91,7 @@ Base URL 同 API.md：公网联调用 `http://flightagent.nat100.top`，本机�
 | GET | `/api/pay/status?order_no=` | 是 | **轮询支付结果** |
 | POST | `/api/pay/notify/alipay` | 否 | 支付宝异步通知，**客户端不用管** |
 | GET | `/api/pay/return/alipay` | 否 | 支付宝同步回跳，**客户端不用管** |
+| POST | `/api/refund` | 是 | **申请退票退款**（走支付宝原路退回），见 4.5 |
 
 > 后两个是支付宝服务器/浏览器与后端之间的事，客户端**不会也不需要**调用。
 > 列出来只是让你知道它们存在，别去 curl 它们。
@@ -252,6 +253,64 @@ Content-Type: application/json
 | `该确认凭证已被使用…` / `确认凭证已过期…` / `确认凭证无效…` | 凭证一次性、15 分钟 | **重新调 `/api/pay/create`** 拿新凭证再来，不要重试旧凭证 |
 
 > `redirect` 分支不需要凭证：付款落账由支付宝回调在后端完成，轮询 `paid` 即可。
+
+---
+
+## 4.5 退款（2026-09-16 新增）
+
+**退款由后端直连支付宝完成，客户端只调我们自己的接口，绝不要自己调支付宝退款 API**
+（`alipay.trade.refund` 需要商户私钥签名，私钥只在服务端；客户端也没有商户号）。
+
+流程和支付一样是两步，因为退款要用户确认：
+
+```http
+# 第一步：拿报价 + 一次性确认凭证
+GET /api/refund_quote?order_no=O4832015&refund_type=voluntary
+Authorization: Bearer <token>
+
+# 第二步：带凭证执行退款
+POST /api/refund
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "order_no": "O4832015", "refund_type": "voluntary",
+  "confirm_token": "<第一步返回的 confirm_token>",
+  "requestId": "<客户端生成的 UUID，务必保存并复用>" }
+```
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `refund_type` | 是 | `voluntary` 自愿退票（按规则收手续费，秒退）/ `special` 特殊退票（延误取消等，转人工审核） |
+| `confirm_token` | 是 | 一次性，15 分钟，一步一换：**用户改了金额/类型就得重新拿** |
+| `requestId` | **强烈建议** | 幂等键。重试、断网重发、用户连点，**都要用同一个值**（这是防重复退款的关键） |
+
+`refund_amount` **不由客户端传**：自愿退票金额由后端按离起飞时间档位算（5%/10%/20%/30%），
+退整单；特殊退票进人工审核，由运营决定金额（可部分退）。
+
+成功响应（关键字段）：
+
+```json
+{ "success": true, "status": "已退款", "refund_amount": 540, "fee": 60,
+  "channel": "alipay_sandbox", "channel_status": "成功",
+  "channel_message": "退款成功：540.00 元已由支付宝沙箱原路退回；本笔支付已全额退完" }
+```
+
+拿到 `success: true` 就可以告诉用户「已原路退回」。到账时间以支付宝为准（沙箱即时，生产 1~2 个工作日）。
+
+**你必须处理的几种失败**（HTTP 400）：
+
+| 响应 | 你要做什么 |
+|---|---|
+| `idempotent: true` | 是你自己重发/连点造成的，**当成功处理**，不要再提示错误 |
+| `retryable: true` | 渠道临时问题，可稍后用**同一个 `requestId`** 重试（建议加退避，别死循环） |
+| `unknown: true` / `channel_status: "处理中"` | **绝对不要直接重试**！提示「退款处理中，请稍后查看」，由运营对账后收口。此时后端已落一条「退款待对账」流水 |
+| `unsettled: true` | 该订单有一笔退款还没定论（上次超时），后端**拒绝**发起新退款。同样按「退款处理中」提示，别引导用户反复点 |
+| `need_confirm`（403） | 凭证过期/已用过 → 回到第一步重新拿凭证，再让用户确认一次 |
+| `error` 含「超出可退金额」 | 这笔支付已经退过一部分了，不要重试 |
+| `error` 含「查无此交易」 | 这笔支付没真实经过支付宝（测试单），只能转人工线下退 |
+| `needs_manual: true`（**500**） | 钱已退成功但订单状态没更新，后端已转人工。**不要**告诉用户"退款失败" |
+
+> 支付与退款用的是**同一个渠道**：订单当初用哪个渠道付的，就退回哪个渠道（后端自动判断，接口里不用传）。
 
 ---
 
@@ -594,3 +653,4 @@ A：都是数字，JSON 里 `600.0` 和 `600` 等价。按数字解析，不要�
 | 2026-09-11 | 初版。支付渠道抽象上线，含 mock / 支付宝沙箱两种模式 |
 | 2026-09-11 | 补 `wap.pay`（手机网站支付）渠道，`ALIPAY_SCENE` 切换 page/wap；9.1 由"待办"改为"已上线" |
 | 2026-09-12 | 写接口启用服务端 HITL：`/api/pay/create` 响应新增 `confirm_token`，`/api/pay/confirm` 必须回传（redirect 分支不受影响）。见 1.4 / 4.4 |
+| 2026-09-16 | **退款接上支付宝**（`alipay.trade.refund` + 退款对账查询）。新增 4.5：`/api/refund` 的调用方式、参数、返回与七种异常的处理约定 |

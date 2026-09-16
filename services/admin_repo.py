@@ -129,11 +129,18 @@ def list_refund_queue() -> dict:
 
 
 def approve_refund(order_no: str, refund_amount: int = None, admin_note: str = "") -> dict:
-    """同意退款：退票中 → 已退款，记录实际退款金额与备注（默认全额）。"""
-    from services import flight_repo, notification_repo
+    """同意退款：退票中 → 已退款，记录实际退款金额与备注（默认全额）。
+
+    顺序与不变量：**先渠道退款、成功之后才把订单置为「已退款」**。
+    渠道失败时订单留在「退票中」，管理员修复原因后可重试；
+    退款请求号按「用户提交时的 request_id，否则 订单+金额」生成——
+    同金额重试复用同一个号，支付宝侧天然幂等，不会重复退钱；改了金额才会换号。
+    """
+    from services import audit, flight_repo, notification_repo, payment_service
+    order_no_n = security_normalize(order_no)
     conn = _conn()
     row = conn.execute("SELECT status, amount, member_id FROM orders WHERE order_no = ?",
-                       (security_normalize(order_no),)).fetchone()
+                       (order_no_n,)).fetchone()
     conn.close()
     if not row:
         return {"error": f"订单不存在：{order_no}"}
@@ -144,23 +151,157 @@ def approve_refund(order_no: str, refund_amount: int = None, admin_note: str = "
     if amount < 0 or amount > int(row["amount"]):
         return {"error": f"退款金额需在 0 ~ {row['amount']} 之间"}
 
-    result = flight_repo._transition_order(order_no, None, "退票中", "已退款")
+    pending = flight_repo.get_pending_refund(order_no_n, refund_type="special")
+    out_request_no = (pending or {}).get("request_id") or f"ADM-{order_no_n}-{amount}"
+
+    channel = payment_service.refund_payment(
+        order_no=order_no_n, amount=amount, out_request_no=out_request_no,
+        refund_type="special", fee=0,
+        reason=(admin_note or "").strip() or "非自愿退票（航班延误/取消）")
+    if channel.get("error"):
+        audit.write_error("退票审批(渠道退款)", channel["error"], target=order_no_n,
+                          request_id=out_request_no)
+        return {"error": f"渠道退款未完成：{channel['error']}",
+                "channel_status": channel.get("channel_status"),
+                "retryable": channel.get("retryable"), "unknown": channel.get("unknown"),
+                "out_request_no": out_request_no}
+
+    result = flight_repo._transition_order(order_no_n, None, "退票中", "已退款")
     if result.get("error"):
-        return result
+        # 钱已经退出去了，订单却没推进：留痕 + 把渠道结果补写进流水，转人工核对
+        audit.blocked("退票审批", f"渠道已退款但订单未推进：{result['error']}",
+                      target=order_no_n, request_id=out_request_no)
+        flight_repo.attach_refund_channel(
+            out_request_no, channel, status="渠道已退款",
+            create={"order_no": order_no_n, "member_id": row["member_id"],
+                    "refund_type": "special", "amount": amount, "fee": 0,
+                    "status": "渠道已退款"})
+        return {"error": f"渠道已退款成功，但订单状态更新失败：{result['error']}，已转人工核对",
+                "needs_manual": True, "order_no": order_no_n,
+                "out_request_no": out_request_no}
+
     from services import checkin_repo
-    checkin_repo.cancel_checkin(order_no)   # 退款完成，自动取消值机、释放座位
+    checkin_repo.cancel_checkin(order_no_n)   # 退款完成，自动取消值机、释放座位
+    flight_repo.attach_refund_channel(
+        out_request_no, channel, status="已退款",
+        create={"order_no": order_no_n, "member_id": row["member_id"],
+                "refund_type": "special", "amount": amount, "fee": 0, "status": "已退款"})
     conn = _conn()
     conn.execute("UPDATE orders SET refund_amount = ?, admin_note = ?, refunded_at = ? WHERE order_no = ?",
                  (amount, (admin_note or "").strip(),
-                  datetime.now().strftime("%Y-%m-%d %H:%M:%S"), security_normalize(order_no)))
+                  datetime.now().strftime("%Y-%m-%d %H:%M:%S"), order_no_n))
+    # 通知文案按"钱到底怎么退的"说实话：走了渠道就写原路退回，没流水就写线下办理
+    how = ("已由客服为您办理退款，请注意查收。" if channel.get("skipped")
+           else f"已通过{channel.get('provider_label') or '支付渠道'}原路退回，请注意查收。")
     notification_repo.create_notification(
         conn=conn, member_id=row["member_id"], title="退款审核通过", ntype="refund",
-        content=f"您的订单 {security_normalize(order_no)} 退票审核已通过，退款 {amount} 元将原路退回，请注意查收。")
+        content=f"您的订单 {order_no_n} 退票审核已通过，退款 {amount} 元{how}")
     conn.commit()
     conn.close()
-    return {"success": True, "order_no": security_normalize(order_no),
+    return {"success": True, "order_no": order_no_n,
             "status": "已退款", "refund_amount": amount,
-            "message": f"订单 {security_normalize(order_no)} 已退款 {amount} 元"}
+            "channel": channel.get("channel"),
+            "channel_status": channel.get("channel_status"),
+            "out_request_no": out_request_no,
+            "message": f"订单 {order_no_n} 已退款 {amount} 元"
+                       + ("" if channel.get("skipped") else f"（{channel.get('channel_status')}）")}
+
+
+def settle_channel_refund(order_no: str, admin_note: str = "", offline: bool = False) -> dict:
+    """「确认退款完成」：渠道的钱确实退出去了、但订单状态没跟上时的人工收口。
+
+    两种模式，都要求**有据可依**，不允许凭空把订单标成已退款：
+
+    1. `offline=False`（默认）：要求存在一条「渠道已退款」流水——那是"钱确实退了"的凭证。
+       典型场景：渠道退款超时 → 对账确认钱已退 → 但订单当时没被改动
+       （我们坚持"渠道成功才改单"）。此时不能重新发起退款（会退第二笔），只能补订单状态。
+    2. `offline=True`（线下退款）：渠道**明确表示退不了**（如支付宝侧查无此交易、
+       该渠道未实现退款），但运营需要给用户结案。此时要求：
+       - 必须写备注（至少 4 个字）说明为什么走线下；
+       - 必须有一条失败记录，且失败原因是"渠道不可能退"（ACQ.TRADE_NOT_EXIST / 渠道不支持）。
+       满足后流水记为「线下退款」，通知用户"已由客服线下办理"，审计单独记一笔。
+    """
+    from services import audit, checkin_repo, flight_repo, notification_repo
+    order_no_n = security_normalize(order_no)
+    note = (admin_note or "").strip()
+    conn = _conn()
+    row = conn.execute("SELECT status, amount, member_id FROM orders "
+                       "WHERE order_no = ?", (order_no_n,)).fetchone()
+    conn.close()
+    if not row:
+        return {"error": f"订单不存在：{order_no}"}
+
+    open_refund = flight_repo.find_open_refund(order_no_n)
+    failed_refund = None
+    if offline:
+        if len(note) < 4:
+            return {"error": "线下退款必须写明备注（至少 4 个字），说明为何不经过渠道退款"}
+        failed_refund = flight_repo.find_failed_refund(order_no_n)
+        if not (failed_refund and _channel_refund_impossible(failed_refund)):
+            return {"error": "该订单没有「渠道退不了」的记录，不能走线下退款；"
+                             "请先尝试渠道退款，或先用对账接口确认渠道结果"}
+    elif not open_refund or open_refund.get("status") != "渠道已退款":
+        return {"error": "该订单没有「渠道已退款」的流水，不能直接标记退款完成；"
+                         "请先用退款对账接口（/admin/api/refunds/query）确认渠道结果"}
+
+    if row["status"] not in ("已出票", "已改签", "退票中"):
+        return {"error": f"订单状态为「{row['status']}」，无需收口"}
+
+    source = open_refund or failed_refund or {}
+    request_id = source.get("request_id")
+    amount = int(source.get("amount") or 0) or int(row["amount"] or 0)
+    target_status = "线下退款" if offline else "已退款"
+
+    result = flight_repo._transition_order(order_no_n, None,
+                                           ("已出票", "已改签", "退票中"), "已退款")
+    if result.get("error"):
+        audit.blocked("退款收口", result["error"], target=order_no_n)
+        return result
+
+    if request_id:
+        flight_repo.attach_refund_channel(request_id, {
+            "pay_no": source.get("pay_no"),
+            "out_request_no": source.get("out_request_no"),
+            "channel": source.get("channel"),
+            "channel_status": source.get("channel_status"),
+            "channel_error": (f"线下退款：{note}" if offline
+                              else source.get("channel_error")),
+            "channel_raw": source.get("channel_raw"),
+        }, status=target_status)
+
+    checkin_repo.cancel_checkin(order_no_n)
+    conn = _conn()
+    conn.execute("UPDATE orders SET refund_amount = ?, admin_note = ?, refunded_at = ? "
+                 "WHERE order_no = ?",
+                 (amount, f"{'线下退款收口' if offline else '渠道退款确认收口'}：{note}".strip("："),
+                  datetime.now().strftime("%Y-%m-%d %H:%M:%S"), order_no_n))
+    how = ("已由客服为您办理退款，预计 3 个工作日内到账，请注意查收。"
+           if offline else "已完成原路退回，请注意查收。")
+    notification_repo.create_notification(
+        conn=conn, member_id=row["member_id"], title="退款处理完成", ntype="refund",
+        content=f"您的订单 {order_no_n} 退款 {amount} 元{how}")
+    conn.commit()
+    conn.close()
+    audit.write_ok("线下退款" if offline else "退款收口", target=order_no_n,
+                   detail={"amount": amount, "offline": bool(offline),
+                           "request_id": request_id, "admin_note": note})
+    return {"success": True, "order_no": order_no_n, "status": "已退款",
+            "refund_amount": amount, "out_request_no": request_id, "offline": bool(offline),
+            "message": f"订单 {order_no_n} 已按{'线下退款' if offline else '渠道退款结果'}"
+                       f"收口为「已退款」（{amount} 元）"}
+
+
+def _channel_refund_impossible(row) -> bool:
+    """这条失败记录是否属于「渠道明确退不了」（线下退款的准入条件）。
+
+    只看真正的不可退信号：支付宝查无此交易（本地虚拟支付）、渠道未实现退款。
+    """
+    if not row:
+        return False
+    blob = f"{row.get('channel_status') or ''} {row.get('channel_error') or ''} " \
+           f"{row.get('channel_raw') or ''}"
+    return ("ACQ.TRADE_NOT_EXIST" in blob or "查无此交易" in blob
+            or "渠道不支持" in blob)
 
 
 def reject_refund(order_no: str, admin_note: str = "") -> dict:

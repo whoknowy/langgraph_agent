@@ -4,7 +4,7 @@
 业务编排层只依赖本抽象，切换渠道不改动业务代码。
 
 职责边界：
-- provider 只负责「与外部支付网关打交道」（签名、拼链接、验签、查单）；
+- provider 只负责「与外部支付网关打交道」（签名、拼链接、验签、查单、退款）；
 - provider 不碰本地库，落账一律交给 services/payment_repo.py；
 - create_payment 绝不产生本地副作用，只返回给前端的跳转/直付信息。
 
@@ -18,6 +18,13 @@ from typing import Any, Dict, Tuple
 STATUS_PENDING = "待支付"
 STATUS_PAID = "支付成功"
 STATUS_CLOSED = "已关闭"
+
+# 退款结果状态（落 refunds.channel_status）
+REFUND_OK = "成功"                  # 渠道明确退款成功
+REFUND_FAILED = "失败"              # 渠道明确拒绝（金额超限/交易不存在/余额不足…）
+REFUND_PENDING = "处理中"           # 结果未知（网络超时/响应不可解析），必须对账确认
+REFUND_UNSUPPORTED = "渠道不支持"    # 渠道未实现退款
+REFUND_NOT_NEEDED = "无需渠道退款"   # 订单没有已支付的渠道流水（种子订单/线下支付）
 
 # 渠道标识
 PROVIDER_MOCK = "mock"
@@ -69,6 +76,55 @@ class PaymentProvider(ABC):
     def close_payment(self, pay_no: str) -> bool:
         """关闭未支付交易（订单超时取消时调用）。渠道不支持时返回 False。"""
         return False
+
+    def refund(self, *, pay_no: str, amount: float, out_request_no: str,
+               reason: str = "", trade_no: str = None) -> Dict[str, Any]:
+        """发起退款（同步接口）。
+
+        - `pay_no`：我们的支付流水号，即下单时用的 `out_trade_no`；
+        - `amount`：本次退款金额（**支持部分退款**，可小于原支付金额）；
+        - `out_request_no`：退款请求号，**渠道侧的幂等键**。部分退款必传且必须唯一；
+          同一个 交易号 + out_request_no 重复请求，渠道只退一次并返回首次结果
+          ——「重复退款」这一层防护靠的就是它，业务层必须传稳定值（见调用方）；
+        - `reason`：退款原因（部分渠道有长度上限，本层负责截断）。
+
+        返回统一结构（**不得抛异常**，任何异常都转成字典）：
+        ```
+        {"ok": bool,
+         "channel_status": "成功"|"失败"|"处理中"|"渠道不支持",
+         "duplicate": bool,        # 渠道判定为重复请求（未再次扣钱）
+         "retryable": bool,        # 失败但值得原样重试（如渠道余额不足）
+         "unknown": bool,          # 结果未知（超时），须用 query_refund 对账
+         "refund_fee": str|None,   # 渠道实退金额
+         "channel_refund_no": str|None,
+         "error": str|None, "code": str|None, "sub_code": str|None,
+         "raw": Any}
+        ```
+        本层不碰本地库：退款额度占用与流水落账由 services/payment_service.py 负责。
+        """
+        return {"ok": False, "channel_status": REFUND_UNSUPPORTED, "duplicate": False,
+                "retryable": False, "unknown": False,
+                "error": f"{self.label} 未实现退款能力"}
+
+    def query_refund(self, *, pay_no: str, out_request_no: str,
+                     trade_no: str = None) -> Dict[str, Any]:
+        """查询某笔退款在渠道侧的结果（对账兜底）。
+
+        用途：`refund()` 返回「处理中/结果未知」时（网络超时等），
+        隔一段时间用同一个 out_request_no 查一次，确认钱到底退没退。
+
+        返回 {"queried", "found", "refunded", "refund_amount", "refund_status",
+        "raw", "error"}：
+        - `queried=True` 表示**渠道明确回答了**（哪怕是"查无此退款"）——
+          此时 `refunded=False` 意味着这笔退款没有成功，可以安全重试；
+        - `queried=False` 表示渠道没给出可用回答（网络故障/接口不支持），
+          此时**不能**推断退款没发生，应稍后重查或转人工；
+        - `found` 表示渠道侧**有没有这笔退款的记录**（注意：支付宝查不到时也返回
+          成功码，别只看 code，见 alipay_provider.query_refund 的实测说明）。
+        """
+        return {"queried": False, "found": False, "refunded": False,
+                "unsupported": True, "error": f"{self.label} 未实现退款查询"}
+
 
     def build_checkout_form(self, *, pay_no: str, subject: str, amount: float,
                             return_url: str, notify_url: str):

@@ -225,7 +225,7 @@ token 有效期 7 天。过期后所有接口返回 **401**。统一处理方案
 | 改签 | GET | `/api/change_quote` | 改签报价（新旧航班/差价） | 是 |
 | 改签 | POST | `/api/change` | 执行改签 | 是 |
 | 退票 | GET | `/api/refund_quote` | 自愿退票报价（手续费/到账） | 是 |
-| 退票 | POST | `/api/refund` | 退票（voluntary 即时 / special 人工审核） | 是 |
+| 退票 | POST | `/api/refund` | 退票（voluntary 即时 / special 人工审核），经支付宝原路退回 | 是 |
 | 值机 | GET | `/api/checkin/seats` | 座位图 | 是 |
 | 值机 | POST | `/api/checkin` | 值机/改座（返回登机牌数据） | 是 |
 | 值机 | POST | `/api/checkin/cancel` | 取消值机 | 是 |
@@ -679,18 +679,115 @@ while (source.readUtf8Line()?.also { line ->
   "confirm_token": "KwMDnSV7WEcWkuJ17LxH...", "requestId": "uuid-由客户端生成" }
 ```
 
-> - `confirm_token` 来自 `/api/refund_quote`，**必带**（403 `need_confirm` 同前）；
-> - `requestId` 是**幂等键**（客户端生成一次并保存，如 UUID）：同一 `requestId`
->   重复提交直接返回首次结果 `{"success": true, "idempotent": true, ...}`，
->   不会重复退款；**重试/断网重发时必须复用同一个 requestId**。
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `order_no` | 是 | 订单号 |
+| `refund_type` | 是 | `voluntary` 自愿 / `special` 特殊（非自愿） |
+| `confirm_token` | 是 | 来自 `/api/refund_quote`，一次性；缺失或重复使用 → 403 `need_confirm` |
+| `requestId` | **强烈建议** | 幂等键，客户端生成并保存（如 UUID）。**重试/断网重发必须复用同一个值** |
+
+> - `requestId` 身兼两职：本地 `refunds` 表的幂等键 + 支付宝的**退款请求号 `out_request_no`**。
+>   同一个 `requestId` 重复提交，本地直接返回首次结果；
+>   即使请求穿透到支付宝，支付宝按「同 `out_trade_no` + 同 `out_request_no` 只退一次」返回幂等结果，
+>   也**不会重复退款**。不传时服务端会生成一个，但那时重试会被当成一次新退款，请务必自带。
+> - 金额不由客户端指定：自愿退票按上表费率由服务端计算，客户端只能退整单（费率内）。
 
 | refund_type | 含义 | 流程 |
 |---|---|---|
-| `voluntary` | 自愿退票 | 按上表费率**即时退款**，状态直接变「已退款」 |
-| `special` | 特殊退票（航班延误/取消等非自愿原因） | 进入「退票中」，**人工审核**，可争取全额退 |
+| `voluntary` | 自愿退票 | 服务端按上表费率算钱 → **先调支付宝退款** → 成功才把订单置「已退款」 |
+| `special` | 特殊退票（航班延误/取消等非自愿原因） | 进入「退票中」，**人工审核**；管理员审批时按同样顺序调渠道退款 |
 
-voluntary 成功：`{"success": true, "order_no": "...", "status": "已退款", "refund_amount": 540, "fee": 60, "message": "..."}`
-special 成功：状态变「退票中」，message 末尾会带「（特殊退票已受理，人工审核中）」；之后可在「我的订单」里看到状态，管理端驳回后会恢复原状态。
+**成功响应**
+
+```json
+{
+  "success": true, "order_no": "O4832015", "status": "已退款",
+  "refund_amount": 540, "fee": 60,
+  "channel": "alipay_sandbox", "channel_status": "成功",
+  "requestId": "uuid-由客户端生成",
+  "channel_message": "退款成功：540.00 元已由支付宝沙箱原路退回；本笔支付已全额退完",
+  "message": "订单 O4832015 已退款 540 元（手续费 60 元，起飞前48-72小时（收10%））"
+}
+```
+
+`channel` 是实际退款的渠道（`mock` / `alipay_sandbox` / `alipay`，由该订单**当初支付时**用的渠道决定），
+`channel_status` 取值：`成功` / `失败` / `处理中` / `渠道不支持` / `无需渠道退款`。
+
+**失败与异常（HTTP 400，除非另注）**
+
+| 响应特征 | 含义 | 客户端应如何处理 |
+|---|---|---|
+| `error` 含「超出可退金额」 | 本笔支付可退余额不足（部分已退过） | 不要自动重试，展示可退余额 |
+| `error` 含「支付宝侧查无此交易」 | 该笔支付没有真实经过支付宝（测试单/线下单），渠道无法原路退回 | 提示转人工；运营可走 `settle` 的 `offline:true` 线下退款结案 |
+| `unsettled: true` / `pending: true`（409） | 该订单有一笔退款还没定论（上次超时），后端拒绝发起新退款 | 按「退款处理中」提示，别引导用户反复点 |
+| `retryable: true` | 渠道侧临时问题（如商户余额不足），**可以重试** | 稍后用**同一个 `requestId`** 重试 |
+| `unknown: true`（`channel_status: "处理中"`） | **结果未知**（网络超时/响应验签失败），钱可能已经退了 | **禁止直接重试**；提示"退款处理中"，由运营对账（见 4.4.8）后收口 |
+| `idempotent: true` | 重复提交（同一 `requestId`） | 当成功处理即可 |
+| `need_confirm`（403） | 凭证缺失/过期/已用过/参数指纹不符 | 重新调 `/api/refund_quote` 拿新凭证，再让用户确认 |
+| `needs_manual: true`（**500**） | 钱已经退成功、但订单状态没更新（并发冲突） | 已转人工；不要提示用户"退款失败" |
+
+> **退款是同步的，正常秒级完成**，但服务端坚持「**先渠道退款、成功之后才改订单状态**」。
+> 这个顺序换来一条硬保证：**任何显示为「已退款」的订单，钱必然已经退出去**（或明确标记为线下退款）。
+> 若反过来先改单再退款，一旦渠道失败就会出现"订单退了、钱没退"的假账——那是查不回来的。
+
+#### 4.4.8 退款对账（运营侧）`POST /admin/api/refunds/query`
+
+结果未知（`unknown: true`）时用它确认钱到底退了没：
+
+```json
+{ "out_request_no": "uuid-由客户端生成的 requestId", "order_no": "O4832015" }
+```
+
+```json
+{ "success": true, "queried": true, "found": false, "refunded": false,
+  "channel": "alipay_sandbox", "out_request_no": "...", "refundable": 540,
+  "message": "渠道查无这笔退款，可安全重试（请复用同一退款请求号）" }
+```
+
+- `refunded: true` → 渠道确认退款成功，**不要**再发起退款（会命中渠道幂等，没有任何意义）；
+  运营接着调 `POST /admin/api/refunds/settle` 把订单状态收口为「已退款」；
+- `queried: true, refunded: false` → 渠道明确回答"没有这笔退款的成功记录"，可用同一个退款请求号重新发起；
+- `queried: false`（返回 400）→ 渠道答不上来（网络故障），**不能**据此认为没退款，稍后重查或转人工。
+
+**对账会改动退款流水的状态**，从而控制后续能不能再退款：
+
+| refunds.status | 何时出现 | 是否允许再对该订单发起退款 |
+|---|---|---|
+| `退票中` | 用户提交特殊退票，等管理端审批（**钱还没退**） | 允许（审批流程用） |
+| `退款待对账` | 渠道结果未知（网络超时）：钱可能已经退了 | **不允许**，先对账 |
+| `渠道已退款` | 对账确认渠道已退款成功，但订单状态没跟上 | **不允许**，走 settle 收口 |
+| `退款失败` | 渠道明确拒绝（余额不足等，或支付宝查无此交易） | 允许（复用同一个退款请求号重试） |
+| `已退款` | 退款 + 订单状态都已完成 | 订单已是「已退款」，本就不能再退 |
+| `线下退款` | 渠道明确退不了，运营走了线下退款收口 | 同上（订单已结案） |
+
+> 退款流水是**每次尝试只留一行**（`request_id` 唯一）：同一请求号重试会把这行更新成最新结果，
+> 所以不会出现"一行失败 + 一行成功"的重复记录，对账时看一行即可。
+
+#### 4.4.9 确认退款完成（运营侧）`POST /admin/api/refunds/settle`
+
+「钱已经通过渠道退了，但订单状态没跟上」时的收口动作（通常发生在超时未定论 → 对账确认已退之后）。
+
+```json
+{ "order_no": "O4832015", "admin_note": "对账确认已退款" }
+```
+
+**前置条件**：该订单必须已有一条 `渠道已退款` 的退款流水——那条流水就是"钱确实退过"的凭证。
+没有它则返回 400，避免这个接口变成"不经过渠道也能把订单标成已退款"的后门。
+
+渠道**明确退不了**时（支付宝返回 `ACQ.TRADE_NOT_EXIST`、或该渠道未实现退款），
+可加 `"offline": true` 走线下退款结案，但要求：
+
+```json
+{ "order_no": "O4832015", "admin_note": "支付宝查无此交易，改为线下转账", "offline": true }
+```
+
+- 必须写备注且 ≥4 个字；
+- 必须已存在一条 `退款失败` 流水，且失败原因是"渠道不可能退"（查无此交易 / 渠道不支持）——
+  像"商户余额不足"这种**可重试**的失败不允许走线下；
+- 流水记为 `线下退款`，给用户的站内通知写明"已由客服线下办理"（不会谎称原路退回），
+  审计单独记一条 `线下退款`。
+
+> 为什么要有这个出口：测试单/线下收款单在支付宝侧不存在，不给出口的话退票队列会永久卡在「退票中」。
 
 ### 4.5 值机选座 / 登机牌
 
@@ -935,7 +1032,9 @@ POST /api/checkin {order_no, seat_no:"31A", confirm_token}
 | GET | `/admin/api/me` | 当前管理员（含 must_change_password） |
 | POST | `/admin/api/change_password` | 修改自己密码（首次登录强制） |
 | GET | `/admin/api/stats`、`/admin/api/stats/trend` | 运营统计 / 7天趋势+热门航线 |
-| GET | `/admin/api/refunds` + POST approve/reject | 特殊退票审批 |
+| GET | `/admin/api/refunds` + POST approve/reject | 特殊退票审批（审批通过会**先调支付宝退款**，成功才把订单置「已退款」） |
+| POST | `/admin/api/refunds/query` | 退款对账：确认某笔退款在支付宝侧是否成功（结果未知时的兜底） |
+| POST | `/admin/api/refunds/settle` | 确认退款完成：渠道已退款、订单状态没跟上时收口为「已退款」；`offline:true` 走线下退款（渠道退不了时） |
 | GET | `/admin/api/complaints` + POST resolve/escalate/reopen | 投诉处理 |
 | GET/POST | `/admin/api/flights`、`/admin/api/flights/gate` | 航班管理 / 登机口指派 |
 | GET | `/admin/api/orders`、`/admin/api/customers` | 订单 / 客户查询 |
@@ -951,3 +1050,4 @@ POST /api/checkin {order_no, seat_no:"31A", confirm_token}
 - 2026-09-09：座位图改为「初始全部可选、真实值机后才占用」，不再随机模拟预占座位；补充 `free` / `total` 为全舱位统计说明。
 - 2026-09-15：`GET /api/flights/search` 与 AI 的 `search_flights` 工具改为**只返回尚未起飞的航班**——过去日期直接报错，查询当天时剔除起飞时刻已过的班次（若当天全飞完则提示改查明天），不带日期时价格区间只统计今天及以后。
 - 2026-09-07：新增 `GET /api/flights/search` 客户端航班搜索接口（已写入接口总表与 4.4.1.1）。
+- 2026-09-16：**退款接上支付宝**：`POST /api/refund` 改为「先调 `alipay.trade.refund` 原路退款、成功才改订单状态」，支持部分退款与重复退款防护（`requestId` 作为支付宝 `out_request_no`）；新增 `POST /admin/api/refunds/query` 退款对账。见 4.4.7 / 4.4.8。

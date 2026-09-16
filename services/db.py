@@ -176,7 +176,8 @@ CREATE TABLE IF NOT EXISTS payments (
     notify_raw   TEXT,
     created_at   TEXT NOT NULL,
     paid_at      TEXT,
-    expire_at    TEXT
+    expire_at    TEXT,
+    refunded_amount REAL NOT NULL DEFAULT 0   -- 累计已退（部分退款守卫）
 );
 
 CREATE INDEX IF NOT EXISTS idx_payments_order  ON payments(order_no);
@@ -209,7 +210,14 @@ CREATE TABLE IF NOT EXISTS refunds (
     amount      INTEGER NOT NULL DEFAULT 0,
     fee         INTEGER NOT NULL DEFAULT 0,
     status      TEXT NOT NULL,         -- 已退款 / 退票中
-    created_at  TEXT NOT NULL
+    created_at  TEXT NOT NULL,
+    pay_no          TEXT,              -- 退的是哪笔支付流水
+    out_request_no  TEXT,              -- 渠道退款请求号（渠道侧幂等键）
+    channel         TEXT,              -- 渠道名（mock / alipay_sandbox / alipay）
+    channel_status  TEXT,              -- 成功 / 失败 / 处理中 / 渠道不支持 / 无需渠道退款
+    channel_error   TEXT,              -- 渠道失败原因（sub_code + sub_msg）
+    channel_raw     TEXT,              -- 渠道响应原文（对账/取证）
+    updated_at      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_refunds_order ON refunds(order_no);
 
@@ -267,6 +275,19 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "flights", "gate", "gate TEXT")
     # 管理员首次登录强制改密标记（存量默认口令由启动巡检置位）
     _ensure_column(conn, "admins", "must_change_password", "must_change_password INTEGER NOT NULL DEFAULT 0")
+    # ---- 渠道退款（支付宝 alipay.trade.refund）带来的字段 ----
+    # payments.refunded_amount：该笔流水累计已退金额。
+    # 部分退款场景下用它做「累计不超实付」的守卫，也是「重复退款」的最终防线。
+    _ensure_column(conn, "payments", "refunded_amount", "refunded_amount REAL NOT NULL DEFAULT 0")
+    # refunds 表补渠道字段：本地幂等键（request_id）之外，记录渠道侧的退款请求号与结果，
+    # 便于失败重试与对账（渠道结果未知时靠 out_request_no 查退款）。
+    _ensure_column(conn, "refunds", "pay_no", "pay_no TEXT")
+    _ensure_column(conn, "refunds", "out_request_no", "out_request_no TEXT")
+    _ensure_column(conn, "refunds", "channel", "channel TEXT")
+    _ensure_column(conn, "refunds", "channel_status", "channel_status TEXT")
+    _ensure_column(conn, "refunds", "channel_error", "channel_error TEXT")
+    _ensure_column(conn, "refunds", "channel_raw", "channel_raw TEXT")
+    _ensure_column(conn, "refunds", "updated_at", "updated_at TEXT")
     # 种子订单未记录人数（金额即单人票价），统一按1人回填
     conn.execute("UPDATE orders SET passengers = 1 WHERE passengers IS NULL")
     conn.commit()

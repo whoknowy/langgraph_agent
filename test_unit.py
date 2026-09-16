@@ -1747,6 +1747,588 @@ class TestPayment:
         assert "route.query.order_no" in src
 
 
+class TestChannelRefund:
+    """渠道退款（支付宝 alipay.trade.refund 接入后的退款链路）。
+
+    覆盖五条必须分清的分支：正常退款 / 部分退款累计 / 重复退款 /
+    渠道失败（订单不能被标记已退款）/ 无支付流水（种子订单）。
+    全部走 mock 渠道与假 SDK 客户端：零 token、零网络。
+    """
+
+    def setup_method(self):
+        from services.payment import reset_cache
+        reset_cache()
+        security.set_current_member("M1001")
+        security.set_current_admin("admin")   # 管理端审批分支要管理员身份
+
+    def teardown_method(self):
+        from services.payment import get_provider, reset_cache
+        try:
+            get_provider("mock").fail_refunds = False
+        except Exception:
+            pass
+        reset_cache()
+
+    # ---------------- 造数据
+
+    @staticmethod
+    def _paid_order(order_no, amount=600, order_status="已出票", pay_no=None):
+        """造「已出票 + 已支付成功」的订单与支付流水，返回 pay_no。"""
+        from services import db
+        pay_no = pay_no or f"P{order_no}"
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn = db.get_connection()
+        conn.execute(
+            "INSERT INTO orders (order_no, member_id, flight_no, flight_date, cabin, amount, "
+            "status, created_at, passengers, pay_channel, paid_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (order_no, "M1001", "CA1061", FUTURE, "经济", amount, order_status, now, 1,
+             "mock", now))
+        conn.execute(
+            "INSERT INTO payments (pay_no, order_no, provider, out_trade_no, amount, status, "
+            "created_at, paid_at, trade_no) VALUES (?,?,?,?,?,?,?,?,?)",
+            (pay_no, order_no, "mock", pay_no, amount, "支付成功", now, now, f"TRADE{pay_no}"))
+        conn.commit()
+        conn.close()
+        return pay_no
+
+    @staticmethod
+    def _order(order_no):
+        from services import db
+        conn = db.get_connection()
+        row = conn.execute("SELECT * FROM orders WHERE order_no = ?", (order_no,)).fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    @staticmethod
+    def _payment(pay_no):
+        from services import payment_repo
+        return payment_repo.get_payment(pay_no)
+
+    # ---------------- 主路径
+
+    def test_refund_goes_through_channel_and_reports_status(self):
+        from services import payment_service
+        pay_no = self._paid_order("CR1", amount=600)
+        r = payment_service.refund_payment(order_no="CR1", amount=600,
+                                           out_request_no="R-CR1", refund_type="voluntary",
+                                           fee=30, reason="自愿退票", member_id="M1001")
+        assert r.get("success") and not r.get("skipped"), r
+        assert r["channel"] == "mock" and r["channel_status"] == "成功"
+        assert r["pay_no"] == pay_no and r["out_request_no"] == "R-CR1"
+        assert r["duplicate"] is False and r["partial"] is False
+        assert r["refunded_total"] == 600
+        assert self._payment(pay_no)["refunded_amount"] == 600
+
+    def test_partial_refund_accumulates_then_blocks_over_refund(self):
+        """部分退款：可多次退，但累计不得超过实付（支付宝侧同规则，本地先拦）。"""
+        from services import payment_service
+        pay_no = self._paid_order("CR2", amount=600)
+        first = payment_service.refund_payment(order_no="CR2", amount=200,
+                                               out_request_no="R-CR2-A")
+        assert first.get("success") and first["partial"] is True
+        assert first["refunded_total"] == 200 and first["refundable"] == 400
+
+        second = payment_service.refund_payment(order_no="CR2", amount=200,
+                                                out_request_no="R-CR2-B")
+        assert second.get("success") and second["refunded_total"] == 400
+
+        third = payment_service.refund_payment(order_no="CR2", amount=300,
+                                               out_request_no="R-CR2-C")
+        assert "error" in third and "超出可退金额" in third["error"]
+        assert third["refundable"] == 200
+        # 被本地拦下的请求不会落到渠道：额度也没动
+        assert self._payment(pay_no)["refunded_amount"] == 400
+
+    def test_duplicate_request_no_does_not_double_claim(self):
+        """同一请求号重复调用：渠道幂等命中 → 本地不得再占一次额度。"""
+        from services import payment_service
+        pay_no = self._paid_order("CR3", amount=600)
+        first = payment_service.refund_payment(order_no="CR3", amount=600,
+                                               out_request_no="R-CR3")
+        assert first.get("success") and first["duplicate"] is False
+        again = payment_service.refund_payment(order_no="CR3", amount=600,
+                                               out_request_no="R-CR3")
+        assert again.get("success") and again["duplicate"] is True
+        assert again["refunded_total"] == 600            # 没有变成 1200
+        assert self._payment(pay_no)["refunded_amount"] == 600
+
+    def test_channel_failure_leaves_order_untouched(self):
+        """渠道失败必须原地不动——绝不能出现「订单已退、钱没退」的假账。"""
+        from services import payment_service
+        from services.payment import get_provider
+        pay_no = self._paid_order("CR4", amount=600)
+        get_provider("mock").fail_refunds = True
+        r = payment_service.refund_payment(order_no="CR4", amount=600,
+                                           out_request_no="R-CR4")
+        assert "error" in r and r["channel_status"] == "失败"
+        assert r["retryable"] is True and r["unknown"] is False
+        assert self._order("CR4")["status"] == "已出票"
+        assert self._payment(pay_no)["refunded_amount"] == 0
+
+    def test_order_without_paid_payment_skips_channel(self):
+        """种子/线下订单没有渠道流水：跳过渠道退款，业务照常退（不能因此退不了票）。"""
+        from services import payment_service
+        _insert_order("CR5", status="已出票", flight_date=FUTURE, amount=1000)
+        r = payment_service.refund_payment(order_no="CR5", amount=1000,
+                                           out_request_no="R-CR5")
+        assert r.get("success") and r["skipped"] is True
+        assert r["channel_status"] == "无需渠道退款" and r["pay_no"] is None
+
+    def test_refund_amount_must_be_positive(self):
+        from services import payment_service
+        self._paid_order("CR6", amount=600)
+        r = payment_service.refund_payment(order_no="CR6", amount=0,
+                                           out_request_no="R-CR6")
+        assert "error" in r and "大于 0" in r["error"]
+
+    def test_missing_request_no_is_rejected_before_channel(self):
+        from services import payment_service
+        self._paid_order("CR7", amount=600)
+        r = payment_service.refund_payment(order_no="CR7", amount=100, out_request_no="")
+        assert "error" in r and "退款请求号" in r["error"]
+
+    def test_query_refund_confirms_channel_result(self):
+        """对账：结果未知时用同一个请求号问渠道。"""
+        from services import payment_service
+        pay_no = self._paid_order("CR8", amount=600)
+        payment_service.refund_payment(order_no="CR8", amount=600, out_request_no="R-CR8")
+        hit = payment_service.query_refund_status("R-CR8", pay_no=pay_no)
+        assert hit.get("success") and hit["found"] and hit["refunded"] is True
+        miss = payment_service.query_refund_status("R-NEVER", pay_no=pay_no)
+        assert miss.get("success") and miss["found"] is False and miss["refunded"] is False
+
+    def test_alipay_refund_query_no_record_still_returns_success_code(self):
+        """【对真实沙箱实测】退款查询查不到请求号时返回的是
+        `{"code":"10000","msg":"Success"}`——成功码 + 无任何退款字段。
+
+        found 必须据此判为 False，否则「没退过」会被当成「退过」，
+        业务侧就不敢重试了（这条用例锁死该坑，防回归）。
+        """
+        from services.payment.alipay_provider import AlipayProvider
+
+        class _FakeQ:
+            def __init__(self, res):
+                self.res = res
+
+            def api_alipay_trade_fastpay_refund_query(self, **kw):
+                return self.res
+
+        def _provider(res):
+            p = AlipayProvider(app_id="2021000000000000", private_key_path="x",
+                               public_key_path="y", debug=True)
+            p._client = _FakeQ(res)
+            return p
+
+        miss = _provider({"code": "10000", "msg": "Success"}).query_refund(
+            pay_no="P1", out_request_no="R1")
+        assert miss["queried"] is True and miss["found"] is False
+        assert miss["refunded"] is False
+
+        hit = _provider({"code": "10000", "msg": "Success", "out_request_no": "R1",
+                         "refund_amount": "600.00", "refund_status": "REFUND_SUCCESS",
+                         "trade_no": "2026091622001"}).query_refund(
+            pay_no="P1", out_request_no="R1")
+        assert hit["queried"] is True and hit["found"] is True
+        assert hit["refunded"] is True and hit["refund_amount"] == "600.00"
+
+        # 查询本身失败（交易不存在）也算"渠道给了明确回答"：没退过 → 可重试
+        gone = _provider({"code": "40004", "sub_code": "ACQ.TRADE_NOT_EXIST",
+                          "sub_msg": "交易不存在"}).query_refund(pay_no="P1",
+                                                            out_request_no="R1")
+        assert gone["queried"] is True and gone["found"] is False
+
+    def test_query_refund_status_reports_unavailable_channel(self):
+        """渠道答不上来（网络故障）时不能推断"没退款"：既不能当成功，也不能当失败。"""
+        from services import payment_service
+
+        class _Dead:
+            name = "mock"
+            label = "模拟支付"
+
+            def query_refund(self, **kw):
+                return {"queried": False, "found": False, "refunded": False,
+                        "error": "退款查询失败（TimeoutError: timed out）"}
+
+        self._paid_order("CR13", amount=600)
+        original = payment_service.get_provider
+        payment_service.get_provider = lambda name=None: _Dead()
+        try:
+            r = payment_service.query_refund_status("R-CR13", order_no="CR13")
+        finally:
+            payment_service.get_provider = original
+        assert r.get("queried") is False and r.get("found") is False
+        assert "error" in r and "退款查询失败" in r["error"]
+
+    # ---------------- 支付宝响应映射（真实映射逻辑，假客户端）
+
+    @staticmethod
+    def _alipay_with_fake_client(response=None, raises=None):
+        from services.payment.alipay_provider import AlipayProvider
+
+        class _Fake:
+            last = {}
+
+            def api_alipay_trade_refund(self, **kwargs):
+                _Fake.last = kwargs
+                if raises:
+                    raise raises
+                return response
+
+        p = AlipayProvider(app_id="2021000000000000", private_key_path="x",
+                           public_key_path="y", debug=True)
+        p._client = _Fake()
+        return p
+
+    def test_alipay_refund_success_mapping(self):
+        p = self._alipay_with_fake_client({
+            "code": "10000", "msg": "Success", "trade_no": "2026091622001",
+            "out_trade_no": "P1", "fund_change": "Y", "refund_fee": "600.00",
+            "gmt_refund_pay": "2026-09-16 15:20:00"})
+        r = p.refund(pay_no="P1", amount=600, out_request_no="R1", reason="退票")
+        assert r["ok"] is True and r["channel_status"] == "成功"
+        assert r["duplicate"] is False and r["refund_fee"] == "600.00"
+        assert r["channel_refund_no"] == "2026091622001"
+        # 部分退款必须把 out_request_no 传下去（渠道幂等键）
+        assert p._client.last["out_request_no"] == "R1"
+        assert p._client.last["out_trade_no"] == "P1"
+        assert p._client.last["refund_amount"] == "600.00"
+
+    def test_alipay_refund_duplicate_when_fund_change_n(self):
+        p = self._alipay_with_fake_client({"code": "10000", "fund_change": "N"})
+        r = p.refund(pay_no="P1", amount=600, out_request_no="R1")
+        assert r["ok"] is True and r["duplicate"] is True
+        assert r["channel_status"] == "成功"
+
+    def test_alipay_refund_trade_not_exist_is_not_retryable(self):
+        """支付宝查无此交易（本地自签自验造出来的支付）→ 明确失败，别盲目重试。"""
+        p = self._alipay_with_fake_client({
+            "code": "40004", "msg": "Business Failed",
+            "sub_code": "ACQ.TRADE_NOT_EXIST", "sub_msg": "交易不存在"})
+        r = p.refund(pay_no="P1", amount=600, out_request_no="R1")
+        assert r["ok"] is False and r["retryable"] is False and r["unknown"] is False
+        assert "查无此交易" in r["error"] and r["sub_code"] == "ACQ.TRADE_NOT_EXIST"
+
+    def test_alipay_refund_balance_not_enough_is_retryable(self):
+        p = self._alipay_with_fake_client({
+            "code": "40004", "sub_code": "ACQ.SELLER_BALANCE_NOT_ENOUGH",
+            "sub_msg": "商户可用余额不足"})
+        r = p.refund(pay_no="P1", amount=600, out_request_no="R1")
+        assert r["ok"] is False and r["retryable"] is True and r["unknown"] is False
+
+    def test_alipay_refund_network_error_is_unknown_not_failure(self):
+        """超时/验签失败 = 结果未知：既不能当失败，也不能直接重试，必须对账。"""
+        p = self._alipay_with_fake_client(raises=TimeoutError("timed out"))
+        r = p.refund(pay_no="P1", amount=600, out_request_no="R1")
+        assert r["ok"] is False and r["unknown"] is True and r["retryable"] is True
+        assert r["channel_status"] == "处理中"
+        assert "结果未知" in r["error"]
+
+    def test_alipay_refund_none_response_is_unknown(self):
+        """SDK 响应验签失败会返回 None，同样属于结果未知。"""
+        p = self._alipay_with_fake_client(None)
+        r = p.refund(pay_no="P1", amount=600, out_request_no="R1")
+        assert r["ok"] is False and r["unknown"] is True
+
+    def test_alipay_refund_requires_request_no(self):
+        p = self._alipay_with_fake_client({"code": "10000"})
+        r = p.refund(pay_no="P1", amount=600, out_request_no="")
+        assert r["ok"] is False and "out_request_no" in r["error"]
+
+    def test_default_provider_refund_is_unsupported(self):
+        """没实现退款的渠道走「渠道不支持」，业务层据此可转人工，而不是崩掉。"""
+        from services.payment.base import PaymentProvider
+
+        class _Bare(PaymentProvider):
+            def create_payment(self, **kw):
+                return {}
+
+            def verify_notify(self, data=None, **kw):
+                return False, {}
+
+            def query_payment(self, pay_no):
+                return {}
+
+        r = _Bare().refund(pay_no="P1", amount=1, out_request_no="R1")
+        assert r["ok"] is False and r["channel_status"] == "渠道不支持"
+
+    # ---------------- 业务层接线：渠道结果落流水
+
+    def test_voluntary_refund_persists_channel_result_on_ledger(self):
+        """退款流水要留下渠道请求号与结果，否则事后无法对账。"""
+        from services import flight_repo, payment_service
+        pay_no = self._paid_order("CR9", amount=600)
+        channel = payment_service.refund_payment(order_no="CR9", amount=570,
+                                                 out_request_no="R-CR9", fee=30,
+                                                 reason="自愿退票")
+        assert channel.get("success")
+        result = flight_repo.refund_order_instant("CR9", member_id="M1001",
+                                                 request_id="R-CR9", channel=channel)
+        assert result.get("success") and result["status"] == "已退款"
+        row = flight_repo.get_refund_by_request("R-CR9")
+        assert row["out_request_no"] == "R-CR9"
+        assert row["channel"] == "mock" and row["channel_status"] == "成功"
+        assert row["pay_no"] == pay_no and row["amount"] == 570 and row["fee"] == 30
+        assert row["updated_at"]
+
+    def test_admin_approve_refunds_through_channel(self):
+        """管理端审批通过：先渠道退款再改状态，退款流水带上渠道号。"""
+        from services import admin_repo, flight_repo
+        pay_no = self._paid_order("CR10", amount=600, order_status="退票中")
+        conn = db.get_connection()
+        flight_repo._record_refund(conn, "R-CR10", "CR10", "M1001",
+                                   "special", 600, 0, "退票中")
+        conn.commit()
+        conn.close()
+        r = admin_repo.approve_refund("CR10", 600, "航班延误全额退")
+        assert r.get("success") and r["status"] == "已退款", r
+        assert r["channel"] == "mock" and r["out_request_no"] == "R-CR10"
+        assert self._order("CR10")["status"] == "已退款"
+        assert self._payment(pay_no)["refunded_amount"] == 600
+        row = flight_repo.get_refund_by_request("R-CR10")
+        assert row["status"] == "已退款" and row["channel_status"] == "成功"
+
+    def test_admin_approve_channel_failure_keeps_order_pending(self):
+        """渠道失败时订单留在「退票中」，管理员可修好原因后重试。"""
+        from services import admin_repo, flight_repo
+        from services.payment import get_provider
+        self._paid_order("CR11", amount=600, order_status="退票中")
+        conn = db.get_connection()
+        flight_repo._record_refund(conn, "R-CR11", "CR11", "M1001",
+                                   "special", 600, 0, "退票中")
+        conn.commit()
+        conn.close()
+        get_provider("mock").fail_refunds = True
+        r = admin_repo.approve_refund("CR11", None, "")
+        assert "error" in r and "渠道退款未完成" in r["error"]
+        assert r["out_request_no"] == "R-CR11"
+        assert self._order("CR11")["status"] == "退票中"
+        assert self._payment("PCR11")["refunded_amount"] == 0
+
+    def test_admin_partial_refund_amount(self):
+        """部分退款：管理端指定少于订单金额的退款额。"""
+        from services import admin_repo, flight_repo
+        self._paid_order("CR12", amount=600, order_status="退票中")
+        conn = db.get_connection()
+        flight_repo._record_refund(conn, "R-CR12", "CR12", "M1001",
+                                   "special", 600, 0, "退票中")
+        conn.commit()
+        conn.close()
+        r = admin_repo.approve_refund("CR12", 450, "部分退")
+        assert r.get("success") and r["refund_amount"] == 450
+        assert self._payment("PCR12")["refunded_amount"] == 450
+
+    # ---------------- 结果未知（超时）——最危险的一条路径
+
+    @staticmethod
+    def _use_unknown_channel(queried=None, refunded=False):
+        """把渠道换成「退款超时（结果未知）」，并让 query_refund 返回指定对账结果。"""
+        from services import payment_service
+
+        class _TimeoutChannel:
+            name = "mock"
+            label = "模拟支付"
+
+            def refund(self, **kw):
+                return {"ok": False, "channel_status": "处理中", "unknown": True,
+                        "retryable": True, "duplicate": False,
+                        "error": "退款请求结果未知（TimeoutError: timed out）"}
+
+            def query_refund(self, **kw):
+                return (queried or {"queried": True, "found": False, "refunded": False,
+                                    "error": "渠道无此退款记录"})
+
+        payment_service.get_provider = lambda name=None: _TimeoutChannel()
+        return payment_service
+
+    def test_unknown_channel_result_is_recorded_and_blocks_retry(self):
+        """超时（结果未知）必须留痕并**拦住**后续退款。
+
+        否则客户端换个 requestId 重试就会真的退第二笔——这是重复退款最危险的路径。
+        """
+        import services.payment_service as ps
+        original = ps.get_provider
+        try:
+            self._paid_order("CR14", amount=600)
+            ps = self._use_unknown_channel()
+            first = ps.refund_payment(order_no="CR14", amount=600,
+                                      out_request_no="R-CR14-A")
+            assert "error" in first and first["unknown"] is True
+            from services import flight_repo
+            row = flight_repo.get_refund_by_request("R-CR14-A")
+            assert row and row["status"] == "退款待对账"
+            assert row["channel_error"]
+            # 订单没被改（坚持"渠道成功才改单"）
+            assert self._order("CR14")["status"] == "已出票"
+
+            # 换个 requestId 再来 → 被未定论流水拦住
+            second = ps.refund_payment(order_no="CR14", amount=600,
+                                       out_request_no="R-CR14-B")
+            assert second.get("unsettled") is True
+            assert "尚未定论" in second["error"]
+            assert second["open_request_no"] == "R-CR14-A"
+            # 同一 requestId 重放 → 仍是"未定论"，既不能报成功也不能重新发起
+            third = ps.refund_payment(order_no="CR14", amount=600,
+                                      out_request_no="R-CR14-A")
+            assert third.get("pending") is True and third.get("success") is None
+            assert "不要重复提交" in third["error"]
+        finally:
+            ps.get_provider = original
+
+    def test_reconcile_says_refunded_then_manual_settle_closes_order(self):
+        """对账确认钱已退 → 流水转「渠道已退款」→ 仍拦重复退款 → 管理端收口订单。"""
+        import services.payment_service as ps
+        from services import admin_repo, flight_repo
+        original = ps.get_provider
+        try:
+            self._paid_order("CR15", amount=600)
+            ps = self._use_unknown_channel()
+            first = ps.refund_payment(order_no="CR15", amount=600,
+                                      out_request_no="R-CR15")
+            assert first.get("unknown") is True
+
+            ps = self._use_unknown_channel(
+                queried={"queried": True, "found": True, "refunded": True,
+                         "refund_status": "REFUND_SUCCESS", "refund_amount": "600.00"})
+            rec = ps.query_refund_status("R-CR15", order_no="CR15")
+            assert rec.get("success") and rec["refunded"] is True
+            assert rec["ledger_status"] == "渠道已退款"
+            assert "请勿再次发起退款" in rec["next_step"]
+
+            blocked = ps.refund_payment(order_no="CR15", amount=600,
+                                        out_request_no="R-CR15-NEW")
+            assert blocked.get("unsettled") is True
+
+            r = admin_repo.settle_channel_refund("CR15", "对账确认已退款")
+            assert r.get("success") and r["status"] == "已退款", r
+            assert self._order("CR15")["status"] == "已退款"
+            assert self._order("CR15")["refund_amount"] == 600
+        finally:
+            ps.get_provider = original
+
+    def test_reconcile_says_not_refunded_unblocks_retry(self):
+        """对账确认没退 → 流水转「退款失败」→ 解除拦截，可以重新发起。"""
+        import services.payment_service as ps
+        from services import flight_repo
+        original = ps.get_provider
+        try:
+            self._paid_order("CR16", amount=600)
+            ps = self._use_unknown_channel()
+            ps.refund_payment(order_no="CR16", amount=600, out_request_no="R-CR16")
+            blocked = ps.refund_payment(order_no="CR16", amount=600,
+                                        out_request_no="R-CR16-2")
+            assert blocked.get("unsettled") is True
+
+            ps = self._use_unknown_channel()      # 渠道明确回答"没有这笔退款"
+            rec = ps.query_refund_status("R-CR16", order_no="CR16")
+            assert rec["refunded"] is False and rec["ledger_status"] == "退款失败"
+            assert flight_repo.get_refund_by_request("R-CR16")["status"] == "退款失败"
+
+            # 拦截解除后可以重新发起（这里换回健康渠道）
+            ps = self._use_unknown_channel(queried={"queried": True, "found": False,
+                                                    "refunded": False})
+            retry = ps.refund_payment(order_no="CR16", amount=600,
+                                      out_request_no="R-CR16-3")
+            # 仍是同一个假渠道（返回 unknown），所以这次依旧未知；关键是没有被"未定论"拦住
+            assert retry.get("unsettled") is not True
+        finally:
+            ps.get_provider = original
+
+    def test_settle_requires_channel_refund_record(self):
+        """「确认退款完成」不能当免渠道退款的后门：没有渠道退款凭证就拒绝。"""
+        from services import admin_repo
+        self._paid_order("CR17", amount=600)
+        r = admin_repo.settle_channel_refund("CR17", "手滑点一下")
+        assert "error" in r and "渠道已退款" in r["error"]
+        assert self._order("CR17")["status"] == "已出票"
+
+    # ---------------- 渠道明确退不了 → 线下退款（避免退票队列卡死）
+
+    def test_failed_attempt_is_recorded_and_retry_overwrites_it(self):
+        """失败尝试要留痕（线下收口的依据）；同一请求号重试成功后该行被覆盖为已退款。
+
+        金额按真实链路给：报价算出手续费后续 570（600 的 5%），渠道退的也是 570。
+        """
+        from services import flight_repo, payment_service
+        from services.payment import get_provider
+        pay_no = self._paid_order("CR18", amount=600)
+        get_provider("mock").fail_refunds = True
+        bad = payment_service.refund_payment(order_no="CR18", amount=570, fee=30,
+                                            out_request_no="R-CR18")
+        assert "error" in bad
+        row = flight_repo.get_refund_by_request("R-CR18")
+        assert row["status"] == "退款失败" and row["channel_status"] == "失败"
+        assert row["channel_error"]
+
+        get_provider("mock").fail_refunds = False
+        ok = payment_service.refund_payment(order_no="CR18", amount=570, fee=30,
+                                            out_request_no="R-CR18")
+        assert ok.get("success")
+        # 渠道退成功但订单还没推进：业务层落定后，同一行流水要变成「已退款」
+        result = flight_repo.refund_order_instant("CR18", member_id="M1001",
+                                                 request_id="R-CR18", channel=ok)
+        assert result.get("success")
+        row = flight_repo.get_refund_by_request("R-CR18")
+        assert row["status"] == "已退款" and row["channel_status"] == "成功"
+        assert row["amount"] == 570 and row["fee"] == 30
+        assert self._payment(pay_no)["refunded_amount"] == 570
+
+    def test_offline_settle_unblocks_untradeable_order(self):
+        """支付宝查无此交易（本地虚拟支付）时，运营可走线下退款结案，队列不再卡死。"""
+        from services import admin_repo, flight_repo, payment_service
+        from services.payment import get_provider
+
+        class _NotExist:
+            name = "mock"
+            label = "模拟支付"
+
+            def refund(self, **kw):
+                return {"ok": False, "channel_status": "失败", "retryable": False,
+                        "unknown": False, "code": "40004",
+                        "sub_code": "ACQ.TRADE_NOT_EXIST",
+                        "error": "支付宝侧查无此交易，该笔支付可能未真实经过支付宝",
+                        "raw": {"code": "40004", "sub_code": "ACQ.TRADE_NOT_EXIST"}}
+
+        self._paid_order("CR19", amount=600, order_status="退票中")
+        conn = db.get_connection()
+        flight_repo._record_refund(conn, "R-CR19", "CR19", "M1001", "special", 600, 0, "退票中")
+        conn.commit()
+        conn.close()
+
+        original = payment_service.get_provider
+        payment_service.get_provider = lambda name=None: _NotExist()
+        try:
+            approve = admin_repo.approve_refund("CR19", None, "")
+            assert "error" in approve and "渠道退款未完成" in approve["error"]
+            assert self._order("CR19")["status"] == "退票中"
+            # 上一步的失败已经留下「渠道退不了」的记录（channel_status=失败 + 查无此交易）
+
+            # 没有备注不能线下退
+            assert "备注" in admin_repo.settle_channel_refund("CR19", "", offline=True)["error"]
+            # 默认模式（按渠道结果收口）也不行：这条流水不是「渠道已退款」
+            assert "error" in admin_repo.settle_channel_refund("CR19", "客户已线下收款")
+            assert self._order("CR19")["status"] == "退票中"
+        finally:
+            payment_service.get_provider = original
+
+        r = admin_repo.settle_channel_refund("CR19", "支付宝查无此交易，改为线下转账", offline=True)
+        assert r.get("success") and r["offline"] is True, r
+        assert self._order("CR19")["status"] == "已退款"
+        assert flight_repo.get_refund_by_request("R-CR19")["status"] == "线下退款"
+
+    def test_offline_settle_rejected_without_untradeable_record(self):
+        """渠道能退的单子不许走线下退款（否则等于绕过渠道白记账）。"""
+        from services import admin_repo
+        from services.payment import get_provider
+        self._paid_order("CR20", amount=600)
+        get_provider("mock").fail_refunds = True
+        from services import payment_service
+        payment_service.refund_payment(order_no="CR20", amount=600,
+                                       out_request_no="R-CR20")
+        r = admin_repo.settle_channel_refund("CR20", "渠道余额不足，改线下", offline=True)
+        # 余额不足属于"可重试"，不是"退不了" → 不允许线下退款
+        assert "error" in r and "线下退款" in r["error"]
+
+
 class TestConfirmToken:
     """一次性确认凭证：没有它写接口不能执行；跨会员/跨动作/跨目标/重放/篡改都无效。"""
 
