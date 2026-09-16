@@ -20,23 +20,30 @@ export function useChatActions(chat) {
   // 这里不传 win —— 跳转方式与那两处不同，原因见 confirmAction 里的注释。
   const { pay } = usePay()
 
-  // 订票确认卡片要展示「航司 / 航线 / 起降时间 / 舱位 / 人数 / 单价 / 总价」，
-  // 而 pending_action 里只有 flight_no/flight_date/cabin/passengers，
-  // 所以卡片一出现就补一次报价查询（纯展示用，确认凭证仍走 ensureToken）。
+  // 确认卡片要展示真实金额，而 pending_action 里只有航班号/日期/舱位：
+  // 卡片一出现就补一次报价查询（纯展示用；确认凭证仍走 ensureToken）。
+  // - 订票卡片 → 航司/航线/起降/单价/总价
+  // - 改签卡片 → 原航班、新航班、**差价**（补差价要用户在点确认之前就看到，
+  //   而不是跳到收银台才知道——收银台只显示金额，不解释来由）
   const cardQuote = ref({ loading: false, error: '', data: null })
   watch(pendingAction, (a) => { loadCardQuote(a) }, { immediate: true })
 
   async function loadCardQuote(a) {
-    if (!a || a.type !== 'book_flight') {
+    if (!a || (a.type !== 'book_flight' && a.type !== 'change_flight')) {
       cardQuote.value = { loading: false, error: '', data: null }
       return
     }
     cardQuote.value = { loading: true, error: '', data: null }
     try {
-      const q = await api('/api/booking_quote' + qs({
-        flight_no: a.flight_no, flight_date: a.flight_date,
-        cabin: a.cabin, passengers: Number(a.passengers || 1)
-      }))
+      const q = a.type === 'book_flight'
+        ? await api('/api/booking_quote' + qs({
+            flight_no: a.flight_no, flight_date: a.flight_date,
+            cabin: a.cabin, passengers: Number(a.passengers || 1)
+          }))
+        : await api('/api/change_quote' + qs({
+            order_no: a.order_no, new_flight_no: a.new_flight_no,
+            new_date: a.new_date, new_cabin: a.new_cabin
+          }))
       cardQuote.value = q && q.error
         ? { loading: false, error: q.error, data: null }
         : { loading: false, error: '', data: q }

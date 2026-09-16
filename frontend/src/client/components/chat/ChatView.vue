@@ -30,6 +30,7 @@
         :desc="actions.pendingActionDesc.value"
         :data="actions.cardQuote.value.data"
         :data-loading="actions.cardQuote.value.loading"
+        :error="actions.cardQuote.value.error"
         :button-text="actions.actionButtonText.value"
         :loading="actions.actionLoading.value"
         @confirm="actions.confirmAction"
