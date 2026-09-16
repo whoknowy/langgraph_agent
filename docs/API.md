@@ -219,7 +219,7 @@ token 有效期 7 天。过期后所有接口返回 **401**。统一处理方案
 | 支付 | POST | `/api/pay/create` | 发起支付（返回收银台地址/表单） | 是 |
 | 支付 | GET | `/api/pay/gateway/{pay_no}` | 收银台中转页（自动 POST 到渠道，**无需登录**） | 否 |
 | 支付 | POST | `/api/pay/confirm` | 站内确认支付（模拟渠道用，**body 需带 `confirm_token`**，见 4.4.3.4） | 是 |
-| 支付 | GET | `/api/pay/status?order_no=` | 查询支付状态（轮询用） | 是 |
+| 支付 | GET | `/api/pay/status?order_no=` | 查询支付状态（轮询用；**改签差价期间 `paid=false`**，见 4.4.3.5） | 是 |
 | 支付 | POST | `/api/pay/notify/alipay` | 支付宝异步通知（**无需登录**，验签+幂等） | 否 |
 | 支付 | GET | `/api/pay/return/alipay` | 支付宝同步回跳（**无需登录**，跳转结果页） | 否 |
 | 改签 | GET | `/api/change_quote` | 改签报价（新旧航班/差价） | 是 |
@@ -230,7 +230,7 @@ token 有效期 7 天。过期后所有接口返回 **401**。统一处理方案
 | 值机 | POST | `/api/checkin` | 值机/改座（返回登机牌数据） | 是 |
 | 值机 | POST | `/api/checkin/cancel` | 取消值机 | 是 |
 | 值机 | GET | `/api/checkin/boardpass` | 登机牌查询 | 是 |
-| 数据 | GET | `/api/my/orders` | 我的订单列表 | 是 |
+| 数据 | GET | `/api/my/orders` | 我的订单列表（含 `change_pending` 待付改签差价，见 4.6.1） | 是 |
 | 数据 | GET | `/api/my/complaints` | 我的投诉列表 | 是 |
 | 数据 | GET | `/api/my/notifications` | 我的通知（可只看未读） | 是 |
 | 数据 | POST | `/api/my/notifications/read` | 全部通知标记已读 | 是 |
@@ -596,8 +596,23 @@ while (source.readUtf8Line()?.also { line ->
 }
 ```
 
-`paid` 由订单状态推导（`status != "待支付"` 即已付），所以**不用自己判断
-`order_status` 的具体取值**。前端在打开收银台后按 2 秒轮询这个接口，直到
+`paid` 是**唯一**的支付结果判据，**别用 `order_status` 反推**。平时它由订单状态推导
+（`status != "待支付"` 即已付）；但在**改签补差价**期间，订单状态本身就是「已出票」，
+此时接口会明确返回 `paid: false` + `change_pending: true`——含义是「差价还没到账、
+改签还没生效」（见 4.4.5）。该分支的**全部**字段如下（`purpose` 标明这次查的是差价）：
+
+```json
+{ "order_no": "OE2E01", "order_status": "已出票", "paid": false,
+  "pay_no": null, "pay_status": "待支付", "provider": null, "amount": 40,
+  "purpose": "change_diff", "change_pending": true,
+  "change_request_id": "CHG-8f2b1c9d...",
+  "message": "改签差价 40 元待支付，支付成功后改签自动生效" }
+```
+
+> `pay_no` 在**用户还没点过「去支付」**之前是 `null`（那笔差价流水还没建），
+> 点过之后就是对应的支付流水号。
+
+前端在打开收银台后按 2 秒轮询这个接口，直到
 `paid=true` 或超时（建议 3 分钟封顶）。
 
 #### 4.4.3.6 支付宝异步通知 `POST /api/pay/notify/alipay`
@@ -678,15 +693,10 @@ while (source.readUtf8Line()?.also { line ->
 >    渠道没成功就不改签——退差价失败时返回 400 且订单保持原样（可在退款流水里重试）。
 > 2. **等差价支付期间，`/api/pay/status` 的 `paid` 是 `false`**（另带 `change_pending: true`）。
 >    因为订单状态本身就是「已出票」，**别用 `order_status != 待支付` 去判断支付结果**。
->    下面是该状态下 `/api/pay/status` 的真实响应：
+>    该状态下的完整字段见 4.4.3.5。
 
-```json
-{ "order_no": "OE2E01", "order_status": "已出票", "paid": false, "change_pending": true,
-  "change_request_id": "CHG-8f2b1c9d...", "amount": 40,
-  "message": "改签差价 40 元待支付，支付成功后改签自动生效" }
-```
-
-同场景 `POST /api/pay/create` 的真实响应（注意 `amount` 是差价、不是票款）：
+同场景 `POST /api/pay/create` 响应（**只列关键字段**，完整字段见 4.4.3.2；
+注意 `amount` 是差价、不是票款）：
 
 ```json
 { "success": true, "provider": "alipay_sandbox", "mode": "redirect",
@@ -914,13 +924,19 @@ while (source.readUtf8Line()?.also { line ->
       "route": "北京-西安", "flight_date": "2026-08-30", "dep_time": "19:29",
       "cabin": "经济", "amount": 720, "refund_amount": 720,
       "status": "已退款", "created_at": "2026-08-30",
-      "checked_in": false, "checkin_seat": "", "checkin_gate": "", "boarding_time": ""
+      "checked_in": false, "checkin_seat": "", "checkin_gate": "", "boarding_time": "",
+      "change_pending": false, "change_diff": 0, "change_target": ""
     }
   ]
 }
 ```
 
 - `checked_in: true` 时 `checkin_seat` / `checkin_gate` / `boarding_time` 有值——订单列表里可直接展示「已值机 31A」。
+- **`change_pending`：该订单有一笔「待支付差价」的改签**（订单状态仍是「已出票」，改签还没生效）。
+  为 `true` 时应在订单卡片上提示并可让用户「继续支付差价」——否则用户中途放弃付款后
+  在界面上再也回不到收银台。`change_diff` 是要补的金额，`change_target` 形如
+  `"CA1061 2026-09-21"`（说明这笔钱是为了改到哪一班）。正常订单为
+  `false / 0 / ""`（见 4.4.5）。
 - 客户端按 `status` 决定给哪些操作按钮，见 [第 7 章状态机](#7-订单状态机)。
 
 #### 4.6.2 我的投诉 `GET /api/my/complaints`
@@ -960,7 +976,7 @@ AI 客服在聊天中替用户发起操作时，**不会直接写数据库**，�
 |---|---|---|---|
 | `book_flight` | 用户想订票，AI 已查到航班 | `flight_no`、`flight_date`、`cabin`、`passengers` | `POST /api/book` |
 | `refund` | 用户想退票 | `refund_type`（`voluntary`/`special`）、`order_no` | `POST /api/refund` |
-| `change_flight` | 用户想改签 | `order_no`、`new_flight_no`、`new_date`、`new_cabin` | `POST /api/change` |
+| `change_flight` | 用户想改签 | `order_no`、`new_flight_no`、`new_date`、`new_cabin` | `POST /api/change`（可能返回 `need_pay`，见下方） |
 | `seat_map` | 用户要值机选座 | `order_no`、`flight_no`、`flight_date` | 打开选座面板：`GET /api/checkin/seats` → `POST /api/checkin` |
 
 客户端渲染卡片的标准姿势（以订票为例）：
@@ -970,6 +986,12 @@ AI 客服在聊天中替用户发起操作时，**不会直接写数据库**，�
 3. 展示卡片：航班信息 + 单价 × 人数 = 总价 + 「确认预订」「取消」两个按钮；
 4. 用户点确认 → `POST /api/book`（参数用卡片字段 + **上一步的 `confirm_token`**）→ 成功后提示订单号，并引导支付 `POST /api/pay/create`（→ `direct` 带凭证确认 / `redirect` 开收银台，见 4.4.3）；
 5. 支付完成可顺带提示「可以去值机了」。退票/改签/值机卡片同理：**先调对应准备接口（`*_quote` / `checkin/seats`）拿实时数据和新凭证，再带凭证调写接口**。
+
+**改签卡片要多做一件事**：卡片字段里**没有差价**（只有订单号和新航班/日期/舱位），
+所以渲染时要调 `GET /api/change_quote` 拿 `fare_diff`/`diff_desc`，把
+「需补差价 ¥X / 退回差价 ¥X」**显示在「确认改签」按钮之前**——否则用户要点到支付宝
+收银台才知道自己要补多少钱。且 `POST /api/change` 返回 `need_pay: true` 时表示
+**订单还没改**，客户端应接着走 `POST /api/pay/create` 收差价（详见 4.4.5）。
 
 > 卡片字段来自 AI 的工具调用参数，个别字段可能缺失或格式不规整（比如人数传了字符串）。**客户端只把它们当「预填值」**，提交前用报价接口校验，业务错误后端会返回 400 + 人话提示，展示给用户即可。
 
@@ -1102,6 +1124,13 @@ POST /api/checkin {order_no, seat_no:"31A", confirm_token}
   退差价先调 `alipay.trade.refund` 原路退回成功后才改签、无差价直接改签；新增改签幂等键 `requestId`。
   重写 4.4.5 并补充 `/api/pay/create` 可能收差价（`purpose: change_diff`）与
   差价支付期间 `/api/pay/status` 的语义（`paid=false` + `change_pending`）。
+- 2026-09-16（同一批，补漏 + 纠错）：
+  - **4.4.3.5 原文"`paid` 由订单状态推导"已不成立**（改签差价期间订单状态是「已出票」
+    但 `paid=false`）→ 改为「只看 `paid`，别用 `order_status` 反推」并补响应示例；
+  - 4.6.1 我的订单补 `change_pending` / `change_diff` / `change_target` 三字段；
+  - 第 5 章卡片补「改签卡片必须先调 `/api/change_quote` 把差价显示在按钮之前」；
+  - 4.4.5 补两条走向（同 `requestId` 重放、已有待付差价又改别的航班 →
+    `blocked_by_pending_change`）；接口总表给 `/api/pay/status`、`/api/my/orders` 加了指引。
 - 2026-09-09：会话列表补充 `created_at_ts`；修复 LangGraph `/state` 重启后偶发为空导致聊天记录/会话预览丢失的问题。
 - 2026-09-09：修复 LangGraph 重启后旧线程 checkpoint 丢失、继续对话时覆盖历史的问题（发送前自动回填线程 values 中的历史消息）。
 - 2026-09-09：座位图改为「初始全部可选、真实值机后才占用」，不再随机模拟预占座位；补充 `free` / `total` 为全舱位统计说明。
