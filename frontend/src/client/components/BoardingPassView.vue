@@ -44,9 +44,7 @@
           <div class="bp-field"><span>登机时间</span><strong>{{ bp.boarding_time }}</strong></div>
         </div>
         <div class="bp-qr">
-          <div class="qr-grid">
-            <div v-for="n in 100" :key="n" :class="{ dark: (n * 7) % 3 === 0 || (n * 13) % 5 === 0 }"></div>
-          </div>
+          <canvas ref="qrCanvas" class="qr-canvas" aria-label="登机二维码"></canvas>
           <div class="muted">扫码登机</div>
         </div>
       </div>
@@ -59,8 +57,9 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
+import QRCode from 'qrcode'
 import { api, qs } from '@/shared/api.js'
 
 const orders = ref([])
@@ -68,10 +67,38 @@ const selectedOrderNo = ref('')
 const bp = ref(null)
 const loading = ref(false)
 const error = ref('')
+const qrCanvas = ref(null)
 
 const boardedOrders = computed(() => orders.value.filter(o => o.checked_in && o.checkin_seat))
 
 const route = useRoute()
+
+// 二维码内容：登机牌关键信息的纯文本（手机扫出来可直接阅读，演示时真扫真验）。
+// 不放 member_id / order_id 之外敏感信息；真要对接闸机再换成签名票据。
+function qrPayload(d) {
+  return [
+    '登机牌 BOARDING PASS',
+    `${d.flight_no}  ${d.flight_date}  起飞 ${d.dep_time}`,
+    `${d.passenger}  座位 ${d.seat_no}  登机口 ${d.gate}`,
+    `订单 ${d.order_no}`,
+  ].join('\n')
+}
+
+async function drawQr() {
+  const canvas = qrCanvas.value
+  if (!canvas || !bp.value) return
+  try {
+    await QRCode.toCanvas(canvas, qrPayload(bp.value), {
+      width: 220, margin: 1, errorCorrectionLevel: 'M',
+      color: { dark: '#1e293b', light: '#ffffff' },
+    })
+  } catch (e) {
+    console.error('二维码生成失败', e)
+  }
+}
+
+// bp 每次变化（切换订单/重新加载）后重绘；flush:'post' 保证 canvas 已挂载
+watch(bp, drawQr, { flush: 'post' })
 
 onMounted(async () => {
   try {
@@ -100,6 +127,8 @@ async function loadBoardPass() {
   try {
     const d = await api('/api/checkin/boardpass' + qs({ order_no: selectedOrderNo.value }))
     bp.value = d
+    await nextTick()
+    await drawQr()
   } catch (e) {
     error.value = e.message
   } finally {
@@ -146,12 +175,11 @@ async function loadBoardPass() {
 .bp-field strong { font-size: 15px; }
 .highlight { color: var(--primary); font-size: 18px; }
 .bp-qr { text-align: center; }
-.qr-grid {
-  width: 100px; height: 100px; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
-  display: grid; grid-template-columns: repeat(10, 1fr); gap: 2px; padding: 6px; margin: 0 auto 6px;
+.qr-canvas {
+  width: 110px; height: 110px; display: block; margin: 0 auto 6px;
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 6px;
+  box-sizing: content-box;
 }
-.qr-grid div { background: #fff; }
-.qr-grid div.dark { background: #1e293b; }
 .bp-bottom { padding: 18px 26px; display: flex; justify-content: space-between; font-size: 13px; flex-wrap: wrap; gap: 6px; }
 .bp-note { opacity: .85; }
 
