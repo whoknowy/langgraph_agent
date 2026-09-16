@@ -44,7 +44,9 @@
           <div class="bp-field"><span>登机时间</span><strong>{{ bp.boarding_time }}</strong></div>
         </div>
         <div class="bp-qr">
-          <canvas ref="qrCanvas" class="qr-canvas" aria-label="登机二维码"></canvas>
+          <img v-if="qrDataUrl" :src="qrDataUrl" class="qr-img" alt="登机二维码">
+          <div v-else-if="qrError" class="qr-error">{{ qrError }}</div>
+          <div v-else class="qr-placeholder">二维码生成中…</div>
           <div class="muted">扫码登机</div>
         </div>
       </div>
@@ -57,9 +59,11 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import QRCode from 'qrcode'
+import * as QRCodeModule from 'qrcode'
+// 兼容不同打包器的 CJS 互操形态：默认导出可能是模块本身或挂在 .default 上
+const QRCode = QRCodeModule.default ?? QRCodeModule
 import { api, qs } from '@/shared/api.js'
 
 const orders = ref([])
@@ -67,14 +71,15 @@ const selectedOrderNo = ref('')
 const bp = ref(null)
 const loading = ref(false)
 const error = ref('')
-const qrCanvas = ref(null)
+const qrDataUrl = ref('')
+const qrError = ref('')
 
 const boardedOrders = computed(() => orders.value.filter(o => o.checked_in && o.checkin_seat))
 
 const route = useRoute()
 
 // 二维码内容：登机牌关键信息的纯文本（手机扫出来可直接阅读，演示时真扫真验）。
-// 不放 member_id / order_id 之外敏感信息；真要对接闸机再换成签名票据。
+// 不放会员号等敏感信息；真要对接闸机再换成服务端签名的票据。
 function qrPayload(d) {
   return [
     '登机牌 BOARDING PASS',
@@ -85,20 +90,23 @@ function qrPayload(d) {
 }
 
 async function drawQr() {
-  const canvas = qrCanvas.value
-  if (!canvas || !bp.value) return
+  if (!bp.value) return
+  qrError.value = ''
   try {
-    await QRCode.toCanvas(canvas, qrPayload(bp.value), {
+    // 用 toDataURL 生成图片（不依赖 canvas 元素与挂载时序），拿到的就是 <img> 可直接用的地址
+    qrDataUrl.value = await QRCode.toDataURL(qrPayload(bp.value), {
       width: 220, margin: 1, errorCorrectionLevel: 'M',
       color: { dark: '#1e293b', light: '#ffffff' },
     })
   } catch (e) {
-    console.error('二维码生成失败', e)
+    // 生成失败时把原因亮出来，绝不再默默留一张空白登机牌
+    qrDataUrl.value = ''
+    qrError.value = `二维码生成失败：${e && e.message ? e.message : e}`
   }
 }
 
-// bp 每次变化（切换订单/重新加载）后重绘；flush:'post' 保证 canvas 已挂载
-watch(bp, drawQr, { flush: 'post' })
+// bp 每次变化（切换订单/重新加载）后重新生成
+watch(bp, drawQr)
 
 onMounted(async () => {
   try {
@@ -127,8 +135,6 @@ async function loadBoardPass() {
   try {
     const d = await api('/api/checkin/boardpass' + qs({ order_no: selectedOrderNo.value }))
     bp.value = d
-    await nextTick()
-    await drawQr()
   } catch (e) {
     error.value = e.message
   } finally {
@@ -175,11 +181,17 @@ async function loadBoardPass() {
 .bp-field strong { font-size: 15px; }
 .highlight { color: var(--primary); font-size: 18px; }
 .bp-qr { text-align: center; }
-.qr-canvas {
+.qr-img {
   width: 110px; height: 110px; display: block; margin: 0 auto 6px;
   background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 6px;
   box-sizing: content-box;
 }
+.qr-placeholder, .qr-error {
+  width: 110px; height: 110px; margin: 0 auto 6px; display: flex; align-items: center; justify-content: center;
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+  font-size: 11px; color: #94a3b8; padding: 6px; box-sizing: border-box;
+}
+.qr-error { color: #dc2626; }
 .bp-bottom { padding: 18px 26px; display: flex; justify-content: space-between; font-size: 13px; flex-wrap: wrap; gap: 6px; }
 .bp-note { opacity: .85; }
 
