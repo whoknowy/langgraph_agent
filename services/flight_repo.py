@@ -343,7 +343,11 @@ def get_order_bill(member_id: str = None, order_no: str = None) -> dict:
         for p in conn.execute(
                 f"SELECT * FROM change_requests WHERE status = ? AND order_no IN ({marks})",
                 (CHANGE_PENDING_STATUS, *[r["order_no"] for r in rows])).fetchall():
-            pending[p["order_no"]] = dict(p)
+            row_p = dict(p)
+            # 差价支付已超时作废的不再提示「继续支付」（否则点进去只会又跳一次收银台）
+            if _change_payment_expired(row_p):
+                continue
+            pending[row_p["order_no"]] = row_p
     conn.close()
     if not rows:
         return {"error": "未找到该会员/订单的账单记录"}
@@ -1111,6 +1115,44 @@ CHANGE_DONE_STATUS = "已改签"
 CHANGE_REFUND_FAILED_STATUS = "差价退款失败"
 # 钱已按差价退回、但订单没能改（极端并发）：必须人工收口，不能静默重试
 CHANGE_MANUAL_STATUS = "待人工改签"
+# 超时未支付被关掉（用户放弃补差价）——订单本来就没动，清掉这道闸而已
+CHANGE_CANCELED_STATUS = "已取消"
+
+
+def _change_payment_expired(row: dict) -> bool:
+    """这笔「待支付差价」是否已经超时作废。
+
+    不判它的话，用户一旦在收银台放弃付款，这笔待付差价会**永久锁死**该订单
+    以后的改签（只能改回同一班继续付），而报错文案却写着"可等超时后再改签"。
+    """
+    from services import payment_repo
+    pay_no = (row or {}).get("pay_no")
+    if pay_no:
+        p = payment_repo.get_payment(pay_no)
+        if p:
+            # 流水已关闭 → 作废；仍待支付 → 还活着（别抢用户的付款机会）
+            return p["status"] != "待支付"
+    try:
+        created = datetime.strptime(row["created_at"], "%Y-%m-%d %H:%M:%S")
+    except (KeyError, TypeError, ValueError):
+        return False
+    minutes = payment_repo.DEFAULT_PAY_TIMEOUT_MINUTES
+    return (datetime.now() - created).total_seconds() > minutes * 60
+
+
+def _cancel_change(request_id: str) -> bool:
+    """关闭超时未支付的改签流水（订单没动过，只需把闸放开）。"""
+    conn = _conn()
+    try:
+        cur = conn.execute(
+            "UPDATE change_requests SET status = ?, updated_at = ? "
+            "WHERE request_id = ? AND status = ?",
+            (CHANGE_CANCELED_STATUS, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+             request_id, CHANGE_PENDING_STATUS))
+        conn.commit()
+        return cur.rowcount == 1
+    finally:
+        conn.close()
 
 
 def _new_change_request_id(order_no: str) -> str:
@@ -1374,6 +1416,10 @@ def begin_change(order_no: str, member_id: str, new_flight_no: str, new_date: st
     # 该订单还挂着一笔未支付的改签差价：目标相同就让用户接着付（同一个 requestId 除外）；
     # 目标不同则拒绝——否则会留下两笔悬挂的待付差价，说不清到底要改哪一班。
     open_change = get_pending_change(order_no)
+    if open_change and _change_payment_expired(open_change):
+        # 上一笔差价支付已超时作废（用户放弃/流水已关闭）→ 自动放开，别永久锁死改签
+        _cancel_change(open_change["request_id"])
+        open_change = None
     if open_change and open_change["request_id"] != request_id:
         same_target = (open_change["new_flight_no"], open_change["new_date"],
                        open_change["new_cabin"]) == (quote["new"]["flight_no"],

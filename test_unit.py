@@ -1282,6 +1282,34 @@ class TestChangeSettlement:
         assert same.get("need_pay") is True and same["request_id"] == "RQ-CHG-7a"
         assert self._order_row("OCN07")["status"] == "已出票"
 
+    def test_expired_diff_payment_unblocks_change(self):
+        """差价支付超时作废后，改签不该被永久锁死（报错文案承诺过这点）。"""
+        from services import flight_repo, security
+        security.set_current_member("M1001")
+        _insert_order("OCN08", amount=600)
+        self._add_flight("CA9002", FUTURE, 900)
+        self._add_flight("CA9005", FUTURE, 1200)
+        first = flight_repo.begin_change("OCN08", "M1001", "CA9002", FUTURE, "经济",
+                                        request_id="RQ-CHG-8a")
+        assert first.get("need_pay") is True
+
+        stale = (datetime.now() - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+        conn = db.get_connection()
+        conn.execute("UPDATE change_requests SET created_at = ? WHERE request_id = 'RQ-CHG-8a'",
+                     (stale,))
+        conn.commit()
+        conn.close()
+
+        # 未超时的旧流水会拦下别的目标；超时后应该放行
+        other = flight_repo.begin_change("OCN08", "M1001", "CA9005", FUTURE, "经济",
+                                         request_id="RQ-CHG-8b")
+        assert other.get("need_pay") is True and other["request_id"] == "RQ-CHG-8b"
+        assert flight_repo.get_change_by_request("RQ-CHG-8a")["status"] == "已取消"
+        # 账单里也不该再提示那笔死掉的差价
+        bill = flight_repo.get_order_bill(member_id="M1001")
+        row = next(o for o in bill["orders"] if o["order_no"] == "OCN08")
+        assert row["change_pending"] is True and "CA9005" in row["change_target"]
+
     def test_same_price_applies_directly(self):
         """无差价：不产生任何渠道动作，直接改签。"""
         from services import flight_repo, security
