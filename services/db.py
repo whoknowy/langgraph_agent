@@ -221,6 +221,34 @@ CREATE TABLE IF NOT EXISTS refunds (
 );
 CREATE INDEX IF NOT EXISTS idx_refunds_order ON refunds(order_no);
 
+-- 改签流水：request_id 是幂等键。改签的差价必须真的走渠道（多退少补），
+-- 所以差价 > 0 时先落一行「待支付差价」，支付宝收款成功后才把订单改成「已改签」；
+-- 差价 < 0 时先调渠道退款，成功后才改签。绝不出现「已改签但钱没结清」。
+CREATE TABLE IF NOT EXISTS change_requests (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id   TEXT UNIQUE NOT NULL,
+    order_no     TEXT NOT NULL,
+    member_id    TEXT NOT NULL,
+    old_flight_no TEXT,                -- 改签前的航班/日期：落库时快照，改签生效时用它做并发守卫
+    old_date      TEXT,
+    new_flight_no TEXT NOT NULL,
+    new_date      TEXT NOT NULL,
+    new_cabin     TEXT NOT NULL,
+    old_amount    INTEGER NOT NULL DEFAULT 0,
+    new_amount    INTEGER NOT NULL DEFAULT 0,
+    fare_diff     INTEGER NOT NULL DEFAULT 0,   -- >0 需补差价 / <0 退回差价 / 0 无差价
+    status        TEXT NOT NULL,                -- 待支付差价 / 已改签 / 差价退款失败 / 已取消
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT,
+    pay_no            TEXT,            -- 差价支付流水（payments.pay_no）
+    refund_request_id TEXT,            -- 差价退款请求号（refunds.request_id）
+    channel           TEXT,            -- 渠道名（差价退款用；补差价走 payments 表留痕）
+    channel_status    TEXT,
+    channel_error     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_change_order ON change_requests(order_no);
+CREATE INDEX IF NOT EXISTS idx_change_pay   ON change_requests(pay_no);
+
 -- 一次性确认凭证：写操作必须先拿到它（用户确认过），服务端消费后才执行。
 -- 绑定 会员+动作+目标+参数指纹，用完即废，过期作废。
 CREATE TABLE IF NOT EXISTS confirm_tokens (

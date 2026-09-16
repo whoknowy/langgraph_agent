@@ -76,26 +76,36 @@ def start_payment(order_no: str, member_id: str = None, provider_name: str = Non
     denied = _enforce_order_owner(order, "支付")
     if denied:
         return denied
-    if order["status"] != "待支付":
+
+    from services import flight_repo
+    # 改签补差价：订单早已是「已出票/已改签」，这时该收的不是票款而是差价。
+    # 收谁的款由服务端的改签流水决定 —— 前端不区分，仍走同一个 /api/pay/create。
+    pending_change = flight_repo.get_pending_change(order["order_no"])
+    if not pending_change and order["status"] != "待支付":
         return {"error": f"订单状态为「{order['status']}」，无需支付"}
+    amount = float(pending_change["fare_diff"]) if pending_change else float(order["amount"])
 
     try:
         provider = get_provider(provider_name)
     except Exception as e:
         return {"error": f"支付渠道不可用：{e}"}
 
-    payment = payment_repo.create_payment(order["order_no"], order["amount"], provider.name)
+    payment = payment_repo.create_payment(order["order_no"], amount, provider.name)
+    if pending_change:
+        # 把流水挂到改签单上：回调落账时靠它判断「该改签」而不是「该出票」
+        flight_repo.attach_change_payment(pending_change["request_id"], payment["pay_no"])
     result = provider.create_payment(
         pay_no=payment["pay_no"],
-        subject=subject or f"机票订单 {order['order_no']}",
-        amount=float(order["amount"]),
+        subject=subject or (f"改签差价 {order['order_no']}" if pending_change
+                            else f"机票订单 {order['order_no']}"),
+        amount=amount,
         return_url=return_url or "",
         notify_url=notify_url or "",
     )
     if not result.get("ok"):
         return {"error": result.get("error") or "支付发起失败"}
 
-    return {
+    payload = {
         "success": True,
         "provider": provider.name,
         "provider_label": provider.label,
@@ -103,9 +113,14 @@ def start_payment(order_no: str, member_id: str = None, provider_name: str = Non
         "pay_url": result.get("pay_url"),
         "pay_no": payment["pay_no"],
         "order_no": order["order_no"],
-        "amount": float(order["amount"]),
+        "amount": amount,
         "message": result.get("message") or "请在收银台完成付款",
     }
+    if pending_change:
+        payload.update({"purpose": "change_diff",
+                        "fare_diff": int(pending_change["fare_diff"]),
+                        "change_request_id": pending_change["request_id"]})
+    return payload
 
 
 def settle_payment(pay_no: str = None, out_trade_no: str = None, *,
@@ -141,17 +156,30 @@ def settle_payment(pay_no: str = None, out_trade_no: str = None, *,
     # 异步回调没有登录身份，属于系统内部流程：显式声明 system_context，
     # 让仓库层的归属校验按"系统流程"放行（归属已在发起支付时校验过）。
     with security.system_context("支付异步回调落账"):
-        result = flight_repo.pay_order(payment["order_no"])
+        # 这笔流水是「改签补差价」还是「票款」？决定收款成功后该改签还是该出票。
+        change = flight_repo.get_change_by_pay_no(payment["pay_no"])
+        if change:
+            result = flight_repo.apply_change(change["order_no"], change["request_id"])
+        else:
+            result = flight_repo.pay_order(payment["order_no"])
     if result.get("error"):
-        # 钱已收但订单推进不了（典型：支付期间订单被超时任务取消）
+        # 钱已收但业务推进不了（典型：支付期间订单被超时任务取消 / 订单状态被别人改过）
+        action = "改签" if change else "出票"
         order = _load_order(payment["order_no"])
         if order:
             _notify(order["member_id"], "支付异常",
                     f"订单 {payment['order_no']} 已收款 ¥{payment['amount']}，"
-                    f"但出票失败（{result['error']}）。客服将尽快与您联系处理退款。")
+                    f"但{action}失败（{result['error']}）。客服将尽快与您联系处理退款。")
         return {"success": True, "settled": False, "pay_no": pay_no,
                 "order_no": payment["order_no"],
-                "warning": f"已收款但未能出票：{result['error']}（需人工处理）"}
+                "warning": f"已收款但未能{action}：{result['error']}（需人工处理）"}
+
+    if change:
+        # 改签差价不改动订单的「首次支付」信息（pay_channel/paid_at 属于原票款）
+        return {"success": True, "settled": True, "pay_no": pay_no,
+                "order_no": payment["order_no"], "amount": payment["amount"],
+                "purpose": "change_diff",
+                "message": f"差价支付成功，订单 {payment['order_no']} 改签已生效"}
 
     _mark_order_paid(payment["order_no"], provider_name or payment["provider"])
     return {"success": True, "settled": True, "pay_no": pay_no,
@@ -187,6 +215,27 @@ def get_payment_status(order_no: str, member_id: str = None) -> Dict[str, Any]:
     denied = _enforce_order_owner(order, "查询支付状态")
     if denied:
         return denied
+
+    from services import flight_repo
+    pending = flight_repo.get_pending_change(order["order_no"])
+    if pending:
+        # 改签补差价期间：订单本身早就是「已出票/已改签」，若沿用下面那句
+        # `paid = status != 待支付`，前端一跳收银台就会被判成"已支付、改签成功"。
+        # 所以这里的 paid 必须表示「差价已到账、改签已生效」。
+        return {
+            "order_no": order["order_no"],
+            "order_status": order["status"],
+            "paid": False,
+            "pay_no": pending["pay_no"],
+            "pay_status": "待支付",
+            "provider": None,
+            "amount": int(pending["fare_diff"]),
+            "purpose": "change_diff",
+            "change_pending": True,
+            "change_request_id": pending["request_id"],
+            "message": f"改签差价 {pending['fare_diff']} 元待支付，支付成功后改签自动生效",
+        }
+
     payment = payment_repo.get_latest_payment(order_no)
     return {
         "order_no": order["order_no"],

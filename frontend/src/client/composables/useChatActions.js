@@ -139,9 +139,22 @@ export function useChatActions(chat) {
         const d = await api('/api/change', { method: 'POST', body: {
           order_no: a.order_no, new_flight_no: a.new_flight_no,
           new_date: a.new_date, new_cabin: a.new_cabin,
+          requestId: newRequestId('change'),   // 幂等键：聊天里重发不会改两次
           confirm_token: await ensureToken(a)
         }})
-        pushAssistant(`✅ ${d.message || '改签成功'}`)
+        if (d.need_pay) {
+          // 差价未付 → 订单还没改，必须补齐才生效。
+          // 这里不能用 window.open（confirmDialog 之后手势已失效），只能当前页跳收银台；
+          // 付款成功后后端会自动落成改签，支付结果页会把用户带回订单列表。
+          pushAssistant(`需要补差价 ¥${d.fare_diff}，正在前往支付宝收银台…`)
+          const ok = await pay(a.order_no, { paidText: '差价支付成功，改签已生效' })
+          pushAssistant(ok
+            ? `✅ 差价已支付，订单 ${a.order_no} 改签已生效`
+            : `订单 ${a.order_no} 的差价尚未支付完成，可到「我的订单」继续支付。`)
+        } else {
+          // 无差价（或已原路退回差价）→ 改签已生效，message 里已带上差价说明
+          pushAssistant(`✅ ${d.message || '改签成功'}`)
+        }
         pendingAction.value = null
       } else if (a.type === 'seat_map') {
         const d = await api('/api/checkin/seats' + qs({ flight_no: a.flight_no, flight_date: a.flight_date, order_no: a.order_no }))

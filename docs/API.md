@@ -223,7 +223,7 @@ token 有效期 7 天。过期后所有接口返回 **401**。统一处理方案
 | 支付 | POST | `/api/pay/notify/alipay` | 支付宝异步通知（**无需登录**，验签+幂等） | 否 |
 | 支付 | GET | `/api/pay/return/alipay` | 支付宝同步回跳（**无需登录**，跳转结果页） | 否 |
 | 改签 | GET | `/api/change_quote` | 改签报价（新旧航班/差价） | 是 |
-| 改签 | POST | `/api/change` | 执行改签 | 是 |
+| 改签 | POST | `/api/change` | 执行改签（差价走渠道，补差价会返回 `need_pay`，见 4.4.5） | 是 |
 | 退票 | GET | `/api/refund_quote` | 自愿退票报价（手续费/到账） | 是 |
 | 退票 | POST | `/api/refund` | 退票（voluntary 即时 / special 人工审核），经支付宝原路退回 | 是 |
 | 值机 | GET | `/api/checkin/seats` | 座位图 | 是 |
@@ -553,6 +553,9 @@ while (source.readUtf8Line()?.also { line ->
 - `confirm_token` 是一次性支付凭证（15 分钟有效），`direct` 分支回传给 4.4.3.4；
   `redirect` 分支用不到，忽略即可。
 - `amount` 是数字不是字符串。
+- **`amount` 不一定是票款**：如果该订单有一笔待支付的**改签差价**（见 4.4.5），
+  这里收的就是差价，响应会多带 `"purpose": "change_diff"` + `"fare_diff"` + `"change_request_id"`；
+  付成功后订单落成「已改签」，而不是重复出票。客户端按同一个流程处理即可，无需分支。
 - 同一订单 + 同渠道 + 同金额会**复用**已有的待支付流水，不会堆积悬挂记录。
 - 订单 15 分钟未支付会被自动取消（后端定时任务），取消后支付接口返回 400。
 
@@ -642,12 +645,46 @@ while (source.readUtf8Line()?.also { line ->
 
 #### 4.4.5 执行改签 `POST /api/change`
 
+**差价一律走渠道**（多退少补都落到支付宝），所以改签可能是**两段式**的：
+
 ```json
 { "order_no": "O4832015", "new_flight_no": "MU5101", "new_date": "2026-09-09", "new_cabin": "经济",
-  "confirm_token": "KwMDnSV7WEcWkuJ17LxH..." }
+  "requestId": "CHG-8f2b1c9d...", "confirm_token": "KwMDnSV7WEcWkuJ17LxH..." }
 ```
 
-成功：`{"success": true, "order_no": "...", "status": "已改签", "old": {...}, "new": {...}, "fare_diff": 20, "message": "...原值机已取消，请重新值机"}`
+`requestId` 是**改签幂等键**（双击/断网重发不会改两次；不传时服务端兜底生成），
+它同时兼作差价退款的渠道请求号。
+
+按报价里的 `fare_diff` 分三种走向：
+
+| 差价 | 响应 | 客户端还要做什么 |
+|---|---|---|
+| **> 0 补差价** | `{"success": true, "need_pay": true, "fare_diff": 40, "request_id": "CHG-...", "message": "改签需补差价 40 元，请先完成支付；支付成功后改签自动生效"}`——**订单此时一点没动** | 接着走支付：`POST /api/pay/create`（收的就是差价，响应带 `"purpose": "change_diff"`、`"amount": 40`）→ 跳收银台 → 轮询 `/api/pay/status`。**支付成功后服务端自动把订单落成「已改签」**，前端不用再调本接口 |
+| **< 0 退差价** | `{"success": true, "refunded": true, "fare_diff": -40, "refund": {...}, "message": "订单 ... 已改签至 ...；差价 40 元已原路退回"}` | 已经改签完成，不用再做别的 |
+| **= 0 无差价** | `{"success": true, "order_no": "...", "status": "已改签", "old": {...}, "new": {...}, "fare_diff": 0, "message": "..."}` | 直接完成 |
+
+> ⚠️ 两条服务端强制的不变量（实测已锁进单测）：
+> 1. **订单变成「已改签」⇔ 差价必然已结清**。补差价先收款、退差价先原路退款；
+>    渠道没成功就不改签——退差价失败时返回 400 且订单保持原样（可在退款流水里重试）。
+> 2. **等差价支付期间，`/api/pay/status` 的 `paid` 是 `false`**（另带 `change_pending: true`）。
+>    因为订单状态本身就是「已出票」，**别用 `order_status != 待支付` 去判断支付结果**。
+>    下面是该状态下 `/api/pay/status` 的真实响应：
+
+```json
+{ "order_no": "OE2E01", "order_status": "已出票", "paid": false, "change_pending": true,
+  "change_request_id": "CHG-8f2b1c9d...", "amount": 40,
+  "message": "改签差价 40 元待支付，支付成功后改签自动生效" }
+```
+
+同场景 `POST /api/pay/create` 的真实响应（注意 `amount` 是差价、不是票款）：
+
+```json
+{ "success": true, "provider": "alipay_sandbox", "mode": "redirect",
+  "pay_no": "P09161919003681", "order_no": "OE2E01", "amount": 40.0,
+  "purpose": "change_diff", "fare_diff": 40, "change_request_id": "CHG-8f2b1c9d...",
+  "pay_url": "http://<你的域名>/api/pay/gateway/P09161919003681",
+  "message": "请在支付宝收银台完成付款" }
+```
 
 #### 4.4.6 退票报价 `GET /api/refund_quote?order_no=O4832015`
 
@@ -964,8 +1001,13 @@ POST /api/checkin {order_no, seat_no:"31A", confirm_token}
 
 ```
 改签：改签卡片确认后 → GET /api/change_quote（新旧航班+差价+confirm_token）
-      → POST /api/change（带 confirm_token）
-      成功后原值机被自动取消，status=已改签，需要重新值机
+      → POST /api/change { confirm_token, requestId }
+      ├─ 差价 > 0（需补差）：订单**暂不改**，响应 need_pay=true
+      │   → POST /api/pay/create（收差价）→ 跳收银台 → 轮询 /api/pay/status
+      │   → 支付成功后服务端自动把订单落成「已改签」，客户端不用再调 /api/change
+      ├─ 差价 < 0（退差价）：服务端先原路退回差价，成功后才改签，一次调用即完成
+      └─ 差价 = 0：直接改签
+      改签成功后原值机被自动取消，status=已改签，需要重新值机
 自愿退票：GET /api/refund_quote（手续费档位+到账金额+confirm_token）
           → POST /api/refund {refund_type:"voluntary", confirm_token, requestId}
           即时到账，status=已退款（requestId 幂等，重试复用同一个）
@@ -1045,6 +1087,11 @@ POST /api/checkin {order_no, seat_no:"31A", confirm_token}
 
 ## 10. 文档更新记录
 
+- 2026-09-16：**改签差价接入支付宝（多退少补都落渠道）**。`POST /api/change` 变为按差价分流：
+  补差价返回 `need_pay`（订单暂不改，走 `/api/pay/create` 收差价，收款成功后服务端自动落成改签）、
+  退差价先调 `alipay.trade.refund` 原路退回成功后才改签、无差价直接改签；新增改签幂等键 `requestId`。
+  重写 4.4.5 并补充 `/api/pay/create` 可能收差价（`purpose: change_diff`）与
+  差价支付期间 `/api/pay/status` 的语义（`paid=false` + `change_pending`）。
 - 2026-09-09：会话列表补充 `created_at_ts`；修复 LangGraph `/state` 重启后偶发为空导致聊天记录/会话预览丢失的问题。
 - 2026-09-09：修复 LangGraph 重启后旧线程 checkpoint 丢失、继续对话时覆盖历史的问题（发送前自动回填线程 values 中的历史消息）。
 - 2026-09-09：座位图改为「初始全部可选、真实值机后才占用」，不再随机模拟预占座位；补充 `free` / `total` 为全舱位统计说明。

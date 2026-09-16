@@ -46,8 +46,9 @@ export function usePay({ onPaid, onStateChange } = {}) {
   /**
    * 轮询支付结果。单次请求失败不中断（网络抖动/后端重启都可能），
    * 到上限后提示用户手动刷新，并返回 false。
+   * @param {string} [paidText] 成功提示文案（改签差价支付与票款支付的文案不同）
    */
-  function waitPaid(orderNo) {
+  function waitPaid(orderNo, paidText) {
     return new Promise((resolve) => {
       setPaying(orderNo)
       let ticks = 0
@@ -58,7 +59,7 @@ export function usePay({ onPaid, onStateChange } = {}) {
           const s = await api('/api/pay/status' + qs({ order_no: orderNo }))
           if (s.paid) {
             stopPoll()
-            toastSuccess('支付成功，订单已出票')
+            toastSuccess(paidText || '支付成功，订单已出票')
             if (onPaid) await onPaid(orderNo)
             resolve(true)
             return
@@ -83,23 +84,25 @@ export function usePay({ onPaid, onStateChange } = {}) {
    * @param {Window} [opts.win] 预先打开的窗口。
    *   **必须在用户点击的同步阶段先 window.open('') 拿到它**，
    *   否则 await 之后再开窗口会脱离用户手势上下文，被浏览器当弹窗拦截。
+   * @param {string} [opts.paidText] 支付成功提示文案（默认是「已出票」，
+   *   改签差价支付要传自己的文案，否则会误报"已出票"）
    * @returns {Promise<boolean>} 是否已支付成功
    */
-  async function pay(orderNo, { win } = {}) {
+  async function pay(orderNo, { win, paidText } = {}) {
     try {
       const d = await api('/api/pay/create', { method: 'POST', body: { order_no: orderNo } })
 
       if (d.mode === 'redirect' && d.pay_url) {
         if (win) win.location.href = d.pay_url
         else window.location.href = d.pay_url
-        return await waitPaid(orderNo)
+        return await waitPaid(orderNo, paidText)
       }
 
       // direct 模式：站内一步确认（mock 渠道）
       if (win) win.close()
       // confirm_token 由 /api/pay/create 签发：服务端要求"用户确认过支付"才允许落账
       const r = await api('/api/pay/confirm', { method: 'POST', body: { pay_no: d.pay_no, confirm_token: d.confirm_token } })
-      toastSuccess(r.message || '支付成功，已出票')
+      toastSuccess(paidText || r.message || '支付成功，已出票')
       if (onPaid) await onPaid(orderNo)
       return true
     } catch (e) {

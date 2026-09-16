@@ -1109,6 +1109,197 @@ class TestCheckinFlow:
         assert ck is None
 
 
+# ---------------------------------------------------------------- 改签差价结算（多退少补落渠道）
+
+class TestChangeSettlement:
+    """改签差价必须真的走渠道：补差价先收款、退差价先退款，钱没结清就不改签。
+
+    锁的是「订单已改签 ⇒ 差价必然已结清」这个不变量。它以前是**假的**：
+    change_order 只改订单金额、完全不碰渠道（负差价连退款流水都不产生）。
+    """
+
+    @staticmethod
+    def _add_flight(flight_no, date_str, econ, dep_time="23:30"):
+        """加一班同航线航班（PEK→SHA）并给出该日期的经济舱票价。"""
+        conn = db.get_connection()
+        conn.execute(
+            "INSERT OR REPLACE INTO flights (flight_no, airline_code, dep_iata, arr_iata, "
+            "dep_time, arr_time, duration_min, aircraft, freq_days) VALUES (?,?,?,?,?,?,?,?,?)",
+            (flight_no, "CA", "PEK", "SHA", dep_time, "23:59", 130, "B737", "1234567"))
+        conn.execute(
+            "INSERT OR REPLACE INTO flight_prices (flight_no, flight_date, cabin, price) "
+            "VALUES (?,?,?,?)", (flight_no, date_str, "经济", econ))
+        conn.commit()
+        conn.close()
+
+    @staticmethod
+    def _paid_payment(order_no, amount):
+        """造一笔「已支付成功」的渠道流水（退差价的依据）。"""
+        conn = db.get_connection()
+        conn.execute(
+            "INSERT INTO payments (pay_no, order_no, provider, out_trade_no, amount, status, "
+            "created_at) VALUES (?,?,?,?,?,?,?)",
+            (f"P-{order_no}", order_no, "mock", f"P-{order_no}", amount, "支付成功",
+             datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        conn.close()
+
+    @staticmethod
+    def _order_row(order_no):
+        conn = db.get_connection()
+        r = conn.execute("SELECT flight_no, amount, status FROM orders WHERE order_no = ?",
+                         (order_no,)).fetchone()
+        conn.close()
+        return dict(r) if r else None
+
+    @staticmethod
+    def _change_row(request_id):
+        conn = db.get_connection()
+        r = conn.execute("SELECT * FROM change_requests WHERE request_id = ?",
+                         (request_id,)).fetchone()
+        conn.close()
+        return dict(r) if r else None
+
+    def test_dearer_flight_pays_diff_then_applies(self):
+        """补差价：没付钱订单一点不动，差价到账后才改签。"""
+        from services import flight_repo, payment_service, security
+        security.set_current_member("M1001")
+        _insert_order("OCN01", amount=600)
+        self._add_flight("CA9002", FUTURE, 900)              # 差价 +300
+
+        r = flight_repo.begin_change("OCN01", "M1001", "CA9002", FUTURE, "经济",
+                                     request_id="RQ-CHG-1")
+        assert r.get("need_pay") is True and r["fare_diff"] == 300
+        assert self._order_row("OCN01") == {"flight_no": "CA1061", "amount": 600,
+                                            "status": "已出票"}
+        assert self._change_row("RQ-CHG-1")["status"] == "待支付差价"
+
+        # 轮询接口不能在等差价时说「已支付」——订单状态早就不是待支付了
+        st = payment_service.get_payment_status("OCN01")
+        assert st["paid"] is False and st["change_pending"] is True and st["amount"] == 300
+
+        # 收差价：金额必须是差价，而不是票款
+        p = payment_service.start_payment("OCN01", provider_name="mock")
+        assert p["success"] and p["amount"] == 300 and p["purpose"] == "change_diff"
+        assert self._change_row("RQ-CHG-1")["pay_no"] == p["pay_no"]
+
+        s = payment_service.settle_payment(pay_no=p["pay_no"], provider_name="mock")
+        assert s["settled"] is True and s["purpose"] == "change_diff"
+        assert self._order_row("OCN01") == {"flight_no": "CA9002", "amount": 900,
+                                            "status": "已改签"}
+        assert self._change_row("RQ-CHG-1")["status"] == "已改签"
+
+    def test_unpaid_diff_keeps_order_and_is_idempotent(self):
+        """没付款时订单始终不动；同一 requestId 重放不会再建一行流水。"""
+        from services import flight_repo, security
+        security.set_current_member("M1001")
+        _insert_order("OCN02", amount=600)
+        self._add_flight("CA9002", FUTURE, 900)
+        first = flight_repo.begin_change("OCN02", "M1001", "CA9002", FUTURE, "经济",
+                                        request_id="RQ-CHG-2")
+        again = flight_repo.begin_change("OCN02", "M1001", "CA9002", FUTURE, "经济",
+                                         request_id="RQ-CHG-2")
+        assert first["fare_diff"] == again["fare_diff"] == 300
+        assert again.get("need_pay") is True and again.get("idempotent") is True
+        assert self._order_row("OCN02")["flight_no"] == "CA1061"
+        conn = db.get_connection()
+        n = conn.execute("SELECT COUNT(*) AS n FROM change_requests WHERE order_no = 'OCN02'"
+                         ).fetchone()["n"]
+        conn.close()
+        assert n == 1
+
+    def test_cheaper_flight_refunds_diff_then_applies(self):
+        """退差价：先走渠道原路退回差价，成功后才改签，并且落退款流水。"""
+        from services import flight_repo, security
+        security.set_current_member("M1001")
+        _insert_order("OCN03", amount=600)
+        self._paid_payment("OCN03", 600)
+        self._add_flight("CA9003", FUTURE, 400)              # 差价 -200
+
+        r = flight_repo.begin_change("OCN03", "M1001", "CA9003", FUTURE, "经济",
+                                     request_id="RQ-CHG-3")
+        assert r.get("success") and r.get("refunded") is True and r["fare_diff"] == -200
+        assert self._order_row("OCN03") == {"flight_no": "CA9003", "amount": 400,
+                                            "status": "已改签"}
+        conn = db.get_connection()
+        rf = conn.execute("SELECT * FROM refunds WHERE request_id = 'RQ-CHG-3'").fetchone()
+        conn.close()
+        assert rf and rf["refund_type"] == "change_diff" and rf["amount"] == 200
+        assert rf["status"] == "已退款" and rf["channel"] == "mock"
+
+    def test_refund_failure_blocks_change(self):
+        """渠道退不了差价时不许改签（钱没退出去，订单就不能动）。"""
+        from services import flight_repo, security
+        security.set_current_member("M1001")
+        _insert_order("OCN04", amount=600)
+        self._paid_payment("OCN04", 600)
+        conn = db.get_connection()
+        # 该订单已有一笔「结果未定论」的退款 → 退款编排会阻断新的退款
+        conn.execute(
+            "INSERT INTO refunds (request_id, order_no, member_id, refund_type, amount, fee, "
+            "status, created_at) VALUES (?,?,?,?,?,?,?,?)",
+            ("RQ-OPEN", "OCN04", "M1001", "voluntary", 100, 0, "退款待对账",
+             datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        conn.close()
+        self._add_flight("CA9003", FUTURE, 400)
+
+        r = flight_repo.begin_change("OCN04", "M1001", "CA9003", FUTURE, "经济",
+                                     request_id="RQ-CHG-4")
+        assert r.get("error") and "未成功" in r["error"]
+        assert self._order_row("OCN04")["flight_no"] == "CA1061"
+        assert self._change_row("RQ-CHG-4")["status"] == "差价退款失败"
+
+    def test_pending_diff_surfaces_on_orders_page(self):
+        """未支付的差价要在账单里可见——否则用户中途放弃就再也回不到收银台。"""
+        from services import flight_repo, security
+        security.set_current_member("M1001")
+        _insert_order("OCN06", amount=600)
+        self._add_flight("CA9002", FUTURE, 900)
+        flight_repo.begin_change("OCN06", "M1001", "CA9002", FUTURE, "经济",
+                                 request_id="RQ-CHG-6")
+        bill = flight_repo.get_order_bill(member_id="M1001")
+        row = next(o for o in bill["orders"] if o["order_no"] == "OCN06")
+        assert row["change_pending"] is True and row["change_diff"] == 300
+        assert "CA9002" in row["change_target"] and row["status"] == "已出票"
+
+    def test_second_change_with_other_target_is_blocked(self):
+        """已有一笔未支付的改签差价时，不许再对别的航班发起改签。"""
+        from services import flight_repo, security
+        security.set_current_member("M1001")
+        _insert_order("OCN07", amount=600)
+        self._add_flight("CA9002", FUTURE, 900)
+        self._add_flight("CA9005", FUTURE, 1200)
+        first = flight_repo.begin_change("OCN07", "M1001", "CA9002", FUTURE, "经济",
+                                        request_id="RQ-CHG-7a")
+        assert first.get("need_pay") is True
+        other = flight_repo.begin_change("OCN07", "M1001", "CA9005", FUTURE, "经济",
+                                         request_id="RQ-CHG-7b")
+        assert other.get("error") and "未支付" in other["error"]
+        # 换成同一班则允许继续（返回那笔待支付的流水，让用户接着付）
+        same = flight_repo.begin_change("OCN07", "M1001", "CA9002", FUTURE, "经济",
+                                       request_id="RQ-CHG-7c")
+        assert same.get("need_pay") is True and same["request_id"] == "RQ-CHG-7a"
+        assert self._order_row("OCN07")["status"] == "已出票"
+
+    def test_same_price_applies_directly(self):
+        """无差价：不产生任何渠道动作，直接改签。"""
+        from services import flight_repo, security
+        security.set_current_member("M1001")
+        _insert_order("OCN05", amount=600)
+        self._add_flight("CA9004", FUTURE, 600)              # 差价 0
+        r = flight_repo.begin_change("OCN05", "M1001", "CA9004", FUTURE, "经济",
+                                     request_id="RQ-CHG-5")
+        assert r.get("success") and not r.get("need_pay")
+        assert self._order_row("OCN05") == {"flight_no": "CA9004", "amount": 600,
+                                            "status": "已改签"}
+        conn = db.get_connection()
+        n = conn.execute("SELECT COUNT(*) AS n FROM payments WHERE order_no = 'OCN05'"
+                         ).fetchone()["n"]
+        conn.close()
+        assert n == 0                                        # 无差价不该产生支付流水
+
+
 # ---------------------------------------------------------------- 会话线程归属（安全修复）
 
 class TestSessionOwners:

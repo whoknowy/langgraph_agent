@@ -230,6 +230,10 @@ Authorization: Bearer <token>
 **只看 `paid` 一个字段就够了**——它由后端按订单状态推导，你不用关心
 `order_status` 到底是"已出票"还是"已改签"。
 
+> ⚠️ **唯一例外：改签补差价**（见 4.6）。等待补差价期间订单状态本身就是「已出票」，
+> 此时 `/api/pay/status` 会返回 `"paid": false` 且带 `"change_pending": true`，
+> **`paid` 才是权威判据**（`order_status` 在这个场景下会骗你）。
+
 轮询建议：**间隔 2 秒，最多 90 次（约 3 分钟）**。单次请求失败不要中断，继续下一拍。
 
 ### 4.4 `mode=direct` 时：站内确认
@@ -311,6 +315,34 @@ Content-Type: application/json
 | `needs_manual: true`（**500**） | 钱已退成功但订单状态没更新，后端已转人工。**不要**告诉用户"退款失败" |
 
 > 支付与退款用的是**同一个渠道**：订单当初用哪个渠道付的，就退回哪个渠道（后端自动判断，接口里不用传）。
+
+---
+
+## 4.6 改签补差价（2026-09-16 新增）
+
+改签的**差价也要走支付宝**（多退少补），所以 `POST /api/change` 不再"调完就完事"：
+
+```http
+GET  /api/change_quote?order_no=O4832015&new_flight_no=MU5101&new_date=2026-09-21&new_cabin=经济
+POST /api/change            # body 见下
+{ "order_no": "O4832015", "new_flight_no": "MU5101", "new_date": "2026-09-21",
+  "new_cabin": "经济", "confirm_token": "<报价接口给的>", "requestId": "<客户端 UUID，务必复用>" }
+```
+
+按报价里的 `fare_diff` 分三种情况处理：
+
+| `fare_diff` | `/api/change` 响应 | 你要做什么 |
+|---|---|---|
+| **> 0**（补差价） | `{"success": true, "need_pay": true, "fare_diff": 40, ...}`，**订单还没改** | **继续走 4.1~4.3 那套支付流程**：`POST /api/pay/create` 收的钱就是差价（响应带 `"purpose": "change_diff"`）→ 跳收银台 → 轮询 `paid`。付成功后**后端自动完成改签**，你不用再调 `/api/change` |
+| **< 0**（退差价） | `{"success": true, "refunded": true, "fare_diff": -40, ...}` | 一次调用就完成了（后端已把差价原路退回），提示用户改签成功即可 |
+| **= 0**（无差价） | `{"success": true, "status": "已改签", ...}` | 直接完成 |
+
+要点：
+
+- `need_pay: true` 时**不要**提示"改签成功"——用户还没付钱，订单也没变；要先把用户带到收银台。
+- 补差价支付失败/用户放弃时，订单仍是原航班，可以稍后在「我的订单」里继续付这笔差价。
+- `requestId` 是改签幂等键（连点/断网重发要用同一个值），它同时兼作差价退款的渠道请求号。
+- 退差价失败时 `/api/change` 返回 400 且订单**保持原样**（不会出现"改签了钱没退"）。
 
 ---
 
@@ -654,3 +686,4 @@ A：都是数字，JSON 里 `600.0` 和 `600` 等价。按数字解析，不要�
 | 2026-09-11 | 补 `wap.pay`（手机网站支付）渠道，`ALIPAY_SCENE` 切换 page/wap；9.1 由"待办"改为"已上线" |
 | 2026-09-12 | 写接口启用服务端 HITL：`/api/pay/create` 响应新增 `confirm_token`，`/api/pay/confirm` 必须回传（redirect 分支不受影响）。见 1.4 / 4.4 |
 | 2026-09-16 | **退款接上支付宝**（`alipay.trade.refund` + 退款对账查询）。新增 4.5：`/api/refund` 的调用方式、参数、返回与七种异常的处理约定 |
+| 2026-09-16 | **改签差价接上支付宝**（补差价先收款、退差价先退款，钱没结清不改签）。新增 4.6；并修正 4.3 里"只看 `paid` 就够"的说法——差价场景必须看 `paid`（`order_status` 会骗人） |

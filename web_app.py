@@ -859,7 +859,13 @@ def change_quote():
 
 @app.route('/api/change', methods=['POST'])
 def change():
-    """执行改签（免改签费，差价多退少补；代码层校验，LLM 只能发起卡片）。
+    """执行改签（免改签费，差价多退少补，代码层校验，LLM 只能发起卡片）。
+
+    差价一律走渠道（见 flight_repo.begin_change）：
+    - 差价 > 0 → 只建「待支付差价」流水并返回 need_pay=True，订单**暂不改签**；
+      客户端接着走 `/api/pay/create` 收差价，支付成功后才由回调落成改签；
+    - 差价 < 0 → 先调支付宝原路退回差价，成功后才改签（失败则订单不动）；
+    - 差价 = 0 → 立即改签。
 
     必须携带用户在页面上确认后回传的 confirm_token。
     """
@@ -876,9 +882,12 @@ def change():
         if bad:
             return bad
         from services import audit, flight_repo
-        result = flight_repo.change_order(
+        # requestId 是改签幂等键（change_requests 的主键，同时兼作差价退款的 out_request_no）。
+        # 客户端没传时由 begin_change 兜底生成。
+        result = flight_repo.begin_change(
             data.get('order_no', ''), member['member_id'], data.get('new_flight_no', ''),
-            data.get('new_date', ''), data.get('new_cabin', ''))
+            data.get('new_date', ''), data.get('new_cabin', ''),
+            request_id=(data.get('requestId') or '').strip() or None)
         if result.get('error'):
             audit.write_error('改签', result['error'], target=data.get('order_no', ''))
             return jsonify(result), 400

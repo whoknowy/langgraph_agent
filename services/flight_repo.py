@@ -336,11 +336,20 @@ def get_order_bill(member_id: str = None, order_no: str = None) -> dict:
         params.append(order_no)
     sql += " ORDER BY o.created_at DESC"
     rows = conn.execute(sql, params).fetchall()
+    # 未支付的改签差价：订单页要能提示并让用户「继续支付」，否则用户中途放弃就再也付不了
+    pending = {}
+    if rows:
+        marks = ",".join("?" for _ in rows)
+        for p in conn.execute(
+                f"SELECT * FROM change_requests WHERE status = ? AND order_no IN ({marks})",
+                (CHANGE_PENDING_STATUS, *[r["order_no"] for r in rows])).fetchall():
+            pending[p["order_no"]] = dict(p)
     conn.close()
     if not rows:
         return {"error": "未找到该会员/订单的账单记录"}
     orders = []
     for r in rows:
+        pc = pending.get(r["order_no"])
         orders.append({
             "order_no": r["order_no"], "member_id": r["member_id"],
             "flight": f"{r['airline']}{r['flight_no']}",
@@ -354,6 +363,10 @@ def get_order_bill(member_id: str = None, order_no: str = None) -> dict:
             "checkin_seat": r["checkin_seat"] or "",
             "checkin_gate": r["checkin_gate"] or "",
             "boarding_time": r["boarding_time"] or "",
+            # 有未支付的改签差价 → 前端提示并可「继续支付差价」
+            "change_pending": bool(pc),
+            "change_diff": int(pc["fare_diff"]) if pc else 0,
+            "change_target": (f"{pc['new_flight_no']} {pc['new_date']}" if pc else ""),
         })
     return {"member_id": member_id, "orders": orders, "count": len(orders),
             "total_amount": sum(o["amount"] for o in orders)}
@@ -1089,40 +1102,375 @@ def change_quote(order_no: str, member_id: str, new_flight_no: str, new_date: st
             "message": f"改签免手续费，{('补差价 ' + str(diff) + ' 元') if diff > 0 else (('退差价 ' + str(-diff) + ' 元') if diff < 0 else '无差价')}"}
 
 
-def change_order(order_no: str, member_id: str, new_flight_no: str, new_date: str, new_cabin: str) -> dict:
-    """执行改签：更新订单航班/日期/舱位/金额，状态置为「已改签」。
+# ------------------------------------------------ 改签流水（差价必须真的走渠道）
 
-    免改签费，仅多退少补票价差（负差价直接调减金额，演示不产生退款流水）。
+# 差价 > 0：先落这个状态，订单**不动**；支付宝收款成功后才调 apply_change 落成改签。
+CHANGE_PENDING_STATUS = "待支付差价"
+CHANGE_DONE_STATUS = "已改签"
+# 差价退款失败：没改签，允许用同一个请求号重试（退款流水会覆盖为最新结果）
+CHANGE_REFUND_FAILED_STATUS = "差价退款失败"
+# 钱已按差价退回、但订单没能改（极端并发）：必须人工收口，不能静默重试
+CHANGE_MANUAL_STATUS = "待人工改签"
+
+
+def _new_change_request_id(order_no: str) -> str:
+    """服务端生成改签请求号（客户端没传 requestId 时的兜底）。
+
+    它身兼三职：change_requests 的幂等键、差价支付流水的关联键（靠它反查该改哪张单）、
+    差价退款的 out_request_no。所以**必须存在**——否则钱收了也找不到该改哪张单。
+    客户端应自带并复用同一 requestId（断网重发不会改两次）。
     """
-    quote = change_quote(order_no, member_id, new_flight_no, new_date, new_cabin)
-    if quote.get("error"):
-        return quote
+    import uuid
+    return f"CH{security.normalize(order_no)}-{uuid.uuid4().hex[:16]}"
 
-    order_no = security.normalize(order_no)
-    new_info = quote["new"]
+
+def _record_change(conn, request_id, order_no, member_id, quote, status, pay_no=None,
+                   refund_request_id=None, channel=None) -> bool:
+    """写改签流水（request_id 幂等键；重复写入 upsert 为本次结果）。
+
+    pay_no / refund_request_id 用 COALESCE 更新：重试时调用方可能只传其中一个，
+    不能把已挂上的关联键抹掉。
+    """
+    if not request_id:
+        return False
+    old = quote.get("old") or {}
+    new = quote.get("new") or {}
+    ch = channel or {}
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    vals = (order_no, member_id or "", old.get("flight_no"), old.get("date"),
+            new.get("flight_no"), new.get("date"), new.get("cabin"),
+            int(old.get("amount") or 0), int(new.get("amount") or 0),
+            int(quote.get("fare_diff") or 0), status, now,
+            pay_no, refund_request_id, ch.get("channel"), ch.get("channel_status"),
+            ch.get("channel_error"))
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO change_requests (request_id, order_no, member_id, "
+        "old_flight_no, old_date, new_flight_no, new_date, new_cabin, old_amount, "
+        "new_amount, fare_diff, status, created_at, pay_no, refund_request_id, "
+        "channel, channel_status, channel_error, updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (request_id, *vals, now))
+    if cur.rowcount == 1:
+        return True
+    conn.execute(
+        "UPDATE change_requests SET order_no=?, member_id=?, old_flight_no=?, old_date=?, "
+        "new_flight_no=?, new_date=?, new_cabin=?, old_amount=?, new_amount=?, fare_diff=?, "
+        "status=?, updated_at=?, pay_no=COALESCE(?, pay_no), "
+        "refund_request_id=COALESCE(?, refund_request_id), channel=?, channel_status=?, "
+        "channel_error=? WHERE request_id=?",
+        (*vals, request_id))
+    return False
+
+
+def get_change_by_request(request_id: str):
+    """按改签请求号取流水（幂等判断的事实源）。"""
+    if not request_id:
+        return None
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT * FROM change_requests WHERE request_id = ?",
+                           (request_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_pending_change(order_no: str):
+    """取该订单「待支付差价」的改签流水。
+
+    有它 = 这张单正在等差价支付：此时 `/api/pay/create` 该收的是差价，
+    而不是票款（票早就付过了）。
+    """
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT * FROM change_requests WHERE order_no = ? AND status = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (security.normalize(order_no), CHANGE_PENDING_STATUS)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_change_by_pay_no(pay_no: str):
+    """按差价支付流水号反查改签流水（支付回调落账时靠它判断该改签还是出票）。"""
+    if not pay_no:
+        return None
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT * FROM change_requests WHERE pay_no = ? "
+                           "ORDER BY id DESC LIMIT 1", (pay_no,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def attach_change_payment(request_id: str, pay_no: str) -> bool:
+    """把差价支付流水号挂到改签流水上。"""
+    if not (request_id and pay_no):
+        return False
     conn = _conn()
     try:
         cur = conn.execute(
-            "UPDATE orders SET flight_no = ?, flight_date = ?, cabin = ?, amount = ?, status = '已改签', "
-            "admin_note = ? WHERE order_no = ? AND status IN ('已出票', '已改签')",
-            (new_info["flight_no"], new_info["date"], new_info["cabin"], new_info["amount"],
-             f"改签: {quote['old']['flight_no']}/{quote['old']['date']}/{quote['old']['cabin']} -> "
-             f"{new_info['flight_no']}/{new_info['date']}/{new_info['cabin']}，{quote['diff_desc']}",
-             order_no))
+            "UPDATE change_requests SET pay_no = ?, updated_at = ? WHERE request_id = ?",
+            (pay_no, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), request_id))
+        conn.commit()
+        return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def _flight_display(flight_no: str) -> dict:
+    """航班展示信息（航司/时刻/城市），只用于文案，不参与金额计算。"""
+    conn = _conn()
+    try:
+        r = conn.execute(
+            "SELECT f.flight_no, a.name_cn AS airline, f.dep_time, f.arr_time, "
+            "fd.city_cn AS dep_city, fa.city_cn AS arr_city "
+            "FROM flights f JOIN airlines a ON a.code = f.airline_code "
+            "JOIN airports fd ON fd.iata3 = f.dep_iata "
+            "JOIN airports fa ON fa.iata3 = f.arr_iata WHERE f.flight_no = ?",
+            (flight_no,)).fetchone()
+        return dict(r) if r else {}
+    finally:
+        conn.close()
+
+
+def _apply_change(order_no: str, quote: dict, expected_old: dict = None) -> dict:
+    """把改签落到订单上（纯本地写，不碰任何渠道）。
+
+    `expected_old` 供「先收款/先退款、后改签」的两段式流程做并发守卫：
+    订单必须仍停在改签前的**航班 + 日期**上，否则拒绝（避免把别人的改动覆盖掉）。
+    """
+    order_no = security.normalize(order_no)
+    new_info = quote["new"]
+    old_info = quote["old"]
+    conn = _conn()
+    try:
+        sql = ("UPDATE orders SET flight_no = ?, flight_date = ?, cabin = ?, amount = ?, "
+               "status = '已改签', admin_note = ? "
+               "WHERE order_no = ? AND status IN ('已出票', '已改签')")
+        params = [new_info["flight_no"], new_info["date"], new_info["cabin"], new_info["amount"],
+                  f"改签: {old_info['flight_no']}/{old_info['date']}/{old_info['cabin']} -> "
+                  f"{new_info['flight_no']}/{new_info['date']}/{new_info['cabin']}，{quote['diff_desc']}",
+                  order_no]
+        if expected_old:
+            sql += " AND flight_no = ? AND flight_date = ?"
+            params += [expected_old.get("flight_no"), expected_old.get("date")]
+        cur = conn.execute(sql, params)
         if cur.rowcount != 1:
             conn.rollback()
-            return {"error": f"改签未生效：订单 {order_no} 状态刚刚发生变化（可能已被退票/改签/使用）"}
+            return {"error": f"改签未生效：订单 {order_no} 的状态或航班刚刚发生变化"
+                             f"（可能已被退票/改签/使用），请刷新后重试"}
         conn.commit()
     finally:
         conn.close()
     from services import checkin_repo
     checkin_repo.cancel_checkin(order_no)   # 新航班需重新值机，原座位自动释放
     audit.write_ok("改签", target=order_no,
-                   detail={"from": quote["old"], "to": new_info, "fare_diff": quote["fare_diff"]})
+                   detail={"from": old_info, "to": new_info, "fare_diff": quote["fare_diff"]})
     return {"success": True, "order_no": order_no, "status": "已改签",
-            "old": quote["old"], "new": new_info, "fare_diff": quote["fare_diff"],
-            "message": f"订单 {order_no} 已改签至 {new_info['airline']}{new_info['flight_no']} "
-                       f"{new_info['date']} {new_info['dep_time']}，{quote['diff_desc']}（原值机已取消，请重新值机）"}
+            "old": old_info, "new": new_info, "fare_diff": quote["fare_diff"],
+            "message": f"订单 {order_no} 已改签至 {new_info.get('airline', '')}{new_info['flight_no']} "
+                       f"{new_info['date']} {new_info.get('dep_time', '')}，{quote['diff_desc']}"
+                       f"（原值机已取消，请重新值机）"}
+
+
+def apply_change(order_no: str, request_id: str) -> dict:
+    """把「待支付差价」的改签落成订单变更（差价收款成功后调用）。
+
+    ⚠️ 金额与航班一律用流水里**冻结的值**（客户就是按它付的钱），不重新报价——
+    否则支付期间价格波动会变成「钱付了、改签却算不出同样的差价」。
+    """
+    row = get_change_by_request(request_id)
+    if not row:
+        return {"error": f"改签流水不存在：{request_id}"}
+    if row["status"] == CHANGE_DONE_STATUS:
+        return {"success": True, "idempotent": True, "order_no": row["order_no"],
+                "message": "该改签已生效，无需重复处理"}
+    if row["status"] != CHANGE_PENDING_STATUS:
+        return {"error": f"改签流水状态为「{row['status']}」，不能执行改签"}
+
+    disp = _flight_display(row["new_flight_no"])
+    diff = int(row["fare_diff"])
+    quote = {
+        "old": {"flight_no": row["old_flight_no"], "date": row["old_date"],
+                "cabin": "", "amount": int(row["old_amount"] or 0)},
+        "new": {"flight_no": row["new_flight_no"], "airline": disp.get("airline", ""),
+                "route": f"{disp.get('dep_city', '')}-{disp.get('arr_city', '')}",
+                "date": row["new_date"], "dep_time": disp.get("dep_time", ""),
+                "arr_time": disp.get("arr_time", ""), "cabin": row["new_cabin"],
+                "amount": int(row["new_amount"] or 0)},
+        "fare_diff": diff,
+        "diff_desc": (f"需补差价 {diff} 元" if diff > 0 else
+                      (f"退回差价 {-diff} 元" if diff < 0 else "票价相同，无差价")),
+    }
+    result = _apply_change(row["order_no"], quote,
+                           expected_old={"flight_no": row["old_flight_no"],
+                                         "date": row["old_date"]})
+    if result.get("error"):
+        return result
+    conn = _conn()
+    try:
+        _record_change(conn, request_id, row["order_no"], row["member_id"], quote,
+                       CHANGE_DONE_STATUS, pay_no=row["pay_no"])
+        conn.commit()
+    finally:
+        conn.close()
+    result["request_id"] = request_id
+    return result
+
+
+def change_order(order_no: str, member_id: str, new_flight_no: str, new_date: str, new_cabin: str) -> dict:
+    """执行改签（报价 + 立即生效）——**不结差价**，仅供内部/管理端与测试使用。
+
+    ⚠️ 面向用户的 REST 流程必须走 `begin_change`：它会保证差价真的走渠道
+    （补差价先收款、退差价先退款），本函数不碰任何渠道。
+    """
+    quote = change_quote(order_no, member_id, new_flight_no, new_date, new_cabin)
+    if quote.get("error"):
+        return quote
+    return _apply_change(order_no, quote)
+
+
+def begin_change(order_no: str, member_id: str, new_flight_no: str, new_date: str,
+                 new_cabin: str, request_id: str = None) -> dict:
+    """用户改签入口：**差价结清才生效**（多退少补都落到渠道）。
+
+    | 差价 | 动作 | 订单状态 |
+    |---|---|---|
+    | > 0 | 落「待支付差价」流水，订单不动，返回 need_pay；用户走 /api/pay/create 收差价，
+            支付成功后由 payment_service.settle_payment 调 apply_change 落成改签 |
+    | < 0 | **先调渠道退款**（复用退款编排，原路退回差价），成功后才改签；失败则不改签 + 留痕 |
+    | = 0 | 直接改签，落一行已改签流水 |
+    """
+    quote = change_quote(order_no, member_id, new_flight_no, new_date, new_cabin)
+    if quote.get("error"):
+        return quote
+    order_no = security.normalize(order_no)
+    diff = int(quote["fare_diff"])
+    request_id = request_id or _new_change_request_id(order_no)
+
+    # 幂等：同一个请求号重放不重复执行（与退款流水同一套契约）
+    existing = get_change_by_request(request_id)
+    if existing:
+        if existing["status"] == CHANGE_DONE_STATUS:
+            audit.idempotent("改签", target=order_no, request_id=request_id)
+            return {"success": True, "idempotent": True, "applied": True, "order_no": order_no,
+                    "request_id": request_id, "fare_diff": existing["fare_diff"],
+                    "old": quote["old"], "new": quote["new"],
+                    "message": f"该改签请求已生效（订单 {order_no} 已是改签后状态），无需重复提交"}
+        if existing["status"] == CHANGE_PENDING_STATUS:
+            return {"success": True, "need_pay": True, "idempotent": True, "order_no": order_no,
+                    "request_id": request_id, "fare_diff": existing["fare_diff"],
+                    "old": quote["old"], "new": quote["new"], "quote": quote,
+                    "pay_no": existing["pay_no"],
+                    "message": f"改签差价 {existing['fare_diff']} 元待支付，请继续完成支付"}
+        if existing["status"] == CHANGE_MANUAL_STATUS:
+            return {"error": f"该改签的差价已退回，但订单变更未完成（请求号 {request_id}），"
+                             f"请联系客服处理", "needs_manual": True, "request_id": request_id}
+        # 「差价退款失败」：允许用同一个请求号重试（退款流水会覆盖为最新结果）
+
+    # 该订单还挂着一笔未支付的改签差价：目标相同就让用户接着付（同一个 requestId 除外）；
+    # 目标不同则拒绝——否则会留下两笔悬挂的待付差价，说不清到底要改哪一班。
+    open_change = get_pending_change(order_no)
+    if open_change and open_change["request_id"] != request_id:
+        same_target = (open_change["new_flight_no"], open_change["new_date"],
+                       open_change["new_cabin"]) == (quote["new"]["flight_no"],
+                                                     quote["new"]["date"], quote["new"]["cabin"])
+        if not same_target:
+            return {"error": f"该订单还有一笔未支付的改签差价（{open_change['new_flight_no']} "
+                             f"{open_change['new_date']}，需补 {open_change['fare_diff']} 元）；"
+                             f"请先完成支付，或等该笔支付超时后再改签",
+                    "needs_pay": True, "pending_request_id": open_change["request_id"],
+                    "fare_diff": int(open_change["fare_diff"])}
+        return {"success": True, "need_pay": True, "idempotent": True, "order_no": order_no,
+                "request_id": open_change["request_id"], "fare_diff": open_change["fare_diff"],
+                "old": quote["old"], "new": quote["new"], "quote": quote,
+                "pay_no": open_change["pay_no"],
+                "message": f"该订单的改签差价 {open_change['fare_diff']} 元尚未支付，请先完成支付"}
+
+    if diff > 0:
+        conn = _conn()
+        try:
+            _record_change(conn, request_id, order_no, member_id, quote, CHANGE_PENDING_STATUS)
+            conn.commit()
+        finally:
+            conn.close()
+        audit.write_ok("改签(待补差价)", target=order_no, request_id=request_id,
+                       detail={"fare_diff": diff, "to": quote["new"]})
+        return {"success": True, "need_pay": True, "order_no": order_no, "request_id": request_id,
+                "fare_diff": diff, "quote": quote, "old": quote["old"], "new": quote["new"],
+                "message": f"改签需补差价 {diff} 元，请先完成支付；支付成功后改签自动生效"}
+
+    if diff < 0:
+        from services import payment_service
+        refund = payment_service.refund_payment(
+            order_no=order_no, amount=abs(diff), out_request_no=request_id,
+            refund_type="change_diff", reason=f"改签退回差价（{order_no}）")
+        info = _refund_order_member(order_no) or {}
+        ledger_member = info.get("member_id") or member_id or ""
+        if refund.get("error"):
+            conn = _conn()
+            try:
+                # 失败路径的渠道留痕由 refund_payment 自己写（退款流水表），
+                # 这里把改签流水标记成「差价退款失败」，订单不动。
+                _record_change(conn, request_id, order_no, ledger_member, quote,
+                               CHANGE_REFUND_FAILED_STATUS, refund_request_id=request_id,
+                               channel=refund)
+                conn.commit()
+            finally:
+                conn.close()
+            audit.write_error("改签(退差价)", refund["error"], target=order_no)
+            return {"error": f"改签需退回差价 {abs(diff)} 元，但渠道退款未成功：{refund['error']}"
+                             f"（订单未改动，可稍后重试）",
+                    "fare_diff": diff, "refund": refund, "request_id": request_id}
+
+        # 钱已经退出去了：先把退款流水落定（同一个 request_id 也是它的幂等键）。
+        # 这样即便下面改签失败，账上也查得到这笔差价确实退了。
+        conn = _conn()
+        try:
+            _record_refund(conn, request_id, order_no, ledger_member, "change_diff",
+                           abs(diff), 0, "已退款", channel=refund)
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = _apply_change(order_no, quote)
+        if result.get("error"):
+            # 钱已经退出去了、订单却没改成 → 必须人工收口，绝不能当成功
+            conn = _conn()
+            try:
+                _record_change(conn, request_id, order_no, ledger_member, quote,
+                               CHANGE_MANUAL_STATUS, refund_request_id=request_id,
+                               channel=refund)
+                conn.commit()
+            finally:
+                conn.close()
+            audit.write_error("改签(退差价后改签失败)", result["error"], target=order_no)
+            return {**result, "needs_manual": True, "refunded": True, "refund": refund,
+                    "error": result["error"] + f"；差价 {abs(diff)} 元已原路退回，需人工完成改签"}
+
+        conn = _conn()
+        try:
+            _record_change(conn, request_id, order_no, ledger_member, quote, CHANGE_DONE_STATUS,
+                           refund_request_id=request_id, channel=refund)
+            conn.commit()
+        finally:
+            conn.close()
+        return {**result, "request_id": request_id, "refunded": True, "refund": refund,
+                "message": result["message"] + f"；差价 {abs(diff)} 元已原路退回"}
+
+    result = _apply_change(order_no, quote)
+    if result.get("error"):
+        return result
+    conn = _conn()
+    try:
+        _record_change(conn, request_id, order_no, member_id, quote, CHANGE_DONE_STATUS)
+        conn.commit()
+    finally:
+        conn.close()
+    return {**result, "request_id": request_id, "message": result["message"] + "（票价相同，无差价）"}
 
 
 # ---------------------------------------------------------------- 天气
