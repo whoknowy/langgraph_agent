@@ -1276,6 +1276,10 @@ class TestChangeSettlement:
         other = flight_repo.begin_change("OCN07", "M1001", "CA9005", FUTURE, "经济",
                                          request_id="RQ-CHG-7b")
         assert other.get("error") and "未支付" in other["error"]
+        # 契约：被阻塞时给的是「那一笔」的请求号，且字段名刻意不同于 need_pay
+        assert other.get("blocked_by_pending_change") is True
+        assert other.get("pending_request_id") == "RQ-CHG-7a"
+        assert other.get("need_pay") is None and other.get("needs_pay") is None
         # 换成同一班则允许继续（返回那笔待支付的流水，让用户接着付）
         same = flight_repo.begin_change("OCN07", "M1001", "CA9002", FUTURE, "经济",
                                        request_id="RQ-CHG-7c")

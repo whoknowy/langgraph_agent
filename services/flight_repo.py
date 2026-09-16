@@ -1428,7 +1428,10 @@ def begin_change(order_no: str, member_id: str, new_flight_no: str, new_date: st
             return {"error": f"该订单还有一笔未支付的改签差价（{open_change['new_flight_no']} "
                              f"{open_change['new_date']}，需补 {open_change['fare_diff']} 元）；"
                              f"请先完成支付，或等该笔支付超时后再改签",
-                    "needs_pay": True, "pending_request_id": open_change["request_id"],
+                    # 刻意不叫 need_pay：这里要付的是**那一笔**（pending_request_id），
+                    # 不是本次请求。名字接近会诱使客户端调错 /api/pay/create 的上下文。
+                    "blocked_by_pending_change": True,
+                    "pending_request_id": open_change["request_id"],
                     "fare_diff": int(open_change["fare_diff"])}
         return {"success": True, "need_pay": True, "idempotent": True, "order_no": order_no,
                 "request_id": open_change["request_id"], "fare_diff": open_change["fare_diff"],
