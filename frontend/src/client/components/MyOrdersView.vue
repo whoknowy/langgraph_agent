@@ -120,7 +120,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, qs, newRequestId } from '@/shared/api.js'
 import { toastError, toastSuccess, confirmDialog } from '@/shared/ui.js'
