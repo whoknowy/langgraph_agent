@@ -93,8 +93,10 @@ const navOpen = ref(false)
 .brand-name { color: #fff; font-weight: 700; font-size: 15px; letter-spacing: .01em; }
 .brand-sub { font-size: 11px; color: #8ca3c7; margin-top: 2px; }
 
+/* 相邻项之间用固定 gap 保证等距；不用 space-evenly —— 那会把选项按侧栏高度拉开，
+   屏幕越高间距越大，相邻两项看起来就不在一个节奏上（与管理端 .admin-nav 对齐） */
 .side-nav {
-  display: flex; flex-direction: column; justify-content: space-evenly; flex: 1;
+  display: flex; flex-direction: column; flex: 1; gap: 6px;
   padding: 8px 0;
 }
 .nav-link {
