@@ -116,6 +116,9 @@ export function useChatActions(chat) {
   async function confirmAction() {
     const a = pendingAction.value
     if (!a) return
+    // 确认凭证一次性、绑定目标：执行前后都要求"卡片没被换掉"，
+    // 避免 await 期间用户又发了新消息（旧卡片已作废）却仍按旧目标执行。
+    const snapshot = a
     actionLoading.value = true
     try {
       if (a.type === 'book_flight') {
@@ -124,6 +127,7 @@ export function useChatActions(chat) {
           cabin: a.cabin, passengers: Number(a.passengers || 1),
           confirm_token: await ensureToken(a)
         }})
+        if (pendingAction.value !== snapshot) return   // 卡片已被新一轮替换 → 丢弃结果
         pushAssistant(`✅ 订单 ${d.order_no} 已创建（待支付），金额 ¥${d.total_amount}`)
         pendingAction.value = null
         if (await confirmDialog('订单已创建，是否立即支付？', '支付')) {
@@ -140,6 +144,7 @@ export function useChatActions(chat) {
           order_no: a.order_no, refund_type: a.refund_type || 'voluntary',
           requestId: newRequestId('refund'), confirm_token: await ensureToken(a)
         }})
+        if (pendingAction.value !== snapshot) return
         pushAssistant(`✅ ${d.message || '退票已提交'}`)
         pendingAction.value = null
       } else if (a.type === 'change_flight') {
@@ -149,6 +154,7 @@ export function useChatActions(chat) {
           requestId: newRequestId('change'),   // 幂等键：聊天里重发不会改两次
           confirm_token: await ensureToken(a)
         }})
+        if (pendingAction.value !== snapshot) return
         if (d.need_pay) {
           // 差价未付 → 订单还没改，必须补齐才生效。
           // 这里不能用 window.open（confirmDialog 之后手势已失效），只能当前页跳收银台；

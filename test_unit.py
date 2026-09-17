@@ -3309,6 +3309,180 @@ class TestAlipayNotifyCharset:
         assert fields["amount"] == "740.00"
 
 
+# ---------------------------------------------------------------- 确认卡片一致性守卫
+
+class TestCardConsistencyGuard:
+    """多轮对话里「模型只在文字里说卡片已生成、其实没调用伪工具」的代码层兜底。
+
+    真实 bug：第二轮模型顺着上一轮的话术说"请点击确认预订"，但没调用
+    submit_booking_request → pending_action 为 null，页面没有新卡片，用户
+    只会去点上一轮遗留的旧卡片（操作到错误目标）。这里锁死兜底行为。
+    """
+
+    @staticmethod
+    def _fake_llm():
+        class _FakeLLM:
+            def bind_tools(self, tools):
+                return object()
+
+        return _FakeLLM()
+
+    def _agent(self, responses, cls=None):
+        """构造被测 Agent：_stream_with_tools 按脚本返回 (text, tool_calls)。"""
+        if cls is None:
+            from agents.product_agent import ProductAgent as cls  # noqa: N813
+        a = cls()
+        a.set_llm(self._fake_llm())
+        calls = []
+
+        def fake_stream(llm, messages, obs_handler=None):
+            calls.append(list(messages))
+            return responses[len(calls) - 1]
+
+        a._stream_with_tools = fake_stream
+        return a, calls
+
+    def test_claim_without_tool_call_triggers_retry_then_succeeds(self):
+        """第一次只说卡片已生成 → 自动补调伪工具 → 卡片真的生成。"""
+        claim = "已为您生成订票确认，请点击页面上的「确认预订」按钮完成下单。"
+        tool_call = [{"name": "submit_booking_request", "id": "c1",
+                      "args": {"flight_no": "3U1155", "flight_date": FUTURE,
+                               "cabin": "经济", "passengers": 1}}]
+        final = "已确认航班有票，请点击页面上的「确认预订」按钮完成下单。"
+        a, calls = self._agent([(claim, []), ("", tool_call), (final, [])])
+        out = a._react_answer("帮我订一张票", history=[], identity="")
+        assert out == final
+        assert len(calls) == 3                       # 原文 → 补调 → 收尾
+        assert a._pending_action is not None
+        assert a._pending_action["type"] == "book_flight"
+        assert a._pending_action["flight_no"] == "3U1155"
+        # 补调指令要出现在第三轮的上下文里（否则模型不知道为什么被叫停）
+        third = [m.content for m in calls[2] if getattr(m, "content", "")]
+        assert any("没有调用任何工具" in str(c) for c in third)
+
+    def test_claim_without_tool_call_twice_falls_back_to_honest_text(self):
+        """补调仍失败 → 换成诚实话术，绝不谎称有卡片（用户就不会去点旧卡片）。"""
+        claim = "已为您生成订票确认，请点击「确认预订」按钮。"
+        a, calls = self._agent([(claim, []), (claim, [])])
+        out = a._react_answer("帮我订一张票", history=[], identity="")
+        assert out == a._no_card_fallback_text()
+        assert "重新发起" in out and "确认预订" not in out
+        assert len(calls) == 2
+        assert a._pending_action is None
+
+    def test_generic_explanation_does_not_trigger_retry(self):
+        """泛泛介绍流程（只出现按钮名、没有"已生成/请点击"）不应被误判。"""
+        a, calls = self._agent([("订票流程：信息齐全后我会发起确认卡片，您点确认预订即可。", [])])
+        out = a._react_answer("订票流程是怎样的", history=[], identity="")
+        assert len(calls) == 1
+        assert "订票流程" in out
+
+    def test_claim_with_card_already_issued_is_normal(self):
+        """本轮确实调用了伪工具 → 正常返回，不再补调也不改写话术。"""
+        tool_call = [{"name": "submit_booking_request", "id": "c1",
+                      "args": {"flight_no": "3U1107", "flight_date": FUTURE,
+                               "cabin": "经济", "passengers": 1}}]
+        final = "已生成订票确认，请点击「确认预订」按钮。"
+        a, calls = self._agent([("", tool_call), (final, [])])
+        out = a._react_answer("帮我订一张票", history=[], identity="")
+        assert out == final and len(calls) == 2
+        assert a._pending_action["flight_no"] == "3U1107"
+
+    def test_billing_agent_declares_refund_and_change_buttons(self):
+        """账单专员的退票/改签/值机卡片同样纳入守卫。"""
+        from agents.billing_agent import BillingAgent
+        a = BillingAgent()
+        assert a._claims_card("已生成退票确认，请点击「确认退票」按钮")
+        assert a._claims_card("已生成改签确认，请点击「确认改签」")
+        assert a._claims_card("已生成选座卡片，请点击「确认值机」")
+        assert not a._claims_card("退票需要人工审核，一般 1-3 个工作日到账")
+
+    def test_no_card_tool_agent_still_detects_false_claim(self):
+        """**没有发卡工具的 Agent 也必须能检出**"请点击确认预订"（曾经的口子）。
+
+        general_agent 无任何工具、complaint_agent 只有投诉工具，二者都没有伪工具，
+        却可能顺着上一轮历史的话术说"请点击确认预订"——这句话一定是假的。
+        修前 `_claims_card` 见 `_card_pseudo_tools` 为空就直接 return False，
+        于是这类假话术一路放行到前端，用户只能去点上一轮遗留的旧卡片。
+        """
+        from agents.complaint_agent import ComplaintAgent
+        from agents.general_agent import GeneralAgent
+        for a in (ComplaintAgent(), GeneralAgent()):
+            assert a._card_pseudo_tools == ()
+            assert a._claims_card("已生成确认，请点击「确认预订」") is True
+            assert a._claims_card("已生成退票确认，请点击页面上的「确认退票」按钮") is True
+            # 正常回答不受影响
+            assert a._claims_card("投诉单号 C1001，我们会在 3 个工作日内处理") is False
+            assert a._claims_card("订票流程：信息齐全后我点确认预订即可") is False
+
+    @staticmethod
+    def _fake_invoke_llm(responses):
+        """假 LLM：记录每次 invoke 的消息，按脚本返回内容（末条可复用）。"""
+        class _FakeLLM:
+            def __init__(self):
+                self.calls = []
+
+            def bind_tools(self, tools):
+                return object()
+
+            def invoke(self, messages, config=None):
+                self.calls.append(list(messages))
+                resp = type("R", (), {})()
+                resp.content = responses[min(len(self.calls) - 1, len(responses) - 1)]
+                return resp
+
+        return _FakeLLM()
+
+    def test_general_agent_plain_answer_corrects_false_card_claim(self):
+        """综合客服（无工具链路）谎称有卡片 → 纠正一次，返回改正后的回答。"""
+        from agents.general_agent import GeneralAgent
+        claim = "已为您生成订票确认，请点击页面上的「确认预订」按钮完成下单。"
+        fixed = "请问您想订哪天的哪个航班？告诉我航班号与日期，我为您转接机票专员。"
+        a = GeneralAgent()
+        llm = self._fake_invoke_llm([claim, fixed])
+        a.set_llm(llm)
+        out = a._plain_answer("再帮我订一张", history=[], identity="")
+        assert out == fixed
+        assert len(llm.calls) == 2                      # 原文 → 纠正后重答
+        instr = [m.content for m in llm.calls[1] if getattr(m, "content", "")]
+        assert any("没有任何卡片" in str(c) for c in instr)
+        assert a._pending_action is None
+
+    def test_general_agent_stubborn_claim_falls_back_to_honest_text(self):
+        """纠正后仍在谎称卡片 → 换诚实话术，绝不放行"请点击确认预订"。"""
+        from agents.general_agent import GeneralAgent
+        claim = "已为您生成订票确认，请点击「确认预订」按钮。"
+        a = GeneralAgent()
+        llm = self._fake_invoke_llm([claim, claim])
+        a.set_llm(llm)
+        out = a._plain_answer("再帮我订一张", history=[], identity="")
+        assert out == a._no_card_fallback_text()
+        assert "确认预订" not in out
+        assert len(llm.calls) == 2
+
+    def test_general_agent_normal_answer_passes_through(self):
+        """正常回答（没提卡片）不触发任何额外调用。"""
+        from agents.general_agent import GeneralAgent
+        a = GeneralAgent()
+        llm = self._fake_invoke_llm(["您好，请问有什么可以帮您？"])
+        a.set_llm(llm)
+        out = a._plain_answer("你好", history=[], identity="")
+        assert out == "您好，请问有什么可以帮您？"
+        assert len(llm.calls) == 1
+
+    def test_complaint_agent_react_claim_is_corrected_not_retried_to_tool(self):
+        """投诉专家（有工具但无伪工具）谎称卡片 → 纠正话术里不能出现"调用 "空工具名。"""
+        from agents.complaint_agent import ComplaintAgent
+        claim = "已生成退票确认，请点击「确认退票」按钮。"
+        fixed = "退票请提供订单号，我来为您核实；该订单需要人工审核。"
+        a, calls = self._agent([(claim, []), (fixed, [])], cls=ComplaintAgent)
+        out = a._react_answer("帮我退票", history=[], identity="")
+        assert out == fixed
+        instr = [m.content for m in calls[1] if getattr(m, "content", "")]
+        assert any("没有任何卡片" in str(c) for c in instr)
+        assert not any("请立即调用" in str(c) for c in instr)   # 不该要求调用不存在的伪工具
+
+
 # ---------------------------------------------------------------- 直接运行入口
 
 if __name__ == "__main__":

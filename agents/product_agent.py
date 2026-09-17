@@ -12,6 +12,11 @@ from .base_agent import BaseAgent
 
 
 class ProductAgent(BaseAgent):
+    # 卡片守卫：只说"请点击确认预订"却没调用 submit_booking_request 时自动补调
+    _card_pseudo_tools = ("submit_booking_request",)
+    _card_button_hints = ("确认预订",)
+    _card_param_hints = "flight_no、flight_date(YYYY-MM-DD)、cabin、passengers"
+
     def __init__(self):
         super().__init__(
             name="机票专家",

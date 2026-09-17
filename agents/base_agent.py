@@ -19,6 +19,23 @@ class BaseAgent(ABC):
     # 多轮历史最多注入的最近消息条数（防止 token 随轮数无限增长）
     HISTORY_LIMIT = 8
 
+    # ---- 确认卡片一致性守卫（子类按需声明）----
+    # 伪工具名：调用后由 _on_tool_call 拦截并写入 _pending_action（卡片才会出现）
+    _card_pseudo_tools: tuple = ()
+    # 卡片按钮名：子类声明自己卡片上的按钮文案（如 "确认预订"）
+    _card_button_hints: tuple = ()
+    # 全站已知的卡片按钮文案（与 PendingActionCard.vue 的 TITLES 对齐）。
+    # 用途：**没有发卡能力的 agent**（general_agent 无工具、complaint_agent 只有
+    # 投诉工具）也可能顺着上一轮的话术说"请点击确认预订"——它连伪工具都没有，
+    # 这句一定是假的。没有这份全站清单就检不出来（子类自己的 _card_button_hints 为空）。
+    _known_card_buttons: tuple = ("确认预订", "确认退票", "确认改签", "确认值机",
+                                  "确认改座", "值机选座")
+    # 声称"卡片已经在这里"的话术特征（与按钮名同时出现才算"在引导用户点卡片"）
+    _card_claim_hints: tuple = ("已生成", "已发起", "已为您生成", "已为您准备",
+                                "请点击", "点击页面", "点击下方", "请在页面", "请点页面")
+    # 补调时告诉模型各伪工具需要哪些参数
+    _card_param_hints: str = ""
+
     def __init__(self, name: str, role: str, expertise: List[str]):
         self.name = name
         self.role = role
@@ -100,6 +117,65 @@ class BaseAgent(ABC):
         return (False, None)
 
     # ------------------------------------------------------------------
+    # 确认卡片一致性守卫
+    #
+    # 背景（真实踩到的多轮 bug）：模型有时**只在文字里说**"已生成订票确认，请点击
+    # 「确认预订」"，却根本没调用 submit_booking_request —— 后端 pending_action 为 null，
+    # 页面上不会出现任何新卡片；而上一轮那张旧卡片还在，用户一点就操作到**上一轮的目标**。
+    # 提示词里已写了"严禁光说不调"，但模型在多轮历史里会顺着上一轮的话术继续编，
+    # 所以这里做**代码层兜底**：检出这种不一致 → 自动补调一次 → 仍不行就换成诚实话术。
+    # ------------------------------------------------------------------
+
+    def _claims_card(self, text: str) -> bool:
+        """文本是否在"告诉用户卡片已就绪、去点按钮"（即声称本轮发起了卡片）。
+
+        注意：**不要求本 agent 有发卡能力**——正因为它可能没有，才更需要检出来。
+        没有自己的按钮清单时退回全站清单（_known_card_buttons）。
+        """
+        if not text:
+            return False
+        buttons = self._card_button_hints or self._known_card_buttons
+        button = any(h in text for h in buttons)
+        claim = any(h in text for h in self._card_claim_hints)
+        return button and claim
+
+    def _card_retry_instruction(self) -> str:
+        """补调指令：明确告诉模型它漏调了，并给出参数要求。"""
+        tools = "、".join(self._card_pseudo_tools)
+        params = f"（参数：{self._card_param_hints}）" if self._card_param_hints else ""
+        buttons = "、".join(f"「{b}」" for b in self._card_button_hints) or "确认"
+        return (
+            f"你刚才的回复里在引导用户点击{buttons}按钮，但你**没有调用任何工具**，"
+            f"所以页面上不会出现卡片，用户只会去点上一轮遗留的旧卡片，从而操作到错误的目标上。\n"
+            f"请立即调用 {tools}{params}（参数值从用户本轮消息与上文提取）；"
+            f"若确实缺少必要信息，就改为向用户追问所缺的那一项，不要再复述卡片话术。"
+        )
+
+    def _no_card_instruction(self) -> str:
+        """无发卡能力时的纠正指令：别提卡片，直接给答案或把需求问细。"""
+        return (
+            "你刚才的回复在引导用户点击卡片按钮，但**你这一轮没有任何卡片**"
+            "（你手上也没有能发起卡片的工具），页面上不会出现新卡片，"
+            "用户只会去点上一轮遗留的旧卡片，从而操作到错误的目标上。\n"
+            "请重新组织回复：不要提卡片、不要提按钮；"
+            "直接回答用户的问题；若这属于订票/退票/改签/值机等需要卡片确认的业务，"
+            "就请用户把需求说得更具体（例如航班号与日期、订单号）以便继续办理，"
+            "并说明可以为他转接对应专员。"
+        )
+
+    def _card_guard_instruction(self) -> str:
+        """纠正指令：有发卡工具就要求补调，没有就要求别再说卡片。"""
+        if self._card_pseudo_tools:
+            return self._card_retry_instruction()
+        return self._no_card_instruction()
+
+    def _no_card_fallback_text(self) -> str:
+        """补调仍失败时的诚实兜底：不谎称有卡片，让用户重说一次。"""
+        return ("抱歉，这次我没能为您的操作生成确认卡片。"
+                "请再说一遍要办理的事项（例如「订 2026-09-18 上海到北京的 3U1155 经济舱 1 人」"
+                "或「退掉订单 O1234567」），我立刻为您重新发起。")
+
+    # ------------------------------------------------------------------
     # ReAct 循环（模型自主 function calling，保持逐 token 流式回调）
     # ------------------------------------------------------------------
 
@@ -131,10 +207,24 @@ class BaseAgent(ABC):
             messages.extend(self._history_messages(history))
             messages.append(HumanMessage(content=user_query))
 
+            card_retried = False
             for _round in range(5):
                 full_text, tool_calls = self._stream_with_tools(llm_with_tools, messages,
                                                                 obs_handler=obs_handler)
                 if not tool_calls:
+                    if self._pending_action is None and self._claims_card(full_text):
+                        # 话术称卡片已就绪、但本轮没调用伪工具 → 卡片其实不存在
+                        if not card_retried:
+                            card_retried = True
+                            how = ("自动补调一次" if self._card_pseudo_tools
+                                   else "本 agent 无发卡工具，要求其别提卡片")
+                            print(f"[{self.name}] ⚠️ 话术称卡片已生成但未调用伪工具，{how}")
+                            messages.append(AIMessage(content=full_text))
+                            messages.append(HumanMessage(content=self._card_guard_instruction()))
+                            continue
+                        # 纠正也没成功：换成诚实话术，绝不让用户去点上一轮的旧卡片
+                        print(f"[{self.name}] ❌ 纠正后仍在谎称卡片，改用诚实兜底话术")
+                        return self._no_card_fallback_text()
                     return full_text
                 messages.append(AIMessage(content=full_text, tool_calls=tool_calls))
                 for tc in tool_calls:
@@ -168,7 +258,12 @@ class BaseAgent(ABC):
 
     def _plain_answer(self, user_query: str, history: List[Dict] = None, identity: str = "",
                       obs_handler=None) -> str:
-        """无工具降级：一次普通调用（保持人设与上下文）。"""
+        """无工具降级：一次普通调用（保持人设与上下文）。
+
+        这条链路**没有任何工具**（general_agent 常态走这里，其余 agent 是 ReAct
+        异常后的降级），所以它若声称"卡片已生成、请点击"，一定是假话——同样过一遍
+        卡片一致性守卫（见 _claims_card）：先纠正一次，仍不改则退回诚实话术。
+        """
         from services import langfuse_setup
         if self.llm is None:
             return "抱歉，系统暂时无法处理您的请求，请稍后重试。"
@@ -177,8 +272,22 @@ class BaseAgent(ABC):
             messages.extend(self._history_messages(history))
             messages.append(HumanMessage(content=user_query))
             cfg = langfuse_setup.llm_config(obs_handler)
-            resp = self.llm.invoke(messages, config=cfg) if cfg else self.llm.invoke(messages)
-            return resp.content or ""
+
+            def _call(msgs):
+                resp = self.llm.invoke(msgs, config=cfg) if cfg else self.llm.invoke(msgs)
+                return resp.content or ""
+
+            text = _call(messages)
+            if self._pending_action is None and self._claims_card(text):
+                print(f"[{self.name}] ⚠️ 无工具链路却在话术里称卡片已生成，要求其别提卡片")
+                messages.append(AIMessage(content=text))
+                messages.append(HumanMessage(content=self._card_guard_instruction()))
+                text2 = _call(messages)
+                if not self._claims_card(text2):
+                    return text2
+                print(f"[{self.name}] ❌ 纠正后仍在谎称卡片，改用诚实兜底话术")
+                return self._no_card_fallback_text()
+            return text
         except Exception as e:
             print(f"{self.name} 降级调用失败: {e}")
             return "抱歉，处理您的请求时遇到技术问题，请稍后重试。"

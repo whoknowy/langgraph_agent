@@ -119,6 +119,11 @@ export function useChat() {
     const message = input.value.trim()
     if (!message || isTyping.value) return
     input.value = ''
+    // 用户开始新一轮对话 → 上一轮那张卡片立刻作废。
+    // 不清的话它会一直挂在输入框上方（看起来像属于这一轮），用户可能点了它，
+    // 结果操作到上一轮的目标上；而且它的 confirm_token 早已消费/过期。
+    // 本轮若又发起卡片，下面的 SSE pending_action 事件会重新赋值。
+    pendingAction.value = null
     messages.value.push({ role: 'user', content: message, toolChips: [] })
     isTyping.value = true
     scrollBottom()

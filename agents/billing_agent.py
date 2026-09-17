@@ -12,6 +12,14 @@ from .base_agent import BaseAgent
 
 
 class BillingAgent(BaseAgent):
+    # 卡片守卫：只说"请点击确认退票/改签/值机"却没调用对应伪工具时自动补调
+    _card_pseudo_tools = ("refund_request", "change_request", "open_seat_map",
+                          "submit_booking_request")
+    _card_button_hints = ("确认退票", "确认改签", "确认值机", "确认预订")
+    _card_param_hints = ("退票 refund_request：order_no、refund_type(voluntary/special)；"
+                         "改签 change_request：order_no、new_flight_no、new_date、new_cabin；"
+                         "值机 open_seat_map：order_no")
+
     def __init__(self):
         super().__init__(
             name="账单专家",
